@@ -8,7 +8,13 @@ export async function initDatabase(): Promise<typeof db> {
   if (db) return db;
   
   const SQL = await initSqlJs({
-    locateFile: (file) => `https://sql.js.org/dist/${file}`,
+    locateFile: (file) => {
+      // Try local bundled WASM first, fallback to CDN only in dev
+      if (import.meta.env?.DEV) {
+        return `https://sql.js.org/dist/${file}`;
+      }
+      return `./${file}`;
+    },
   });
   
   const sqliteDb = new SQL.Database();

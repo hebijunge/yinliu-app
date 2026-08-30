@@ -10,18 +10,10 @@ import DownloadPage from './pages/DownloadPage';
 import LocalMusicPage from './pages/LocalMusicPage';
 import { playerEngine } from './core/player';
 import { usePlayerStore } from './shared/store/playerStore';
-import { initializeProviders } from './providers/music/registry';
-import { initDatabase } from './shared/database';
 
 function App() {
   useEffect(() => {
-    // 初始化数据库
-    initDatabase().catch(console.error);
-
-    // 初始化音源Provider
-    initializeProviders();
-
-    // 播放器事件绑定
+    // 播放器事件绑定（数据库和Provider已在main.tsx初始化）
     const unsub1 = playerEngine.on('stateChange', ({ state }) => {
       usePlayerStore.getState().setState(state);
     });
