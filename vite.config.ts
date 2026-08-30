@@ -17,6 +17,7 @@ export default defineConfig({
     port: 3000,
     strictPort: true,
   },
+  base: './',
   build: {
     target: 'es2020',
     outDir: 'dist',
