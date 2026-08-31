@@ -224,7 +224,7 @@ export class DownloadEngine {
             const encrypted = new Uint8Array(await blob.arrayBuffer());
             const decrypted = qmc2DecryptBytes(encrypted, rawKey);
             if (isDecryptedMagic(decrypted)) {
-              blob = new Blob([decrypted.buffer]);
+              blob = new Blob([decrypted.buffer as ArrayBuffer]);
               task.blob = blob;
               // 解密成功，修正格式后缀
               if (playUrl.format === 'mflac') playUrl.format = 'flac';
