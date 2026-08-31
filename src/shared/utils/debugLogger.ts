@@ -53,7 +53,8 @@ export type DebugLogCategory =
   | 'download'
   | 'click'
   | 'init'
-  | 'streaming';
+  | 'streaming'
+  | 'sleepTimer';
 
 export interface DebugLogEntry {
   id: string;

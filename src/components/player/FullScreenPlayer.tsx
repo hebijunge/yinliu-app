@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   X, Play, Pause, SkipBack, SkipForward, Volume2, ChevronDown,
-  Mic2, ListMusic, Repeat, Repeat1, Shuffle, AudioLines,
+  Mic2, ListMusic, Repeat, Repeat1, Shuffle, AudioLines, Moon,
 } from 'lucide-react';
 import { usePlayerStore } from '../../shared/store/playerStore';
 import { playerEngine } from '../../core/player';
 import { lyricsManager } from '../../modules/music/lyrics';
 import QueuePanel from './QueuePanel';
 import QualitySelector, { qualityLabel } from './QualitySelector';
+import SleepTimerPanel from './SleepTimerPanel';
+import { useSleepTimerStore, formatSleepTimerRemaining } from '../../shared/store/sleepTimerStore';
 import type { ParsedLyrics } from '../../modules/music/lyrics';
 import type { RepeatMode } from '../../shared/store/playerStore';
 
@@ -31,11 +33,13 @@ interface Props {
 
 export default function FullScreenPlayer({ onClose }: Props) {
   const { state, currentTrack, currentTime, duration, volume, queue, repeatMode, currentQuality, actualQuality, isPreview, actualSourceId } = usePlayerStore();
+  const { active: sleepTimerActive, remainingSeconds: sleepTimerRemaining, mode: sleepTimerMode } = useSleepTimerStore();
   const isPlaying = state === 'playing';
 
   const [showLyrics, setShowLyrics] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
   const [showQuality, setShowQuality] = useState(false);
+  const [showSleepTimer, setShowSleepTimer] = useState(false);
   const [lyrics, setLyrics] = useState<ParsedLyrics | null>(null);
   const [currentLineIndex, setCurrentLineIndex] = useState(-1);
 
@@ -95,6 +99,8 @@ export default function FullScreenPlayer({ onClose }: Props) {
       {showQueue && <QueuePanel onClose={() => setShowQueue(false)} />}
       {/* Quality Selector overlay */}
       {showQuality && <QualitySelector onClose={() => setShowQuality(false)} />}
+      {/* Sleep Timer overlay */}
+      {showSleepTimer && <SleepTimerPanel onClose={() => setShowSleepTimer(false)} />}
 
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4">
@@ -135,6 +141,21 @@ export default function FullScreenPlayer({ onClose }: Props) {
             {queue.length > 0 && (
               <span className="absolute top-0.5 right-0.5 min-w-[14px] h-[14px] px-0.5 bg-[var(--accent)] text-white text-[9px] font-bold rounded-full flex items-center justify-center">
                 {queue.length}
+              </span>
+            )}
+          </button>
+          {/* Sleep Timer toggle */}
+          <button
+            onClick={() => setShowSleepTimer(!showSleepTimer)}
+            className={`p-2 rounded-2xl hover:bg-[var(--bg-tertiary)] transition-colors focus-ring relative ${
+              sleepTimerActive ? 'text-[var(--accent)]' : 'text-[var(--text-secondary)]'
+            }`}
+            title="睡眠定时"
+          >
+            <Moon className="w-5 h-5" />
+            {sleepTimerActive && sleepTimerMode === 'duration' && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 bg-[var(--accent)] text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+                {Math.ceil(sleepTimerRemaining / 60)}
               </span>
             )}
           </button>
@@ -207,18 +228,32 @@ export default function FullScreenPlayer({ onClose }: Props) {
             </span>
           )}
         </p>
-        <button
-          onClick={() => setShowQuality(true)}
-          className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors focus-ring"
-          title="切换音质"
-        >
-          <AudioLines className="w-3.5 h-3.5" />
-          {qualityLabel(currentQuality)}
-          {actualQuality && actualQuality !== currentQuality && (
-            <span className="text-amber-500">实际 {qualityLabel(actualQuality)}</span>
+        <div className="flex items-center justify-center gap-2 mt-3">
+          <button
+            onClick={() => setShowQuality(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors focus-ring"
+            title="切换音质"
+          >
+            <AudioLines className="w-3.5 h-3.5" />
+            {qualityLabel(currentQuality)}
+            {actualQuality && actualQuality !== currentQuality && (
+              <span className="text-amber-500">实际 {qualityLabel(actualQuality)}</span>
+            )}
+            {isPreview && <span className="text-amber-500">试听</span>}
+          </button>
+          {sleepTimerActive && (
+            <button
+              onClick={() => setShowSleepTimer(true)}
+              className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs bg-[var(--accent)]/10 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors focus-ring"
+              title="睡眠定时中"
+            >
+              <Moon className="w-3 h-3" />
+              {sleepTimerMode === 'duration'
+                ? formatSleepTimerRemaining(sleepTimerRemaining)
+                : '播完暂停'}
+            </button>
           )}
-          {isPreview && <span className="text-amber-500">试听</span>}
-        </button>
+        </div>
       </div>
 
       {/* Progress */}

@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings, Music, Info, Trash2, Check, ListOrdered, Bug, Download, FileText } from 'lucide-react';
+import { Settings, Music, Info, Trash2, Check, ListOrdered, Bug, Download, FileText, Moon } from 'lucide-react';
 import { useThemeStore } from '../shared/store/themeStore';
 import { useSettingsStore } from '../shared/store/settingsStore';
 import { useSearchStore } from '../shared/store/searchStore';
 import { usePlayerStore } from '../shared/store/playerStore';
+import { useSleepTimerStore, formatSleepTimerRemaining } from '../shared/store/sleepTimerStore';
 import { sourceRegistry } from '../providers/music/registry';
 import { Quality } from '../core/types';
 import {
@@ -13,6 +14,7 @@ import {
   PLATFORM_COLORS,
 } from '../core/platformPriority';
 import { debugLogger } from '@shared/utils/debugLogger';
+import SleepTimerPanel from '../components/player/SleepTimerPanel';
 
 type TabId = 'general' | 'music' | 'about';
 
@@ -27,6 +29,8 @@ export default function SettingsPage() {
   const { mode, setMode } = useThemeStore();
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const [cleanDone, setCleanDone] = useState<string | null>(null);
+  const [showSleepTimer, setShowSleepTimer] = useState(false);
+  const { active: sleepTimerActive, remainingSeconds, mode: sleepTimerMode } = useSleepTimerStore();
 
   const { preferredQuality, enabledSources, downloadQuality, maxConcurrentDownloads, downloadDir,
     autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause, debugMode,
@@ -91,6 +95,8 @@ export default function SettingsPage() {
 
   return (
     <div className="max-w-2xl mx-auto">
+      {/* Sleep Timer overlay */}
+      {showSleepTimer && <SleepTimerPanel onClose={() => setShowSleepTimer(false)} />}
       <h1 className="text-2xl font-light mb-8 hidden lg:block text-[var(--text-primary)]">设置</h1>
 
       {/* Tabs */}
@@ -255,6 +261,31 @@ export default function SettingsPage() {
                   <Toggle on={dismissNotificationOnPause} onChange={setDismissNotificationOnPause} />
                 </div>
               </div>
+            </div>
+
+            {/* 睡眠定时 */}
+            <div className="yinliu-card">
+              <h3 className="font-semibold mb-1 text-[var(--text-primary)] flex items-center gap-2">
+                <Moon className="w-4 h-4" />
+                睡眠定时
+              </h3>
+              <p className="text-xs text-[var(--text-tertiary)] mb-4">设定时间后自动渐弱音量并暂停播放</p>
+              <button
+                onClick={() => setShowSleepTimer(true)}
+                className="w-full flex items-center justify-between p-4 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-colors focus-ring"
+              >
+                <span className="text-sm text-[var(--text-primary)] flex items-center gap-2">
+                  <Moon className="w-4 h-4 text-[var(--text-tertiary)]" />
+                  {sleepTimerActive
+                    ? sleepTimerMode === 'duration'
+                      ? `睡眠定时中 · 剩余 ${formatSleepTimerRemaining(remainingSeconds)}`
+                      : '睡眠定时中 · 播完当前曲暂停'
+                    : '未开启'}
+                </span>
+                <span className="text-xs text-[var(--accent)]">
+                  {sleepTimerActive ? '管理' : '开启'}
+                </span>
+              </button>
             </div>
 
             {/* 下载设置 */}
