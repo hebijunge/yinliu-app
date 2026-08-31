@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { PlayerTrack, PlayerState } from '@core/player';
 import { Quality } from '@core/types';
+import { useSettingsStore } from './settingsStore';
 
 export type RepeatMode = 'sequence' | 'repeat-all' | 'repeat-one' | 'shuffle';
 
@@ -11,6 +12,10 @@ interface PlayerStore {
   duration: number;
   volume: number;
   currentQuality: Quality;
+  /** 实际生效音质（由 trackLoaded 事件回写，音源降档时与 currentQuality 不同） */
+  actualQuality: Quality | null;
+  /** 当前曲目是否为试听片段 */
+  isPreview: boolean;
   isMuted: boolean;
 
   // Queue
@@ -25,6 +30,8 @@ interface PlayerStore {
   setProgress: (currentTime: number, duration: number) => void;
   setVolume: (volume: number) => void;
   setQuality: (quality: Quality) => void;
+  setActualQuality: (quality: Quality | null) => void;
+  setPreview: (isPreview: boolean) => void;
   toggleMute: () => void;
 
   // Queue actions
@@ -46,7 +53,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   currentTime: 0,
   duration: 0,
   volume: 0.8,
-  currentQuality: Quality.STANDARD,
+  currentQuality: useSettingsStore.getState().preferredQuality,
+  actualQuality: null,
+  isPreview: false,
   isMuted: false,
 
   queue: [],
@@ -58,8 +67,15 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   setTrack: (currentTrack) => set({ currentTrack }),
   setProgress: (currentTime, duration) => set({ currentTime, duration }),
   setVolume: (volume) => set({ volume }),
-  setQuality: (currentQuality) => set({ currentQuality }),
+  // 音质选择与设置页音质偏好共用同一持久化
+  setQuality: (currentQuality) => {
+    set({ currentQuality, actualQuality: null, isPreview: false });
+    useSettingsStore.getState().setPreferredQuality(currentQuality);
+  },
+  setActualQuality: (actualQuality) => set({ actualQuality }),
+  setPreview: (isPreview) => set({ isPreview }),
   toggleMute: () => set((s) => ({ isMuted: !s.isMuted })),
+
 
   setQueue: (queue, index = 0) =>
     set({

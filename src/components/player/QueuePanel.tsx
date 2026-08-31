@@ -29,7 +29,10 @@ export default function QueuePanel({ onClose }: Props) {
     usePlayerStore.getState().playTrackAtIndex(index);
     const track = queue[index];
     if (track) {
-      playerEngine.playTrack(track);
+      // 使用播放器当前音质（与设置页音质偏好同一持久化）
+      playerEngine.playTrack(track, usePlayerStore.getState().currentQuality).catch(() => {
+        // 错误已经由 error 事件上报
+      });
     }
   };
 

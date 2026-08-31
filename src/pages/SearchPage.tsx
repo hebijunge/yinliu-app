@@ -8,6 +8,7 @@ import { SkeletonSearchResult } from '../components/ui/Skeleton';
 import type { AggregatedSearchResult } from '../core/search';
 import type { PlayerTrack } from '../core/player';
 import { Quality } from '../core/types';
+import { useSettingsStore, isSourceEnabled } from '../shared/store/settingsStore';
 
 function resultToTrack(result: AggregatedSearchResult): PlayerTrack {
   const bestSource = result.sources[0];
@@ -43,9 +44,11 @@ export default function SearchPage() {
     addToHistory(inputValue);
 
     try {
+      // 只请求启用的音源（设置页音源开关真实生效）
+      const enabledSources = selectedSources.filter((id) => isSourceEnabled(useSettingsStore.getState().enabledSources, id));
       const { results, sourceStats } = await searchEngine.search(
         { keyword: inputValue, page: 0, pageSize: 30 },
-        { sources: selectedSources, timeout: 10000 }
+        { sources: enabledSources, timeout: 10000 }
       );
       setResults(results);
       setSourceStats(sourceStats);
@@ -71,17 +74,18 @@ export default function SearchPage() {
     const store = usePlayerStore.getState();
     const existingIndex = store.queue.findIndex((t) => t.id === track.id);
 
+    const quality = store.currentQuality;
     if (existingIndex !== -1) {
       // Already in queue — play from that position
       store.playTrackAtIndex(existingIndex);
-      await playerEngine.playTrack(track, selectedQuality);
+      await playerEngine.playTrack(track, quality).catch(() => {});
     } else {
       // Insert after current index and play
       const insertIndex = store.currentIndex >= 0 ? store.currentIndex + 1 : 0;
       const newQueue = [...store.queue];
       newQueue.splice(insertIndex, 0, track);
       store.setQueue(newQueue, insertIndex);
-      await playerEngine.playTrack(track, selectedQuality);
+      await playerEngine.playTrack(track, quality).catch(() => {});
     }
   };
 
@@ -92,6 +96,12 @@ export default function SearchPage() {
 
   const handlePlay = async (result: AggregatedSearchResult) => {
     await handlePlayNow(result);
+  };
+
+  // 音质偏好与设置页共用同一持久化
+  const handleSetQuality = (q: Quality) => {
+    setQuality(q);
+    useSettingsStore.getState().setPreferredQuality(q);
   };
 
   const sourceColors: Record<string, string> = {
@@ -144,7 +154,7 @@ export default function SearchPage() {
               {([Quality.STANDARD, Quality.HIGH, Quality.LOSSLESS, Quality.HIRES] as Quality[]).map((q) => (
                 <button
                   key={q}
-                  onClick={() => setQuality(q)}
+                  onClick={() => handleSetQuality(q)}
                   className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
                     selectedQuality === q
                       ? 'bg-[var(--accent)] text-white'

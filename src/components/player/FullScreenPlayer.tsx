@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   X, Play, Pause, SkipBack, SkipForward, Volume2, ChevronDown,
-  Mic2, ListMusic, Repeat, Repeat1, Shuffle,
+  Mic2, ListMusic, Repeat, Repeat1, Shuffle, AudioLines,
 } from 'lucide-react';
 import { usePlayerStore } from '../../shared/store/playerStore';
 import { playerEngine } from '../../core/player';
 import { lyricsManager } from '../../modules/music/lyrics';
 import QueuePanel from './QueuePanel';
+import QualitySelector, { qualityLabel } from './QualitySelector';
 import type { ParsedLyrics } from '../../modules/music/lyrics';
 import type { RepeatMode } from '../../shared/store/playerStore';
 
@@ -29,11 +30,12 @@ interface Props {
 }
 
 export default function FullScreenPlayer({ onClose }: Props) {
-  const { state, currentTrack, currentTime, duration, volume, queue, repeatMode } = usePlayerStore();
+  const { state, currentTrack, currentTime, duration, volume, queue, repeatMode, currentQuality, actualQuality, isPreview } = usePlayerStore();
   const isPlaying = state === 'playing';
 
   const [showLyrics, setShowLyrics] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
+  const [showQuality, setShowQuality] = useState(false);
   const [lyrics, setLyrics] = useState<ParsedLyrics | null>(null);
   const [currentLineIndex, setCurrentLineIndex] = useState(-1);
 
@@ -91,6 +93,8 @@ export default function FullScreenPlayer({ onClose }: Props) {
     <div className="fixed inset-0 z-50 bg-[var(--bg-primary)] flex flex-col">
       {/* Queue Panel overlay */}
       {showQueue && <QueuePanel onClose={() => setShowQueue(false)} />}
+      {/* Quality Selector overlay */}
+      {showQuality && <QualitySelector onClose={() => setShowQuality(false)} />}
 
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4">
@@ -196,6 +200,18 @@ export default function FullScreenPlayer({ onClose }: Props) {
       <div className="px-10 py-5 text-center">
         <h2 className="text-xl font-semibold truncate text-[var(--text-primary)]">{currentTrack?.title || '未在播放'}</h2>
         <p className="text-[var(--text-secondary)] mt-1.5 text-sm">{currentTrack?.artist || '选择一首歌'}</p>
+        <button
+          onClick={() => setShowQuality(true)}
+          className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors focus-ring"
+          title="切换音质"
+        >
+          <AudioLines className="w-3.5 h-3.5" />
+          {qualityLabel(currentQuality)}
+          {actualQuality && actualQuality !== currentQuality && (
+            <span className="text-amber-500">实际 {qualityLabel(actualQuality)}</span>
+          )}
+          {isPreview && <span className="text-amber-500">试听</span>}
+        </button>
       </div>
 
       {/* Progress */}

@@ -22,6 +22,8 @@ interface PlayerEventMap {
   progress: { currentTime: number; duration: number; progress: number };
   error: { message: string };
   ended: void;
+  /** 取链完成（含实际音质/试听标记），UI 据此回写 actualQuality */
+  trackLoaded: { track: PlayerTrack; result: PlayUrlResult };
 }
 
 type PlayerEventCallback<T> = (data: T) => void;
@@ -152,7 +154,11 @@ export class PlayerEngine {
     const nextIndex = this.getNextIndex();
     if (nextIndex >= 0 && nextIndex < this.queue.length) {
       this.currentIndex = nextIndex;
-      await this.playTrack(this.queue[nextIndex], this.lastQuality);
+      try {
+        await this.playTrack(this.queue[nextIndex], this.lastQuality);
+      } catch {
+        // 错误已经由 error 事件上报
+      }
     } else {
       this.stop();
     }
@@ -167,11 +173,15 @@ export class PlayerEngine {
     const prevIndex = this.getPreviousIndex();
     if (prevIndex >= 0 && prevIndex < this.queue.length) {
       this.currentIndex = prevIndex;
-      await this.playTrack(this.queue[prevIndex], this.lastQuality);
+      try {
+        await this.playTrack(this.queue[prevIndex], this.lastQuality);
+      } catch {
+        // 错误已经由 error 事件上报
+      }
     }
   }
 
-  async playTrack(track: PlayerTrack, quality: Quality = Quality.STANDARD): Promise<void> {
+  async playTrack(track: PlayerTrack, quality: Quality = Quality.STANDARD): Promise<PlayUrlResult> {
     this.lastQuality = quality;
     this.setState('loading');
     this.currentTrack = track;
@@ -196,10 +206,42 @@ export class PlayerEngine {
       }
 
       await this.loadAndPlay(playUrl.url, track);
+      this.emit('trackLoaded', { track, result: playUrl });
+      return playUrl;
     } catch (err) {
       this.setState('error');
       this.emit('error', { message: err instanceof Error ? err.message : '播放失败' });
+      throw err;
     }
+  }
+
+  /** 切换音质：对当前曲目重新取链并接续播放进度 */
+  async switchQuality(quality: Quality): Promise<PlayUrlResult | null> {
+    if (!this.currentTrack) return null;
+    const track = this.currentTrack;
+    const resumeTime = this.audio?.currentTime ?? 0;
+
+    const result = await this.playTrack(track, quality);
+
+    // 接续进度：等新音频可播后 seek 回原位置
+    if (resumeTime > 0 && isFinite(resumeTime) && this.audio) {
+      const audio = this.audio;
+      const seekOnce = () => {
+        try {
+          audio.currentTime = Math.min(resumeTime, audio.duration || resumeTime);
+        } catch {
+          // seek 失败不影响播放
+        }
+        audio.removeEventListener('canplay', seekOnce);
+      };
+      if (audio.readyState >= 2) {
+        seekOnce();
+      } else {
+        audio.addEventListener('canplay', seekOnce);
+      }
+    }
+
+    return result;
   }
 
   private async loadAndPlay(url: string, track: PlayerTrack): Promise<void> {
@@ -249,7 +291,9 @@ export class PlayerEngine {
     const nextIndex = this.getNextIndex();
     if (nextIndex >= 0 && nextIndex < this.queue.length) {
       this.currentIndex = nextIndex;
-      this.playTrack(this.queue[nextIndex], this.lastQuality);
+      this.playTrack(this.queue[nextIndex], this.lastQuality).catch(() => {
+        // 错误已经由 error 事件上报
+      });
     }
   }
 
