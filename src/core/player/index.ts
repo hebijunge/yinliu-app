@@ -601,7 +601,7 @@ export class PlayerEngine {
       });
 
       // 流式模式下同时预取首块数据
-      if (!result.isLocal && nextTrack.sourceId !== 'local') {
+      if (nextTrack.sourceId !== 'local') {
         try {
           await streamingAudioPlayer.prefetchNext({
             url,
