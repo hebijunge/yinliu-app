@@ -1,8 +1,9 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality, YinliuError, ErrorCode } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
+import { debugLogger } from '@shared/utils/debugLogger';
 
 /**
  * 酷狗音乐音源Provider
@@ -356,26 +357,314 @@ export class KugouSource extends BaseHttpSource {
 
   // ===================== 歌单 =====================
 
-  async getPlaylist(playlistId: string) {
-    try {
-      const url = `${this.M_HOST}/plist/list/${playlistId}?json=true`;
-      const data = await this.httpGetJson(url, { Referer: this.M_REF });
-      if (!data) throw new Error('Empty response');
+  /**
+   * 获取酷狗歌单
+   * - 纯数字ID：走 m.kugou.com/plist/list/{id}?json=true（老接口）
+   * - 字母数字混合ID：走 m.kugou.com/songlist/gcid_{id}（HTML 页提取 window.$output）
+   * - 全程带 ERROR 日志，杜绝静默失败
+   */
+  async getPlaylist(playlistId: string): Promise<PlaylistDetail> {
+    const isAlphanumeric = !/^\d+$/.test(playlistId);
 
-      const info = data.info?.list || {};
-      const songs = data.list?.list?.info || [];
+    debugLogger.info('network', `酷狗歌单解析开始`, { playlistId, isAlphanumeric });
 
-      return {
-        id: playlistId,
-        name: info.specialname || '酷狗歌单',
-        description: info.intro || '',
-        coverUrl: (info.imgurl || '').replace('{size}', '400'),
-        songs: songs.map((item: any) => this.parseSong(item)).filter(Boolean),
-        total: songs.length,
-      };
-    } catch (err) {
-      throw err;
+    if (isAlphanumeric) {
+      return this.getPlaylistFromGcid(playlistId);
     }
+    return this.getPlaylistFromPlist(playlistId);
+  }
+
+  private async getPlaylistFromPlist(playlistId: string): Promise<PlaylistDetail> {
+    const url = `${this.M_HOST}/plist/list/${playlistId}?json=true`;
+    debugLogger.info('network', `酷狗 plist 请求`, { url, playlistId });
+
+    let resp: Response | null = null;
+    try {
+      resp = await this.httpGet(url, { Referer: this.M_REF });
+    } catch (err) {
+      debugLogger.error('network', `酷狗 plist 请求异常`, {
+        url,
+        playlistId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷狗歌单请求失败: ${err instanceof Error ? err.message : '未知错误'}`, 502);
+    }
+
+    if (!resp) {
+      debugLogger.error('network', `酷狗 plist 响应为空`, { url, playlistId });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷狗歌单响应为空', 502);
+    }
+
+    // 处理 302 重定向：CapacitorHttp 可能不自动跟随，需手动读 Location 重发
+    if (resp.status === 301 || resp.status === 302) {
+      const location = resp.headers.get('location') || resp.headers.get('Location');
+      debugLogger.info('network', `酷狗 plist 收到 ${resp.status}，尝试跟随重定向`, { url, location });
+      if (location) {
+        try {
+          resp = await this.httpGet(location, { Referer: this.M_REF });
+        } catch (err) {
+          debugLogger.error('network', `酷狗 plist 重定向请求失败`, {
+            url,
+            location,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷狗歌单重定向失败: ${err instanceof Error ? err.message : '未知错误'}`, 502);
+        }
+      } else {
+        debugLogger.error('network', `酷狗 plist ${resp.status} 无 Location 头`, { url, headers: Object.fromEntries(resp.headers.entries()) });
+        throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷狗歌单 ${resp.status} 重定向缺少 Location`, 502);
+      }
+    }
+
+    if (!resp || !resp.ok) {
+      const bodyPreview = await resp?.text().catch(() => '').then(t => t.slice(0, 200));
+      debugLogger.error('network', `酷狗 plist 非成功状态码`, {
+        url,
+        status: resp?.status,
+        statusText: resp?.statusText,
+        bodyPreview,
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷狗歌单返回 ${resp?.status || 'unknown'}`, resp?.status || 502);
+    }
+
+    let data: any;
+    try {
+      data = await resp.json();
+    } catch (err) {
+      const bodyPreview = await resp.text().catch(() => '').then(t => t.slice(0, 200));
+      debugLogger.error('network', `酷狗 plist JSON 解析失败`, {
+        url,
+        bodyPreview,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷狗歌单响应 JSON 解析失败', 502);
+    }
+
+    if (!data) {
+      debugLogger.error('network', `酷狗 plist 解析后数据为空`, { url });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷狗歌单响应为空', 502);
+    }
+
+    const info = data.info?.list || {};
+    const songs = data.list?.list?.info || [];
+
+    if (!songs.length) {
+      debugLogger.error('network', `酷狗 plist 曲目列表为空`, {
+        url,
+        dataPreview: JSON.stringify(data).slice(0, 200),
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷狗歌单曲目列表为空', 422);
+    }
+
+    debugLogger.info('network', `酷狗 plist 解析成功`, { playlistId, songCount: songs.length });
+
+    return {
+      id: playlistId,
+      name: info.specialname || '酷狗歌单',
+      description: info.intro || '',
+      coverUrl: (info.imgurl || '').replace('{size}', '400'),
+      songs: songs.map((item: any) => this.parseSong(item)).filter(Boolean),
+      total: songs.length,
+    };
+  }
+
+  /**
+   * 字母数字混合歌单码走 gcid HTML 页提取
+   * 页面内嵌 window.$output = { info: { songs: [...], listinfo: {...} } }
+   */
+  private async getPlaylistFromGcid(playlistId: string): Promise<PlaylistDetail> {
+    const url = `https://m.kugou.com/songlist/gcid_${playlistId}`;
+    debugLogger.info('network', `酷狗 gcid 请求`, { url, playlistId });
+
+    let resp: Response | null = null;
+    try {
+      // gcid 页面对 User-Agent 敏感，必须用移动端 UA 才返回含 window.$output 的 HTML
+      resp = await this.httpGet(url, {
+        Referer: this.M_REF,
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      });
+    } catch (err) {
+      debugLogger.error('network', `酷狗 gcid 请求异常`, {
+        url,
+        playlistId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷狗歌单请求失败: ${err instanceof Error ? err.message : '未知错误'}`, 502);
+    }
+
+    if (!resp) {
+      debugLogger.error('network', `酷狗 gcid 响应为空`, { url, playlistId });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷狗歌单响应为空', 502);
+    }
+
+    // 处理 302 重定向
+    if (resp.status === 301 || resp.status === 302) {
+      const location = resp.headers.get('location') || resp.headers.get('Location');
+      debugLogger.info('network', `酷狗 gcid 收到 ${resp.status}，尝试跟随重定向`, { url, location });
+      if (location) {
+        try {
+          resp = await this.httpGet(location, { Referer: this.M_REF });
+        } catch (err) {
+          debugLogger.error('network', `酷狗 gcid 重定向请求失败`, {
+            url,
+            location,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷狗歌单重定向失败: ${err instanceof Error ? err.message : '未知错误'}`, 502);
+        }
+      } else {
+        debugLogger.error('network', `酷狗 gcid ${resp.status} 无 Location 头`, { url });
+        throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷狗歌单 ${resp.status} 重定向缺少 Location`, 502);
+      }
+    }
+
+    if (!resp || !resp.ok) {
+      const bodyPreview = await resp?.text().catch(() => '').then(t => t.slice(0, 200));
+      debugLogger.error('network', `酷狗 gcid 非成功状态码`, {
+        url,
+        status: resp?.status,
+        bodyPreview,
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷狗歌单返回 ${resp?.status || 'unknown'}`, resp?.status || 502);
+    }
+
+    let html: string;
+    try {
+      html = await resp.text();
+    } catch (err) {
+      debugLogger.error('network', `酷狗 gcid 读取响应体失败`, {
+        url,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷狗歌单响应读取失败', 502);
+    }
+
+    const extracted = this.extractWindowOutput(html);
+    if (!extracted) {
+      const bodyPreview = html.slice(0, 200);
+      debugLogger.error('network', `酷狗 gcid 未找到 window.\$output`, {
+        url,
+        bodyPreview,
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷狗歌单页面结构解析失败', 502);
+    }
+
+    const songs = extracted.info?.songs || [];
+    const listinfo = extracted.info?.listinfo || {};
+
+    if (!songs.length) {
+      debugLogger.error('network', `酷狗 gcid 曲目列表为空`, {
+        url,
+        extractedKeys: Object.keys(extracted),
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷狗歌单曲目列表为空', 422);
+    }
+
+    debugLogger.info('network', `酷狗 gcid 解析成功`, { playlistId, songCount: songs.length });
+
+    // gcid 页面的 song 结构与搜索不同，需做字段映射
+    return {
+      id: playlistId,
+      name: listinfo.name || '酷狗歌单',
+      description: listinfo.intro || '',
+      coverUrl: (listinfo.pic || '').replace('{size}', '400'),
+      songs: songs.map((item: any) => this.parseGcidSong(item)).filter(Boolean),
+      total: songs.length,
+    };
+  }
+
+  /**
+   * 从 HTML 中提取 window.$output JSON
+   */
+  private extractWindowOutput(html: string): any | null {
+    const marker = 'window.$output = ';
+    const start = html.indexOf(marker);
+    if (start === -1) return null;
+
+    let braceStart = start + marker.length;
+    while (braceStart < html.length && html[braceStart] !== '{') {
+      braceStart++;
+    }
+
+    let stack = 0;
+    let inString = false;
+    let escape = false;
+    let i = braceStart;
+    while (i < html.length) {
+      const c = html[i];
+      if (inString) {
+        if (escape) {
+          escape = false;
+        } else if (c === '\\') {
+          escape = true;
+        } else if (c === '"') {
+          inString = false;
+        }
+      } else {
+        if (c === '"') {
+          inString = true;
+        } else if (c === '{') {
+          stack++;
+        } else if (c === '}') {
+          stack--;
+          if (stack === 0) {
+            break;
+          }
+        }
+      }
+      i++;
+    }
+
+    const jsonStr = html.slice(braceStart, i + 1);
+    try {
+      return JSON.parse(jsonStr);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 解析 gcid 页面的歌曲对象（字段结构与搜索不同）
+   */
+  private parseGcidSong(o: any): SearchResult | null {
+    const hash = (o.hash || '').toString();
+    if (!hash) return null;
+
+    const name = (o.name || '').toString().trim();
+    if (!name) return null;
+
+    const singers = o.singerinfo || [];
+    const artist = singers.map((s: any) => s.name).join('、') || '';
+
+    const dur = parseInt((o.timelen || '0').toString(), 10);
+    let cover = (o.cover || '').toString();
+    if (cover) cover = cover.replace('{size}', '400');
+
+    // 取最高音质 hash
+    const relateGoods = o.relate_goods || [];
+    const best = relateGoods.length > 0
+      ? relateGoods.reduce((a: any, b: any) => (b.bitrate || 0) > (a.bitrate || 0) ? b : a, relateGoods[0])
+      : null;
+    const bestHash = best?.hash || hash;
+    const hash320 = relateGoods.find((g: any) => g.bitrate === 320)?.hash || '';
+    const hashFlac = relateGoods.find((g: any) => g.bitrate > 1000)?.hash || '';
+
+    const id = `kg_${this.nextId++}`;
+    this.hashCache.set(id, { hash: bestHash, hash320, hashFlac, name, artist, duration: dur });
+
+    return {
+      id,
+      type: 'song',
+      title: name,
+      artist,
+      album: (o.albuminfo?.name || '').toString(),
+      duration: dur,
+      coverUrl: cover,
+      sourceId: this.id,
+      sourceSongId: id,
+      quality: this.inferQuality(hash320, hashFlac),
+      bitrate: hashFlac ? 1000 : hash320 ? 320 : 128,
+    };
   }
 
   /**
@@ -384,14 +673,20 @@ export class KugouSource extends BaseHttpSource {
    *   https://www.kugou.com/yy/special/single/12345.html
    *   https://m.kugou.com/yy/special/single/12345.html
    *   https://www.kugou.com/yy/special/single/12345-zhash.html (带 hash 段，ID 是第一段)
+   *   https://m.kugou.com/plist/list/3z9vj1p5zb6z06a (字母数字混合码)
    */
-  async parsePlaylistUrl(url: string) {
+  async parsePlaylistUrl(url: string): Promise<PlaylistDetail> {
     let playlistId: string | null = null;
     // gcid 格式: m.kugou.com/songlist/gcid_xxx
     const gcidMatch = url.match(/songlist[\/]gcid[_]?(\w+)/);
     if (gcidMatch) playlistId = gcidMatch[1];
     else {
-      // single/special 格式
+      // plist/list 格式（字母数字混合码）
+      const plistMatch = url.match(/plist[\/]list[\/](\w+)/);
+      if (plistMatch) playlistId = plistMatch[1];
+    }
+    if (!playlistId) {
+      // single/special 格式（纯数字）
       const specialMatch = url.match(/(?:special\/single|special)\/(\d+)/)
         || url.match(/[?&]id=(\d+)/);
       if (specialMatch) playlistId = specialMatch[1];

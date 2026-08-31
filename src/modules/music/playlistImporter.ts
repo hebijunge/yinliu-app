@@ -3,6 +3,7 @@ import { playlistService } from '@shared/services/PlaylistService';
 import { playlistMatcher, type MatchReport, type MatchedTrack } from './playlistMatcher';
 import type { PlaylistDetail, SearchResult } from '@core/types';
 import { YinliuError, ErrorCode } from '@core/types';
+import { debugLogger } from '@shared/utils/debugLogger';
 
 /**
  * 支持的歌单URL平台
@@ -72,6 +73,7 @@ export class PlaylistImporter {
         /kugou\.com.*special[\/]single[\/](\d+)/,
         /kugou\.com.*yy\/special\/single\/(\d+)/,
         /kugou\.com.*songlist[\/]gcid[_]?(\w+)/,
+        /kugou\.com.*plist[\/]list\/(\w+)/,
       ],
     },
     {
@@ -107,8 +109,8 @@ export class PlaylistImporter {
     // 匹配 http/https URL
     const urlMatch = raw.match(/(https?:\/\/[^\s]+)/);
     if (urlMatch) return urlMatch[1];
-    // 纯数字歌单码（酷狗）
-    if (/^\d{6,10}$/.test(raw.trim())) return raw.trim();
+    // 酷狗歌单码：纯数字 6-10 位 或 字母数字混合 6-20 位
+    if (/^[a-zA-Z0-9]{6,20}$/.test(raw.trim())) return raw.trim();
     return raw;
   }
 
@@ -121,10 +123,10 @@ export class PlaylistImporter {
         400
       );
     }
-    // 酷狗纯数字歌单码（6-10位）
-    const numericCode = url.trim().match(/^(\d{6,10})$/);
-    if (numericCode) {
-      return { platform: 'kugou', playlistId: numericCode[1], url };
+    // 酷狗歌单码：纯数字 6-10 位 或 字母数字混合 6-20 位
+    const codeMatch = url.trim().match(/^([a-zA-Z0-9]{6,20})$/);
+    if (codeMatch) {
+      return { platform: 'kugou', playlistId: codeMatch[1], url };
     }
     for (const { platform, patterns } of this.urlPatterns) {
       for (const pattern of patterns) {
@@ -141,17 +143,23 @@ export class PlaylistImporter {
    * 仅解析歌单并返回元信息（不落库）—— 用于导入前预览
    */
   async preview(raw: string): Promise<PreviewResult> {
+    debugLogger.info('app', `歌单预览开始`, { raw: raw.slice(0, 200) });
+
     const url = this.extractUrl(raw);
     const parsed = this.parseUrl(url);
     if (!parsed) {
+      debugLogger.error('app', `歌单 URL 识别失败`, { url: url.slice(0, 200) });
       throw new YinliuError(
         ErrorCode.VALIDATION_ERROR,
         '不支持的歌单URL格式，目前支持：QQ音乐、网易云、酷狗、酷我、咪咕、Spotify',
         400
       );
     }
+    debugLogger.info('app', `歌单 URL 识别成功`, { platform: parsed.platform, playlistId: parsed.playlistId });
+
     const source = sourceRegistry.get(parsed.platform);
     if (!source) {
+      debugLogger.error('app', `音源 Provider 未找到`, { platform: parsed.platform });
       throw new YinliuError(
         ErrorCode.SOURCE_UNAVAILABLE,
         `未找到${parsed.platform}音源Provider`,
@@ -159,6 +167,7 @@ export class PlaylistImporter {
       );
     }
     if (!source.parsePlaylistUrl) {
+      debugLogger.error('app', `音源不支持歌单导入`, { platform: parsed.platform, sourceName: source.name });
       throw new YinliuError(
         ErrorCode.SOURCE_UNAVAILABLE,
         `${source.name}暂不支持歌单导入`,
@@ -167,6 +176,7 @@ export class PlaylistImporter {
     }
     try {
       const playlist = await source.parsePlaylistUrl(url);
+      debugLogger.info('app', `歌单预览成功`, { platform: parsed.platform, songCount: playlist.songs.length });
       return {
         playlist,
         platform: parsed.platform,
@@ -175,6 +185,11 @@ export class PlaylistImporter {
         errors: [],
       };
     } catch (err) {
+      debugLogger.error('app', `歌单预览失败`, {
+        platform: parsed.platform,
+        url: url.slice(0, 200),
+        error: err instanceof Error ? err.message : String(err),
+      });
       if (err instanceof YinliuError) throw err;
       throw new YinliuError(
         ErrorCode.SOURCE_ERROR,
@@ -194,17 +209,23 @@ export class PlaylistImporter {
    * - 全部失败也不回滚已写入的曲目（用户至少能拿到部分）
    */
   async importAndPersist(raw: string): Promise<ImportReport> {
+    debugLogger.info('app', `歌单导入开始`, { raw: raw.slice(0, 200) });
+
     const url = this.extractUrl(raw);
     const parsed = this.parseUrl(url);
     if (!parsed) {
+      debugLogger.error('app', `歌单 URL 识别失败`, { url: url.slice(0, 200) });
       throw new YinliuError(
         ErrorCode.VALIDATION_ERROR,
         '不支持的歌单URL格式，目前支持：QQ音乐、网易云、酷狗、酷我、咪咕、Spotify',
         400
       );
     }
+    debugLogger.info('app', `歌单 URL 识别成功`, { platform: parsed.platform, playlistId: parsed.playlistId });
+
     const source = sourceRegistry.get(parsed.platform);
     if (!source) {
+      debugLogger.error('app', `音源 Provider 未找到`, { platform: parsed.platform });
       throw new YinliuError(
         ErrorCode.SOURCE_UNAVAILABLE,
         `未找到${parsed.platform}音源Provider`,
@@ -212,6 +233,7 @@ export class PlaylistImporter {
       );
     }
     if (!source.parsePlaylistUrl) {
+      debugLogger.error('app', `音源不支持歌单导入`, { platform: parsed.platform, sourceName: source.name });
       throw new YinliuError(
         ErrorCode.SOURCE_UNAVAILABLE,
         `${source.name}暂不支持歌单导入`,
@@ -223,7 +245,13 @@ export class PlaylistImporter {
     let sourcePlaylist: PlaylistDetail;
     try {
       sourcePlaylist = await source.parsePlaylistUrl(url);
+      debugLogger.info('app', `源歌单抓取成功`, { platform: parsed.platform, songCount: sourcePlaylist.songs.length });
     } catch (err) {
+      debugLogger.error('app', `源歌单抓取失败`, {
+        platform: parsed.platform,
+        url: url.slice(0, 200),
+        error: err instanceof Error ? err.message : String(err),
+      });
       if (err instanceof YinliuError) throw err;
       throw new YinliuError(
         ErrorCode.SOURCE_ERROR,
@@ -232,6 +260,7 @@ export class PlaylistImporter {
       );
     }
     if (!sourcePlaylist.songs || sourcePlaylist.songs.length === 0) {
+      debugLogger.error('app', `歌单曲目为空`, { platform: parsed.platform, playlistId: parsed.playlistId });
       throw new YinliuError(
         ErrorCode.SOURCE_ERROR,
         '歌单为空或无法读取曲目',

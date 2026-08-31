@@ -3,6 +3,7 @@ import { Quality, YinliuError, ErrorCode } from '@core/types';
 import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
+import { debugLogger } from '@shared/utils/debugLogger';
 
 /**
  * 酷我音乐音源Provider
@@ -428,14 +429,116 @@ export class KuwoSource extends BaseHttpSource {
 
   // ===================== 歌单 =====================
 
+  /**
+   * 获取酷我歌单
+   * - 优先尝试 API（kuwo.cn/api/www/playlist/playListInfo）
+   * - 若 API 被反爬拒绝，降级走 HTML 页提取 window.__NUXT__
+   * - 全程带 ERROR 日志，杜绝静默失败
+   */
   async getPlaylist(playlistId: string): Promise<PlaylistDetail> {
+    debugLogger.info('network', `酷我歌单解析开始`, { playlistId });
+
+    // 1. 尝试 API
+    try {
+      const result = await this.getPlaylistFromApi(playlistId);
+      debugLogger.info('network', `酷我歌单 API 解析成功`, { playlistId, songCount: result.total });
+      return result;
+    } catch (err) {
+      debugLogger.warn('network', `酷我歌单 API 失败，降级到 HTML`, {
+        playlistId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // 2. 降级到 HTML 提取
+    try {
+      const result = await this.getPlaylistFromHtml(playlistId);
+      debugLogger.info('network', `酷我歌单 HTML 解析成功`, { playlistId, songCount: result.total });
+      return result;
+    } catch (err) {
+      debugLogger.error('network', `酷我歌单 HTML 解析也失败`, {
+        playlistId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err instanceof YinliuError
+        ? err
+        : new YinliuError(ErrorCode.SOURCE_ERROR, `酷我歌单解析失败: ${err instanceof Error ? err.message : '未知错误'}`, 502);
+    }
+  }
+
+  private async getPlaylistFromApi(playlistId: string): Promise<PlaylistDetail> {
     const url = `${this.SEARCH_V2_HOST}/api/www/playlist/playListInfo?pid=${playlistId}&pn=1&rn=50`;
-    const data = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
+    debugLogger.info('network', `酷我 API 请求`, { url, playlistId });
+
+    let resp: Response | null = null;
+    try {
+      resp = await this.httpGet(url, { Referer: 'https://www.kuwo.cn/' });
+    } catch (err) {
+      debugLogger.error('network', `酷我 API 请求异常`, {
+        url,
+        playlistId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷我歌单请求失败: ${err instanceof Error ? err.message : '未知错误'}`, 502);
+    }
+
+    if (!resp) {
+      debugLogger.error('network', `酷我 API 响应为空`, { url, playlistId });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷我歌单响应为空', 502);
+    }
+
+    if (!resp.ok) {
+      const bodyPreview = await resp.text().catch(() => '').then(t => t.slice(0, 200));
+      debugLogger.error('network', `酷我 API 非成功状态码`, {
+        url,
+        status: resp.status,
+        bodyPreview,
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷我歌单返回 ${resp.status}`, resp.status);
+    }
+
+    let data: any;
+    try {
+      data = await resp.json();
+    } catch (err) {
+      const bodyPreview = await resp.text().catch(() => '').then(t => t.slice(0, 200));
+      debugLogger.error('network', `酷我 API JSON 解析失败`, {
+        url,
+        bodyPreview,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷我歌单 JSON 解析失败', 502);
+    }
+
+    // 反爬返回 200 但 success:false
+    if (data && data.success === false) {
+      const msg = data.message || data.error || '反爬拦截';
+      debugLogger.error('network', `酷我 API 被反爬拦截`, {
+        url,
+        playlistId,
+        responseMsg: msg,
+        responsePreview: JSON.stringify(data).slice(0, 200),
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷我歌单被反爬拦截: ${msg}`, 403);
+    }
+
     if (!data?.data) {
+      debugLogger.error('network', `酷我 API 数据字段缺失`, {
+        url,
+        playlistId,
+        dataPreview: JSON.stringify(data).slice(0, 200),
+      });
       throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷我歌单不存在或无权限: ${playlistId}`, 404);
     }
+
     const pl = data.data;
     const list = pl.musicList || [];
+
+    if (!list.length) {
+      debugLogger.error('network', `酷我 API 曲目列表为空`, { url, playlistId });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷我歌单曲目列表为空', 422);
+    }
+
     return {
       id: playlistId,
       name: pl.name || '酷我歌单',
@@ -444,6 +547,112 @@ export class KuwoSource extends BaseHttpSource {
       songs: list.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[],
       total: list.length,
     };
+  }
+
+  /**
+   * 降级：从 HTML 页提取 window.__NUXT__ 中的歌单数据
+   */
+  private async getPlaylistFromHtml(playlistId: string): Promise<PlaylistDetail> {
+    const url = `${this.SEARCH_V2_HOST}/playlist_detail/${playlistId}`;
+    debugLogger.info('network', `酷我 HTML 请求`, { url, playlistId });
+
+    let resp: Response | null = null;
+    try {
+      resp = await this.httpGet(url, { Referer: 'https://www.kuwo.cn/' });
+    } catch (err) {
+      debugLogger.error('network', `酷我 HTML 请求异常`, {
+        url,
+        playlistId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷我歌单 HTML 请求失败: ${err instanceof Error ? err.message : '未知错误'}`, 502);
+    }
+
+    if (!resp) {
+      debugLogger.error('network', `酷我 HTML 响应为空`, { url, playlistId });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷我歌单 HTML 响应为空', 502);
+    }
+
+    if (!resp.ok) {
+      const bodyPreview = await resp.text().catch(() => '').then(t => t.slice(0, 200));
+      debugLogger.error('network', `酷我 HTML 非成功状态码`, {
+        url,
+        status: resp.status,
+        bodyPreview,
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷我歌单 HTML 返回 ${resp.status}`, resp.status);
+    }
+
+    let html: string;
+    try {
+      html = await resp.text();
+    } catch (err) {
+      debugLogger.error('network', `酷我 HTML 读取响应体失败`, {
+        url,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷我歌单 HTML 读取失败', 502);
+    }
+
+    const nuxtData = this.extractNuxtData(html);
+    if (!nuxtData) {
+      const bodyPreview = html.slice(0, 200);
+      debugLogger.error('network', `酷我 HTML 未找到 window.__NUXT__`, {
+        url,
+        bodyPreview,
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷我歌单 HTML 结构解析失败', 502);
+    }
+
+    const pl = nuxtData.playListInfo;
+    if (!pl) {
+      debugLogger.error('network', `酷我 HTML 无 playListInfo`, {
+        url,
+        nuxtKeys: Object.keys(nuxtData),
+      });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷我歌单 HTML 中未找到歌单信息', 404);
+    }
+
+    const list = pl.musicList || [];
+    if (!list.length) {
+      debugLogger.error('network', `酷我 HTML 曲目列表为空`, { url, playlistId });
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, '酷我歌单曲目列表为空', 422);
+    }
+
+    return {
+      id: playlistId,
+      name: pl.name || '酷我歌单',
+      description: pl.info || '',
+      coverUrl: pl.img || '',
+      songs: list.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[],
+      total: list.length,
+    };
+  }
+
+  /**
+   * 从 HTML 中提取 window.__NUXT__ 数据
+   * Nuxt 格式: window.__NUXT__=(function(a,b,...){return {...}})(...)
+   * 由于 Nuxt 使用函数参数替换，无法直接正则提取 JSON，需用 new Function 安全执行。
+   */
+  private extractNuxtData(html: string): any | null {
+    const marker = 'window.__NUXT__=';
+    const start = html.indexOf(marker);
+    if (start === -1) return null;
+
+    const scriptEnd = html.indexOf('</script>', start);
+    const nuxtCode = html.slice(start + marker.length, scriptEnd);
+
+    try {
+      // new Function 比 eval 安全：不访问局部作用域
+      const fn = new Function('return ' + nuxtCode);
+      const parsed = fn();
+      if (parsed && Array.isArray(parsed.data) && parsed.data.length > 0) {
+        return parsed.data[0];
+      }
+      return parsed;
+    } catch {
+      return null;
+    }
   }
 
   async parsePlaylistUrl(url: string): Promise<PlaylistDetail> {
