@@ -318,7 +318,6 @@ export class DownloadEngine {
       quality,
       title: metadata?.title || '',
       artist: metadata?.artist,
-      album: metadata?.album,
     });
     await this.startDownload(task.id);
     return task.id;
