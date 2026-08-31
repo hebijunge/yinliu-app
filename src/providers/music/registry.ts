@@ -4,6 +4,7 @@ import { KuwoSource } from './KuwoSource';
 import { QqSource } from './QqSource';
 import { KugouSource } from './KugouSource';
 import { MiguSource } from './MiguSource';
+import { PLATFORM_PRIORITY, getPriorityRank } from '@core/platformPriority';
 
 class SourceRegistry {
   private sources = new Map<string, MusicSource>();
@@ -24,18 +25,19 @@ class SourceRegistry {
     return this.getAll().filter((s) => s.enabled);
   }
 
+  /**
+   * 按 v13 取链优先级排序的 source 列表。
+   * 优先级表内的源按 kuwo > migu > netease > kugou > qq 升序；
+   * 优先级表外的源（P1 扩展等）排在末尾，按注册顺序稳定。
+   */
   getSorted(): MusicSource[] {
     return this.getEnabled().sort((a, b) => {
-      const priorityMap: Record<string, number> = {
-        netease: 100,
-        qq: 90,
-        kuwo: 80,
-        kugou: 70,
-        migu: 60,
-        qishui: 50,
-        qianqian: 40,
-      };
-      return (priorityMap[b.id] ?? 0) - (priorityMap[a.id] ?? 0);
+      const aIn = PLATFORM_PRIORITY.indexOf(a.id as typeof PLATFORM_PRIORITY[number]);
+      const bIn = PLATFORM_PRIORITY.indexOf(b.id as typeof PLATFORM_PRIORITY[number]);
+      if (aIn === -1 && bIn === -1) return 0;
+      if (aIn === -1) return 1;
+      if (bIn === -1) return -1;
+      return getPriorityRank(a.id) - getPriorityRank(b.id);
     });
   }
 }

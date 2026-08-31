@@ -3,6 +3,7 @@ import { Menu } from 'lucide-react';
 import Sidebar from './Sidebar';
 import PlayerBar from '../player/PlayerBar';
 import MobileNav from './MobileNav';
+import ToastContainer from '@shared/components/Toast';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -78,6 +79,9 @@ export default function Layout({ children }: LayoutProps) {
         <PlayerBar />
         <MobileNav />
       </div>
+
+      {/* v13: 取链降级 / 通用 Toast 通知 */}
+      <ToastContainer />
     </div>
   );
 }

@@ -1,11 +1,16 @@
 import { useState } from 'react';
-import { Settings, Music, Info, Trash2, Check } from 'lucide-react';
+import { Settings, Music, Info, Trash2, Check, Headphones, ListOrdered } from 'lucide-react';
 import { useThemeStore } from '../shared/store/themeStore';
 import { useSettingsStore } from '../shared/store/settingsStore';
 import { useSearchStore } from '../shared/store/searchStore';
 import { usePlayerStore } from '../shared/store/playerStore';
 import { sourceRegistry } from '../providers/music/registry';
 import { Quality } from '../core/types';
+import {
+  PLATFORM_PRIORITY,
+  PLATFORM_DISPLAY_NAMES,
+  PLATFORM_COLORS,
+} from '../core/platformPriority';
 
 type TabId = 'general' | 'music' | 'about';
 
@@ -21,9 +26,13 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const [cleanDone, setCleanDone] = useState<string | null>(null);
 
-  const { preferredQuality, enabledSources, downloadQuality, maxConcurrentDownloads, downloadDir,
-    setPreferredQuality, setSourceEnabled, setDownloadQuality, setMaxConcurrentDownloads, clearAllSettings } =
-    useSettingsStore();
+  const {
+    preferredQuality, enabledSources, downloadQuality, maxConcurrentDownloads, downloadDir,
+    autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause,
+    setPreferredQuality, setSourceEnabled, setDownloadQuality, setMaxConcurrentDownloads,
+    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause,
+    clearAllSettings,
+  } = useSettingsStore();
 
   const sources = sourceRegistry.getAll();
 
@@ -61,7 +70,7 @@ export default function SettingsPage() {
   const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => (
     <button
       onClick={() => onChange(!on)}
-      className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 focus-ring ${on ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
+      className={`relative w-11 h-6 rounded-full transition-colors flex-s-shrink-0 focus-ring ${on ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
       role="switch"
       aria-checked={on}
     >
@@ -120,6 +129,40 @@ export default function SettingsPage() {
 
         {activeTab === 'music' && (
           <>
+            {/* 后台播放 / 通知栏控制 */}
+            <div className="yinliu-card">
+              <h3 className="font-semibold mb-1 text-[var(--text-primary)] flex items-center gap-2">
+                <Headphones className="w-4 h-4" />
+                后台播放与通知栏
+              </h3>
+              <p className="text-xs text-[var(--text-tertiary)] mb-4">
+                控制 App 切后台、锁屏时的播放行为与系统通知栏媒体卡片
+              </p>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-4 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
+                  <div className="pr-3">
+                    <div className="font-medium text-sm text-[var(--text-primary)]">显示通知栏媒体卡片</div>
+                    <div className="text-xs text-[var(--text-tertiary)] mt-0.5">关闭后系统通知栏 / 锁屏不再显示播放控件</div>
+                  </div>
+                  <Toggle on={enableNotificationControls} onChange={setEnableNotificationControls} />
+                </div>
+                <div className="flex items-center justify-between p-4 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
+                  <div className="pr-3">
+                    <div className="font-medium text-sm text-[var(--text-primary)]">音频焦点恢复后自动续播</div>
+                    <div className="text-xs text-[var(--text-tertiary)] mt-0.5">来电挂断 / 其他音乐 App 退出后自动恢复</div>
+                  </div>
+                  <Toggle on={autoResumeOnAudioFocus} onChange={setAutoResumeOnAudioFocus} />
+                </div>
+                <div className="flex items-center justify-between p-4 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
+                  <div className="pr-3">
+                    <div className="font-medium text-sm text-[var(--text-primary)]">暂停后从通知栏移除</div>
+                    <div className="text-xs text-[var(--text-tertiary)] mt-0.5">关闭则保留通知卡片，便于从通知栏恢复播放</div>
+                  </div>
+                  <Toggle on={dismissNotificationOnPause} onChange={setDismissNotificationOnPause} />
+                </div>
+              </div>
+            </div>
+
             {/* 音源开关：真实生效，关闭后聚合搜索只走启用的源 */}
             <div className="yinliu-card">
               <h3 className="font-semibold mb-1 text-[var(--text-primary)]">音源管理</h3>
@@ -149,6 +192,43 @@ export default function SettingsPage() {
                   );
                 })}
               </div>
+            </div>
+
+            {/* v13: 取链优先级（只读展示） */}
+            <div className="yinliu-card">
+              <h3 className="font-semibold mb-1 text-[var(--text-primary)] flex items-center gap-2">
+                <ListOrdered className="w-4 h-4" />
+                平台取链优先级
+              </h3>
+              <p className="text-xs text-[var(--text-tertiary)] mb-4">
+                同一首歌多平台都支持时，按以下顺序取链；首选失败自动降级到下一平台
+              </p>
+              <ol className="space-y-2">
+                {PLATFORM_PRIORITY.map((sourceId, idx) => (
+                  <li
+                    key={sourceId}
+                    className="flex items-center gap-3 p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]"
+                  >
+                    <span className="flex-shrink-0 w-7 h-7 rounded-full bg-[var(--accent)] text-white text-sm font-semibold flex items-center justify-center">
+                      {idx + 1}
+                    </span>
+                    <span
+                      className={`w-2 h-2 rounded-full flex-shrink-0 ${PLATFORM_COLORS[sourceId] || 'bg-gray-400'}`}
+                    />
+                    <span className="font-medium text-sm text-[var(--text-primary)] flex-1">
+                      {PLATFORM_DISPLAY_NAMES[sourceId] || sourceId}
+                    </span>
+                    {idx === 0 && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--accent)]/15 text-[var(--accent)] font-medium">
+                        首选
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ol>
+              <p className="text-[11px] text-[var(--text-tertiary)] mt-3 leading-relaxed">
+                仅对多平台可用的歌曲生效；单平台歌曲行为不变。降级过程会在播放/下载时通过 Toast 提示。
+              </p>
             </div>
 
             {/* 音质偏好：与播放页音质切换共用同一持久化 */}
@@ -231,7 +311,7 @@ export default function SettingsPage() {
                 >
                   <span className="text-sm text-[var(--text-primary)] flex items-center gap-2">
                     <Trash2 className="w-4 h-4 text-[var(--text-tertiary)]" />
-                    恢复默认设置（含音源开关 / 音质偏好 / 下载设置）
+                    恢复默认设置（含音源开关 / 音质偏好 / 下载设置 / 后台播放）
                   </span>
                   {cleanDone === 'all' && <span className="text-xs text-green-500">已恢复</span>}
                 </button>
@@ -257,6 +337,7 @@ export default function SettingsPage() {
               <p>多音源聚合音乐播放器</p>
               <p>支持平台: 网易云 / QQ音乐 / 酷我 / 酷狗 / 咪咕</p>
               <p>功能: 音乐 / 阅读 / DJ / 本地音乐 / 下载</p>
+              <p className="mt-4 opacity-60">v12 · 新增：系统通知栏媒体控制 · 后台播放保活</p>
             </div>
           </div>
         )}

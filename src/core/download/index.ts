@@ -3,6 +3,8 @@ import { sourceRegistry } from '@providers/music/registry';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { getSqliteDb, flushDatabase } from '@shared/database';
 import { Filesystem, Directory } from '@capacitor/filesystem';
+import { buildFallbackChain, PLATFORM_DISPLAY_NAMES } from '@core/platformPriority';
+import { toast } from '@shared/components/Toast';
 
 function qmc2DecryptBytes(data: Uint8Array): Uint8Array {
   // Kuwo QMC2 格式解密；若全局未注册解密器则透传
@@ -21,10 +23,24 @@ export interface DownloadProgressEvent {
   speed: number;
 }
 
+/**
+ * 单个 source 下的取链结果。
+ * 用于下载引擎内部把「取链」与「下载文件」解耦，方便在多个 source 之间降级。
+ */
+interface ResolvedSourceUrl {
+  sourceId: string;
+  songId: string;
+  url: string;
+  format: string;
+  headers?: Record<string, string>;
+}
+
 export class DownloadEngine {
   private tasks = new Map<string, DownloadTask>();
   private abortControllers = new Map<string, AbortController>();
   private listeners: Record<string, Array<(data: unknown) => void>> = {};
+  /** 任务元数据：除 DownloadTask 之外，记住每条任务的可用源/降级链（仅内存，DB 不持久化） */
+  private taskMeta = new Map<string, { availableSources?: Array<{ sourceId: string; sourceSongId: string }>; title?: string; artist?: string }>();
 
   private emit(event: string, data: unknown) {
     const callbacks = this.listeners[event] || [];
@@ -60,6 +76,7 @@ export class DownloadEngine {
           createdAt: Number(row.created_at || Date.now()),
         };
         this.tasks.set(task.id, task);
+        // 旧任务没有 availableSources 元数据 → 视为单平台，无降级
       }
       stmt.free();
     } catch (err) {
@@ -82,6 +99,8 @@ export class DownloadEngine {
     quality: Quality;
     title: string;
     artist?: string;
+    /** v13: 聚合搜索结果中的可用源列表（用于下载取链降级） */
+    availableSources?: Array<{ sourceId: string; sourceSongId: string }>;
   }): Promise<DownloadTask> {
     const id = `dl_${params.sourceId}_${params.songId}_${params.quality}_${Date.now()}`;
     const task: DownloadTask = {
@@ -101,10 +120,25 @@ export class DownloadEngine {
         && (t.status === 'pending' || t.status === 'downloading')
     );
     if (existing) {
+      // 即使命中已有任务，也补一份元数据（避免旧任务元数据不全）
+      if (params.availableSources && params.availableSources.length > 0) {
+        const meta = this.taskMeta.get(existing.id) || {};
+        meta.availableSources = params.availableSources;
+        meta.title = params.title || meta.title;
+        meta.artist = params.artist || meta.artist;
+        this.taskMeta.set(existing.id, meta);
+      }
       return existing;
     }
 
     this.tasks.set(id, task);
+    if (params.availableSources && params.availableSources.length > 0) {
+      this.taskMeta.set(id, {
+        availableSources: params.availableSources,
+        title: params.title,
+        artist: params.artist,
+      });
+    }
     await this.persistTask(task);
     return task;
   }
@@ -122,14 +156,71 @@ export class DownloadEngine {
     this.emit('stateChange', { taskId, status: 'downloading', task });
 
     try {
-      // 1. 获取播放 URL
-      const source = sourceRegistry.get(task.sourceId);
-      if (!source) {
-        throw new Error(`Source ${task.sourceId} not found`);
+      // 1. 取链（v13: 多平台降级链）
+      const meta = this.taskMeta.get(taskId);
+      const availableIds = (meta?.availableSources || []).map((s) => s.sourceId);
+      const songIdMap = new Map<string, string>();
+      for (const s of meta?.availableSources || []) {
+        songIdMap.set(s.sourceId, s.sourceSongId);
+      }
+      // 兜底：主 songId 在主源下
+      songIdMap.set(task.sourceId, task.songId);
+
+      const chain = buildFallbackChain(task.sourceId, availableIds);
+
+      let resolved: ResolvedSourceUrl | null = null;
+      let lastError: unknown = null;
+
+      for (let i = 0; i < chain.length; i++) {
+        const trySourceId = chain[i];
+        const source = sourceRegistry.get(trySourceId);
+        if (!source || !source.enabled) continue;
+        const trySongId = songIdMap.get(trySourceId) || task.songId;
+
+        try {
+          const playUrl = await source.getPlayUrl(trySongId, task.quality);
+          if (i > 0) {
+            // 有降级：提示用户
+            const fromName = PLATFORM_DISPLAY_NAMES[chain[i - 1]] || chain[i - 1];
+            const toName = PLATFORM_DISPLAY_NAMES[trySourceId] || trySourceId;
+            const reason = lastError instanceof Error ? lastError.message : '不可用';
+            console.warn(
+              `[DownloadEngine] Link fallback: ${chain[i - 1]} → ${trySourceId} (${reason})`
+            );
+            toast.info(
+              `下载已切换到 ${toName}`,
+              `${fromName} 取链失败（${reason}），已自动降级到 ${toName}`
+            );
+          }
+          resolved = {
+            sourceId: trySourceId,
+            songId: trySongId,
+            url: playUrl.url,
+            format: playUrl.format,
+            headers: playUrl.headers,
+          };
+          // 把实际取到的源回写到 task（便于后续断点续传知道该找哪个源）
+          task.sourceId = trySourceId;
+          task.songId = trySongId;
+          task.url = playUrl.url;
+          break;
+        } catch (err) {
+          lastError = err;
+          console.warn(
+            `[DownloadEngine] getPlayUrl failed on ${trySourceId}:`,
+            err instanceof Error ? err.message : err
+          );
+          // 继续降级
+        }
       }
 
-      const playUrl = await source.getPlayUrl(task.songId, task.quality);
-      task.url = playUrl.url;
+      if (!resolved) {
+        throw new Error(
+          `All ${chain.length} sources failed for download: ${
+            lastError instanceof Error ? lastError.message : 'unknown'
+          }`
+        );
+      }
 
       // 2. 确保下载目录存在
       const dir = 'yinliu/downloads';
@@ -140,8 +231,8 @@ export class DownloadEngine {
       }
 
       // 3. 构建文件路径
-      const ext = playUrl.format || 'mp3';
-      const fileName = `${task.sourceId}_${task.songId}_${task.quality}.${ext}`;
+      const ext = resolved.format || 'mp3';
+      const fileName = `${resolved.sourceId}_${resolved.songId}_${task.quality}.${ext}`;
       const filePath = `${dir}/${fileName}`;
       task.filePath = filePath;
 
@@ -149,10 +240,10 @@ export class DownloadEngine {
       const abortCtrl = new AbortController();
       this.abortControllers.set(taskId, abortCtrl);
 
-      const response = await platformFetch(playUrl.url, {
+      const response = await platformFetch(resolved.url, {
         method: 'GET',
         signal: abortCtrl.signal,
-        headers: playUrl.headers || {},
+        headers: resolved.headers || {},
         responseType: 'arraybuffer',
       });
 
@@ -301,6 +392,7 @@ export class DownloadEngine {
     }
 
     this.tasks.delete(taskId);
+    this.taskMeta.delete(taskId);
 
     // 从数据库删除
     try {
