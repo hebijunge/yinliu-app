@@ -11,6 +11,7 @@ const CATEGORY_LABELS: Record<DebugLogCategory, string> = {
   download: '下载',
   click: '点击',
   init: '初始化',
+  streaming: '流式播放',
 };
 
 const CATEGORY_COLORS: Record<DebugLogCategory, string> = {
@@ -21,6 +22,7 @@ const CATEGORY_COLORS: Record<DebugLogCategory, string> = {
   download: 'bg-orange-500/15 text-orange-500',
   click: 'bg-pink-500/15 text-pink-500',
   init: 'bg-gray-500/15 text-gray-500',
+  streaming: 'bg-teal-500/15 text-teal-500',
 };
 
 const LEVEL_COLORS: Record<DebugLogLevel, string> = {

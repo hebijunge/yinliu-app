@@ -20,8 +20,7 @@ import {
 import { notifyPlaybackStateChange } from './audioFocus';
 import { playHistoryService } from '@shared/services/PlayHistoryService';
 import { debugLogger } from '@shared/utils/debugLogger';
-import { streamCache } from './streamCache';
-import { Capacitor } from '@capacitor/core';
+import { streamingAudioPlayer, type StreamingState } from '@core/streaming';
 
 export type PlayerState = 'idle' | 'loading' | 'playing' | 'paused' | 'error';
 
@@ -78,6 +77,12 @@ export class PlayerEngine {
   queue: PlayerTrack[] = [];
   currentIndex: number = -1;
   lastQuality: Quality = Quality.STANDARD;
+
+  // v14.4: 流式播放状态
+  private isStreaming = false;
+  private streamingCurrentUrl = '';
+  private streamingHeaders: Record<string, string> = {};
+  private prefetchTriggered = false;
 
   private emit<K extends keyof PlayerEventMap>(event: K, data: PlayerEventMap[K]) {
     const callbacks = this.listeners[event] || [];
@@ -306,36 +311,6 @@ export class PlayerEngine {
           quality,
           format: playUrl.format,
         });
-
-        // 原生平台：绕过 WebView 防盗链，先缓存再播放
-        if (Capacitor.isNativePlatform()) {
-          try {
-            const cachedUrl = await streamCache.fetchAndCache(
-              playUrl.url,
-              trySourceId,
-              trySongId,
-              quality,
-              playUrl.format,
-              playUrl.headers
-            );
-            return {
-              url: cachedUrl,
-              isLocal: true,
-              result: playUrl,
-              actualSourceId: trySourceId,
-            };
-          } catch (cacheErr) {
-            const cacheErrMsg = cacheErr instanceof Error ? cacheErr.message : String(cacheErr);
-            debugLogger.warn('player', `streamCache 失败，回退 CDN 直链: ${track.title}`, {
-              sourceId: trySourceId,
-              error: cacheErrMsg,
-            });
-            // 回退到 CDN 直链（在 WebView 中可能仍失败，但保留原行为）
-            return { url: playUrl.url, isLocal: false, result: playUrl, actualSourceId: trySourceId };
-          }
-        }
-
-        // Web / Tauri：CDN 直链通常可用
         return { url: playUrl.url, isLocal: false, result: playUrl, actualSourceId: trySourceId };
       } catch (err) {
         lastError = err;
@@ -361,6 +336,7 @@ export class PlayerEngine {
     this.lastQuality = quality;
     this.setState('loading');
     this.currentTrack = track;
+    this.prefetchTriggered = false;
 
     // 提前把 metadata 推到系统（用户切歌时立即更新通知）
     void updateMetadata({
@@ -376,6 +352,12 @@ export class PlayerEngine {
       this.currentBlobUrl = null;
     }
 
+    // v14.4: 清理流式播放器状态
+    if (this.isStreaming) {
+      await streamingAudioPlayer.reset();
+      this.isStreaming = false;
+    }
+
     debugLogger.info('player', `开始播放: ${track.title}`, {
       artist: track.artist,
       sourceId: track.sourceId,
@@ -389,7 +371,13 @@ export class PlayerEngine {
         this.currentBlobUrl = url;
       }
 
-      await this.loadAndPlay(url, track);
+      // v14.4: 在线播放且不是本地文件/已下载文件 → 使用流式播放
+      if (!isLocal && track.sourceId !== 'local') {
+        await this.loadAndPlayStreaming(url, result.headers || {}, track, result.format);
+      } else {
+        await this.loadAndPlay(url, track);
+      }
+
       this.emit('trackLoaded', { track, result, actualSourceId });
 
       // 记录播放历史（去重由 service 处理）
@@ -473,8 +461,115 @@ export class PlayerEngine {
     }
   }
 
+  // v14.4: 流式播放加载
+  private async loadAndPlayStreaming(
+    url: string,
+    headers: Record<string, string>,
+    track: PlayerTrack,
+    format?: string
+  ): Promise<void> {
+    this.isStreaming = true;
+    this.streamingCurrentUrl = url;
+    this.streamingHeaders = headers;
+
+    const cacheKey = `${track.sourceId}_${track.sourceSongId}_${this.lastQuality}`;
+
+    // 设置流式播放器回调
+    streamingAudioPlayer.setCallbacks({
+      onStateChange: (streamState: StreamingState) => {
+        const stateMap: Record<StreamingState, PlayerState> = {
+          idle: 'idle',
+          loading: 'loading',
+          ready: 'loading',
+          playing: 'playing',
+          paused: 'paused',
+          buffering: 'loading',
+          seeking: 'loading',
+          completed: 'idle',
+          error: 'error',
+        };
+        const mapped = stateMap[streamState];
+        if (mapped && mapped !== this.state) {
+          this.setState(mapped, streamState === 'playing' ? 'user' : 'engine');
+        }
+      },
+      onProgress: (currentTime: number, duration: number) => {
+        this.emit('progress', {
+          currentTime,
+          duration,
+          progress: duration > 0 ? currentTime / duration : 0,
+        });
+        void updatePosition(currentTime, duration);
+
+        // 播放过半时预取下一首
+        if (duration > 0 && currentTime / duration > 0.5 && !this.prefetchTriggered) {
+          this.prefetchTriggered = true;
+          void this.prefetchNextTrack();
+        }
+      },
+      onError: (message: string) => {
+        this.setState('error', 'system');
+        this.emit('error', { message });
+        debugLogger.error('player', `流式播放错误: ${track.title}`, { message });
+      },
+      onEnded: () => {
+        this.setState('idle', 'engine');
+        this.stopProgressTracking();
+        this.emit('ended', undefined);
+        debugLogger.info('player', `流式播放结束: ${track.title}`);
+      },
+      onCanPlay: () => {
+        this.setState('playing', 'user');
+        this.startProgressTracking();
+      },
+    });
+
+    await streamingAudioPlayer.load({
+      url,
+      headers,
+      cacheKey,
+      format,
+    });
+  }
+
+  // v14.4: 预取下一首首块
+  private async prefetchNextTrack(): Promise<void> {
+    const nextIndex = this.currentIndex + 1;
+    if (nextIndex < 0 || nextIndex >= this.queue.length) return;
+
+    const nextTrack = this.queue[nextIndex];
+    if (!nextTrack || nextTrack.sourceId === 'local') return;
+
+    debugLogger.info('player', 'Prefetching next track', {
+      title: nextTrack.title,
+      index: nextIndex,
+    });
+
+    try {
+      // 取链下一首
+      const { url, result } = await this.resolvePlayUrl(nextTrack, this.lastQuality);
+      const cacheKey = `${nextTrack.sourceId}_${nextTrack.sourceSongId}_${this.lastQuality}`;
+
+      await streamingAudioPlayer.prefetchNext({
+        url,
+        headers: result.headers || {},
+        cacheKey,
+        format: result.format,
+      });
+    } catch (err) {
+      debugLogger.warn('player', 'Prefetch next track failed', {
+        title: nextTrack.title,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   pause(): void {
-    this.audio?.pause();
+    if (this.isStreaming) {
+      streamingAudioPlayer.pause();
+    } else {
+      this.audio?.pause();
+    }
     this.setState('paused', 'user');
     this.stopProgressTracking();
     debugLogger.info('player', '用户暂停播放', {
@@ -483,13 +578,21 @@ export class PlayerEngine {
   }
 
   resume(): void {
-    this.audio?.play();
+    if (this.isStreaming) {
+      void streamingAudioPlayer.play();
+    } else {
+      this.audio?.play();
+    }
     debugLogger.info('player', '用户恢复播放', {
       track: this.currentTrack?.title,
     });
   }
 
   stop(): void {
+    if (this.isStreaming) {
+      void streamingAudioPlayer.reset();
+      this.isStreaming = false;
+    }
     if (this.audio) {
       this.audio.pause();
       this.audio.currentTime = 0;
@@ -503,14 +606,20 @@ export class PlayerEngine {
   }
 
   seek(time: number): void {
-    if (this.audio) {
+    if (this.isStreaming) {
+      void streamingAudioPlayer.seek(time);
+    } else if (this.audio) {
       this.audio.currentTime = Math.max(0, Math.min(time, this.audio.duration || 0));
     }
   }
 
   setVolume(volume: number): void {
+    const v = Math.max(0, Math.min(1, volume));
+    if (this.isStreaming) {
+      streamingAudioPlayer.setVolume(v);
+    }
     if (this.audio) {
-      this.audio.volume = Math.max(0, Math.min(1, volume));
+      this.audio.volume = v;
     }
   }
 
@@ -519,10 +628,16 @@ export class PlayerEngine {
   }
 
   getCurrentTime(): number {
+    if (this.isStreaming) {
+      return streamingAudioPlayer.getCurrentTime();
+    }
     return this.audio?.currentTime ?? 0;
   }
 
   getDuration(): number {
+    if (this.isStreaming) {
+      return streamingAudioPlayer.getDuration();
+    }
     return this.audio?.duration ?? 0;
   }
 
@@ -572,7 +687,7 @@ export class PlayerEngine {
     }
 
     const track = this.currentTrack;
-    const resumeTime = this.audio?.currentTime ?? 0;
+    const resumeTime = this.getCurrentTime();
 
     debugLogger.info('player', `切换音质: ${track.title} → ${quality}`, {
       fromQuality: this.lastQuality,
@@ -581,9 +696,9 @@ export class PlayerEngine {
 
     const result = await this.playTrack(track, quality);
 
-    if (resumeTime > 0 && this.audio) {
+    if (resumeTime > 0) {
       try {
-        this.audio.currentTime = Math.min(resumeTime, this.audio.duration || resumeTime);
+        this.seek(Math.min(resumeTime, this.getDuration() || resumeTime));
       } catch {
         // seek 失败不影响播放
       }

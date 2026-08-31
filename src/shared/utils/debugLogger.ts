@@ -52,7 +52,8 @@ export type DebugLogCategory =
   | 'player'
   | 'download'
   | 'click'
-  | 'init';
+  | 'init'
+  | 'streaming';
 
 export interface DebugLogEntry {
   id: string;
