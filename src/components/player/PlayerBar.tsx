@@ -7,6 +7,7 @@ import { usePlayerStore } from '../../shared/store/playerStore';
 import { playerEngine } from '../../core/player';
 import { lyricsManager } from '../../modules/music/lyrics';
 import { downloadEngine } from '../../core/download';
+import { useSettingsStore } from '../../shared/store/settingsStore';
 import FullScreenPlayer from './FullScreenPlayer';
 import QueuePanel from './QueuePanel';
 import type { ParsedLyrics } from '../../modules/music/lyrics';
@@ -65,7 +66,8 @@ export default function PlayerBar() {
 
   const handleDownload = useCallback(() => {
     if (!currentTrack) return;
-    const quality = usePlayerStore.getState().currentQuality;
+    // 使用设置页的默认下载音质（真实生效）
+    const quality = useSettingsStore.getState().downloadQuality;
     downloadEngine.addDownload(
       currentTrack.sourceSongId,
       currentTrack.sourceId,

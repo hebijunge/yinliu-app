@@ -36,10 +36,29 @@ export class DownloadEngine {
   private queue: DownloadQueueItem[] = [];
   private activeDownloads = 0;
   private maxConcurrent: number;
+  private defaultQuality: Quality = Quality.STANDARD;
   private listeners: Map<string, Array<(task: DownloadQueueItem) => void>> = new Map();
 
   constructor(options: DownloadEngineOptions = {}) {
     this.maxConcurrent = options.maxConcurrent || 3;
+  }
+
+  /** 设置最大并发下载数（设置页实时生效） */
+  setMaxConcurrent(count: number): void {
+    const n = Math.max(1, Math.min(10, Math.floor(count) || 1));
+    this.maxConcurrent = n;
+    // 并发上限调大后尝试继续处理队列
+    this.processQueue();
+  }
+
+  /** 设置默认下载音质（设置页实时生效） */
+  setDefaultQuality(quality: Quality): void {
+    this.defaultQuality = quality;
+  }
+
+  /** 获取默认下载音质 */
+  getDefaultQuality(): Quality {
+    return this.defaultQuality;
   }
 
   // 事件监听

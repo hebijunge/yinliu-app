@@ -1,7 +1,14 @@
 import { create } from 'zustand';
 import { Quality } from '@core/types';
+import { downloadEngine } from '@core/download';
 
 const STORAGE_KEY = 'yinliu.settings.v1';
+
+/** 将下载设置应用到下载引擎，保证设置真实生效 */
+function applyDownloadSettings(quality: Quality, concurrency: number): void {
+  downloadEngine.setMaxConcurrent(concurrency);
+  downloadEngine.setDefaultQuality(quality);
+}
 
 export interface SettingsPersisted {
   preferredQuality?: Quality;
@@ -74,11 +81,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setDownloadQuality: (downloadQuality) => {
     set({ downloadQuality });
+    applyDownloadSettings(downloadQuality, get().maxConcurrentDownloads);
     persist(get());
   },
 
   setMaxConcurrentDownloads: (maxConcurrentDownloads) => {
     set({ maxConcurrentDownloads });
+    applyDownloadSettings(get().downloadQuality, maxConcurrentDownloads);
     persist(get());
   },
 
@@ -95,4 +104,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 /** 某音源当前是否启用（缺省视为启用） */
 export function isSourceEnabled(enabledSources: Record<string, boolean>, sourceId: string): boolean {
   return enabledSources[sourceId] !== false;
+}
+
+// 启动时把持久化的下载设置应用到下载引擎，保证重启后设置依然生效
+if (typeof window !== 'undefined') {
+  const s = useSettingsStore.getState();
+  applyDownloadSettings(s.downloadQuality, s.maxConcurrentDownloads);
 }
