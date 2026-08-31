@@ -160,27 +160,45 @@ export class KugouSource extends BaseHttpSource {
       },
     });
 
-    // 海棠resolve-url（POST JSON）—— 仅用于 lossless 档，HIGH/HIGHER 不走海棠
+    // 海棠resolve-url（POST JSON）—— 仅用于 lossless 档，超时 3 秒
     if (quality === Quality.LOSSLESS || quality === Quality.HIFI || quality === Quality.HIRES) {
       candidates.push({
         url: this.HAITANG_URL,
         method: 'POST',
-        timeout: 10000,
+        timeout: 3000,
         priority: 2,
+        key: 'haitang',
         headers: {
           'Content-Type': 'application/json',
           Referer: 'https://musicserver.haitangw.cc/',
         },
+        body: JSON.stringify({ source: 'kg', rid: hash, level }),
         resolve: async (resp) => {
           const data = await resp.json().catch(() => null);
           if (!data?.url) return null;
-          return {
-            url: data.url,
-            quality,
-            bitrate: this.levelToBitrate(level),
-            format: this.detectFormat('', data.url),
-            accurate: true,
-          };
+          const url = data.url as string;
+
+          // HEAD 音质校验（带 2 秒独立超时）
+          let isFlac = false;
+          let sizeMb = 0;
+          try {
+            const head = await platformFetch(url, {
+              method: 'HEAD',
+              timeout: 2000,
+            });
+            const ct = head.headers.get('content-type') || '';
+            const cl = head.headers.get('content-length') || '0';
+            const sizeBytes = parseInt(cl, 10) || 0;
+            sizeMb = sizeBytes / (1024 * 1024);
+            isFlac = ct.includes('flac') || ct.includes('x-flac');
+          } catch {
+            // HEAD 失败不阻断，降级为 inaccurate 返回
+          }
+
+          if (!isFlac || sizeMb < 10) {
+            return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
+          }
+          return { url, quality, bitrate: this.levelToBitrate(level), format: 'flac', accurate: true };
         },
       });
     }
@@ -188,99 +206,7 @@ export class KugouSource extends BaseHttpSource {
     return candidates;
   }
 
-  /**
-   * 覆写 getPlayUrl：
-   * 1. 仅 lossless 档走海棠
-   * 2. 优先返回 accurate 候选，无则降级首非空
-   */
-  async getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult> {
-    const hash = this.getHashFromId(songId);
-    const level = this.levelOf(quality);
-
-    const controller = new AbortController();
-    const candidates: Promise<PlayUrlResult | null>[] = [];
-
-    // 官方 getSongInfo.php（所有档均参与）
-    candidates.push(this.fetchOfficial(hash, quality, controller.signal));
-
-    // 海棠：仅 lossless 档参与
-    if (quality === Quality.LOSSLESS || quality === Quality.HIFI || quality === Quality.HIRES) {
-      candidates.push(this.fetchHaitang(hash, level, quality, controller.signal));
-    }
-
-    const results = await Promise.allSettled(candidates);
-    const matched = results
-      .filter((r): r is PromiseFulfilledResult<PlayUrlResult | null> => r.status === 'fulfilled')
-      .map((r) => r.value)
-      .filter((r): r is PlayUrlResult => r !== null);
-
-    // 优先返回 accurate 候选
-    const accurate = matched.find((r) => r.accurate !== false);
-    if (accurate) {
-      controller.abort();
-      return accurate;
-    }
-
-    // 无 accurate 则降级首非空
-    if (matched.length > 0) {
-      controller.abort();
-      return matched[0];
-    }
-
-    throw new Error(`酷狗取链失败：所有候选均不可用 (hash=${hash})`);
-  }
-
-  private async fetchOfficial(hash: string, quality: Quality, signal: AbortSignal): Promise<PlayUrlResult | null> {
-    try {
-      const resp = await platformFetch(`${this.GET_SONG_INFO}?hash=${hash}&cmd=playInfo`, {
-        headers: { Referer: this.M_REF },
-        signal,
-      });
-      const data = await resp.json().catch(() => null);
-      if (!data?.url) return null;
-      const url = data.url as string;
-      if (!url.startsWith('http')) return null;
-      return { url, quality, bitrate: 128, format: 'mp3', accurate: true };
-    } catch { return null; }
-  }
-
-  private async fetchHaitang(hash: string, level: string, quality: Quality, signal: AbortSignal): Promise<PlayUrlResult | null> {
-    try {
-      const resp = await platformFetch(this.HAITANG_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Referer: 'https://musicserver.haitangw.cc/',
-        },
-        body: JSON.stringify({ source: 'kg', rid: hash, level }),
-        signal,
-      });
-      const data = await resp.json().catch(() => null);
-      if (!data?.url) return null;
-      const url = data.url as string;
-
-      // HEAD 音质校验：Content-Type + Content-Length
-      const head = await platformFetch(url, { method: 'HEAD', signal }).catch(() => null);
-      const ct = head?.headers.get('content-type') || '';
-      const cl = head?.headers.get('content-length') || '0';
-      const sizeBytes = parseInt(cl, 10) || 0;
-      const sizeMb = sizeBytes / (1024 * 1024);
-
-      const isFlac = ct.includes('flac') || ct.includes('x-flac');
-      const isMpeg = ct.includes('mpeg') || ct.includes('mp3');
-
-      // lossless 请求必须返回 FLAC 且 >10MB 才判 accurate
-      if (quality === Quality.LOSSLESS || quality === Quality.HIFI || quality === Quality.HIRES) {
-        if (!isFlac || sizeMb < 10) {
-          return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
-        }
-        return { url, quality, bitrate: this.levelToBitrate(level), format: 'flac', accurate: true };
-      }
-
-      // 非 lossless 档不应走到海棠（已在 getPlayUrl 中过滤），兜底标 inaccurate
-      return { url, quality, bitrate: 128, format: isMpeg ? 'mp3' : 'mp3', accurate: false };
-    } catch { return null; }
-  }
+  // getPlayUrl 使用 BaseHttpSource 的优化版 linkRace（并行竞速 + 成功通道记忆 + 去重锁）
 
   private getHashFromId(songId: string): string {
     // 如果songId是32位hex，直接返回

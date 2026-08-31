@@ -86,6 +86,8 @@ export class PlayerEngine {
 
   // v16: 预加载缓存（url + blobUrl + actualSourceId）
   private prefetchCache = new Map<string, { url: string; result: PlayUrlResult; actualSourceId: string }>();
+  // v14.5: 播放去重 —— 当前正在进行的 resolvePlayUrl Promise
+  private resolvePlayUrlPromise: Promise<{ url: string; isLocal: boolean; result: PlayUrlResult; actualSourceId: string }> | null = null;
 
   private emit<K extends keyof PlayerEventMap>(event: K, data: PlayerEventMap[K]) {
     const callbacks = this.listeners[event] || [];
@@ -382,6 +384,14 @@ export class PlayerEngine {
       this.isStreaming = false;
     }
 
+    // v14.5: 播放去重保护 —— 同曲同音质正在加载中，等待现有请求完成
+    const dedupKey = `${track.sourceId}_${track.sourceSongId}_${quality}`;
+    if (this.state === 'loading' && this.currentTrack?.sourceSongId === track.sourceSongId && this.resolvePlayUrlPromise) {
+      debugLogger.info('player', `播放去重等待: ${track.title}`, { dedupKey });
+      const { result } = await this.resolvePlayUrlPromise;
+      return result;
+    }
+
     debugLogger.info('player', `开始播放: ${track.title}`, {
       artist: track.artist,
       sourceId: track.sourceId,
@@ -389,7 +399,9 @@ export class PlayerEngine {
     });
 
     try {
-      const { url, isLocal, result, actualSourceId } = await this.resolvePlayUrl(track, quality);
+      const resolvePromise = this.resolvePlayUrl(track, quality);
+      this.resolvePlayUrlPromise = resolvePromise;
+      const { url, isLocal, result, actualSourceId } = await resolvePromise;
 
       if (isLocal) {
         this.currentBlobUrl = url;

@@ -3,10 +3,19 @@ import { Quality } from '@core/types';
 import type { SearchParams, SearchResult, PlayUrlResult, SongDetail, HealthStatus } from '@core/types';
 import { YinliuError, ErrorCode, qualityRank } from '@core/types';
 import { platformFetch } from '@shared/utils/platformFetch';
+import { debugLogger } from '@shared/utils/debugLogger';
 
 export interface ResolvedCandidate extends EndpointCandidate {
   /** 自定义解析函数：fetch响应 → PlayUrlResult | null */
   resolve?: (response: Response) => Promise<PlayUrlResult | null>;
+  /** 候选标识（用于成功通道记忆），默认使用 url */
+  key?: string;
+}
+
+/** 成功通道记忆条目 */
+interface SuccessMemoryEntry {
+  candidateKey: string;
+  timestamp: number;
 }
 
 export abstract class BaseHttpSource implements MusicSource {
@@ -25,77 +34,187 @@ export abstract class BaseHttpSource implements MusicSource {
    */
   protected abstract buildEndpointCandidates(songId: string, quality: Quality): ResolvedCandidate[];
 
+  /** 全局成功通道记忆：sourceId → 上次成功的 candidateKey */
+  private static successMemory = new Map<string, SuccessMemoryEntry>();
+  /** 全局去重锁：sourceId_songId_quality → 正在进行的 Promise */
+  private static pendingLocks = new Map<string, Promise<PlayUrlResult>>();
+  /** 成功通道记忆有效期（毫秒） */
+  private static readonly MEMORY_TTL = 24 * 60 * 60 * 1000; // 24小时
+
   async getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult> {
+    const lockKey = `${this.id}_${songId}_${quality}`;
+
+    // 去重保护：同曲同音质正在取链中，直接等待已有请求
+    const existing = BaseHttpSource.pendingLocks.get(lockKey);
+    if (existing) {
+      debugLogger.info('player', `取链去重复用: ${this.id} · ${songId}`, { lockKey });
+      return existing;
+    }
+
     const candidates = this.buildEndpointCandidates(songId, quality);
     if (candidates.length === 0) {
       throw new YinliuError(ErrorCode.LINK_RACE_FAILED, `No endpoints for ${this.id}`, 503);
     }
-    return await this.linkRace(candidates, quality);
+
+    const racePromise = this.linkRace(candidates, quality);
+    BaseHttpSource.pendingLocks.set(lockKey, racePromise);
+
+    racePromise.finally(() => {
+      BaseHttpSource.pendingLocks.delete(lockKey);
+    });
+
+    return racePromise;
   }
 
   /**
-   * 并发竞速取链。
-   * 支持两种候选：
-   * 1. 带自定义 resolve 函数：fetch后调用resolve解析响应（适用于返回JSON的API端点）
-   * 2. 不带resolve：直接返回URL作为音频直链
+   * 并发竞速取链（v14.5 优化版）。
+   * 核心改进：
+   * 1. 一成功立即返回，不再等待所有 promise settle
+   * 2. 成功通道记忆：优先尝试上次成功的候选
+   * 3. 每个候选独立 timeout，超时即放弃
+   * 4. 支持 POST body
    */
   protected async linkRace(candidates: ResolvedCandidate[], targetQuality: Quality): Promise<PlayUrlResult> {
-    const controller = new AbortController();
+    if (candidates.length === 0) {
+      throw new YinliuError(ErrorCode.LINK_RACE_FAILED, `No endpoints for ${this.id}`, 503);
+    }
 
-    const promises = candidates.map(async (c): Promise<PlayUrlResult | null> => {
-      try {
-        const response = await platformFetch(c.url, {
-          method: c.method,
-          headers: c.headers,
-          signal: controller.signal,
-          redirect: 'follow',
+    // 读取成功通道记忆
+    const memory = BaseHttpSource.successMemory.get(this.id);
+    const now = Date.now();
+    const hasValidMemory = memory && (now - memory.timestamp) < BaseHttpSource.MEMORY_TTL;
+
+    // 如果有有效记忆，把对应候选排到最前面（同时保留其他候选作为并行备份）
+    let ordered = candidates;
+    if (hasValidMemory) {
+      const prioritized = candidates.filter((c) => (c.key || c.url) === memory!.candidateKey);
+      const others = candidates.filter((c) => (c.key || c.url) !== memory!.candidateKey);
+      ordered = [...prioritized, ...others];
+    }
+
+    // 为每个候选创建一个带独立超时和解析的 promise
+    // 一旦成功立即 resolve，失败/超时自动 reject
+    const candidatePromises = ordered.map((c) =>
+      this.raceOneCandidate(c, targetQuality)
+    );
+
+    // 使用自定义竞速：只要有一个成功就立即返回，不需要等其余完成
+    const result = await this.raceToFirstSuccess(candidatePromises);
+
+    if (result) {
+      // 记录成功通道记忆
+      const r = result as PlayUrlResult & { _candidateKey?: string };
+      const winningKey = r._candidateKey;
+      if (winningKey) {
+        BaseHttpSource.successMemory.set(this.id, {
+          candidateKey: winningKey,
+          timestamp: Date.now(),
         });
+        delete r._candidateKey;
+      }
+      return result;
+    }
 
-        if (!response.ok) return null;
+    throw new YinliuError(ErrorCode.LINK_RACE_FAILED, `Link race failed for ${this.id}`, 503);
+  }
 
-        // 如果有自定义解析函数，使用它
-        if (c.resolve) {
-          const result = await c.resolve(response);
-          if (result && this.validateQuality(result, targetQuality)) {
-            controller.abort();
-            return result;
-          }
-          return null;
-        }
+  /**
+   * 单个候选的取链尝试：带独立超时，成功返回 PlayUrlResult，失败/超时返回 null
+   */
+  private async raceOneCandidate(
+    c: ResolvedCandidate,
+    targetQuality: Quality
+  ): Promise<(PlayUrlResult & { _candidateKey: string }) | null> {
+    const candidateKey = c.key || c.url;
+    const timeout = c.timeout || 8000;
 
-        // 默认：candidate.url 就是音频直链
+    try {
+      const response = await platformFetch(c.url, {
+        method: c.method,
+        headers: c.headers,
+        body: c.body as string | undefined,
+        redirect: 'follow',
+        timeout,
+      });
+
+      if (!response.ok) return null;
+
+      let result: PlayUrlResult | null = null;
+
+      if (c.resolve) {
+        result = await c.resolve(response);
+      } else {
         const contentType = response.headers.get('content-type') || '';
         const contentLength = response.headers.get('content-length');
-
-        const result: PlayUrlResult = {
+        result = {
           url: c.url,
           quality: targetQuality,
           bitrate: this.estimateBitrate(contentLength, targetQuality),
           format: this.detectFormat(contentType, c.url),
           headers: c.headers,
         };
-
-        if (this.validateQuality(result, targetQuality)) {
-          controller.abort();
-          return result;
-        }
-        return null;
-      } catch {
-        return null;
       }
-    });
 
-    const results = await Promise.allSettled(promises);
-    const matched = results
-      .filter((r): r is PromiseFulfilledResult<PlayUrlResult | null> => r.status === 'fulfilled')
-      .map((r) => r.value)
-      .filter((r): r is PlayUrlResult => r !== null);
+      if (result && this.validateQuality(result, targetQuality)) {
+        return { ...result, _candidateKey: candidateKey };
+      }
+      return null;
+    } catch (err) {
+      // 超时或网络错误静默忽略，让其他候选竞争
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('timeout') || msg.includes('Timeout')) {
+        debugLogger.warn('network', `取链候选超时 [${this.id}]`, { url: candidateKey.slice(0, 80), timeout });
+      }
+      return null;
+    }
+  }
 
-    if (matched.length > 0) {
-      return matched[0];
+  /**
+   * 竞速到第一个成功：使用循环 + Promise.race 实现"一成功即返回"
+   * 比 Promise.allSettled 快，因为不需要等所有请求完成
+   */
+  private async raceToFirstSuccess(
+    promises: Promise<(PlayUrlResult & { _candidateKey: string }) | null>[]
+  ): Promise<PlayUrlResult | null> {
+    if (promises.length === 0) return null;
+    if (promises.length === 1) return await promises[0];
+
+    const pending = new Map<number, Promise<(PlayUrlResult & { _candidateKey: string }) | null>>();
+    promises.forEach((p, i) => pending.set(i, p));
+
+    while (pending.size > 0) {
+      // 每次 race 所有剩余 promise
+      const racers = Array.from(pending.values());
+      try {
+        const winner = await Promise.race(racers);
+        if (winner) {
+          return winner;
+        }
+        // winner 为 null 表示该候选失败了，需要移除它继续 race 其他
+        // 找出哪个 promise 完成了
+        const settled = await Promise.allSettled(racers);
+        for (let i = 0; i < settled.length; i++) {
+          const idx = Array.from(pending.keys())[i];
+          const s = settled[i];
+          if (s.status === 'fulfilled' && s.value === null) {
+            pending.delete(idx);
+          } else if (s.status === 'rejected') {
+            pending.delete(idx);
+          }
+        }
+      } catch {
+        // race 中某个 promise reject 了，移除它继续
+        const settled = await Promise.allSettled(racers);
+        const keys = Array.from(pending.keys());
+        for (let i = 0; i < settled.length; i++) {
+          if (settled[i].status === 'rejected') {
+            pending.delete(keys[i]);
+          }
+        }
+      }
     }
 
-    throw new YinliuError(ErrorCode.LINK_RACE_FAILED, `Link race failed for ${this.id}`, 503);
+    return null;
   }
 
   protected validateQuality(result: PlayUrlResult, target: Quality): boolean {

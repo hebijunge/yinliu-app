@@ -16,6 +16,8 @@ export interface PlatformFetchOptions {
   redirect?: 'follow' | 'error' | 'manual';
   /** 响应类型：text（默认）或 arraybuffer（二进制下载） */
   responseType?: 'text' | 'arraybuffer';
+  /** 超时时间（毫秒），默认不超时 */
+  timeout?: number;
 }
 
 /**
@@ -26,10 +28,17 @@ export async function platformFetch(url: string, options: PlatformFetchOptions =
   const isCapacitor = Capacitor.isNativePlatform();
   const startTime = performance.now();
 
-  try {
+  const doFetch = async (): Promise<Response> => {
     const response = isCapacitor
       ? await capacitorFetch(url, options)
       : await browserFetch(url, options);
+    return response;
+  };
+
+  try {
+    const response = options.timeout && options.timeout > 0
+      ? await fetchWithTimeout(doFetch(), options.timeout, options.signal)
+      : await doFetch();
 
     const duration = Math.round(performance.now() - startTime);
     debugLogger.info('network', `请求完成 ${options.method || 'GET'} ${response.status}`, {
@@ -52,6 +61,39 @@ export async function platformFetch(url: string, options: PlatformFetchOptions =
     });
     throw err;
   }
+}
+
+async function fetchWithTimeout(
+  fetchPromise: Promise<Response>,
+  timeoutMs: number,
+  externalSignal?: AbortSignal
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new DOMException(`Request timeout after ${timeoutMs}ms`, 'TimeoutError'));
+    }, timeoutMs);
+
+    if (externalSignal) {
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      if (externalSignal.aborted) {
+        clearTimeout(timer);
+        reject(new DOMException('Aborted', 'AbortError'));
+        return;
+      }
+      externalSignal.addEventListener('abort', onAbort, { once: true });
+
+      fetchPromise
+        .then((res) => { clearTimeout(timer); externalSignal.removeEventListener('abort', onAbort); resolve(res); })
+        .catch((err) => { clearTimeout(timer); externalSignal.removeEventListener('abort', onAbort); reject(err); });
+    } else {
+      fetchPromise
+        .then((res) => { clearTimeout(timer); resolve(res); })
+        .catch((err) => { clearTimeout(timer); reject(err); });
+    }
+  });
 }
 
 function browserFetch(url: string, options: PlatformFetchOptions): Promise<Response> {

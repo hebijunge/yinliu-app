@@ -181,52 +181,7 @@ export class KuwoSource extends BaseHttpSource {
   }
 
   // ===================== 取链（核心）=====================
-
-  /**
-   * 覆写 getPlayUrl：优先返回 accurate 候选，无则降级首非空。
-   */
-  async getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult> {
-    const rid = songId.replace(/^kw_/, '');
-    const candidates = this.buildEndpointCandidates(songId, quality);
-    const controller = new AbortController();
-
-    const promises = candidates.map(async (c): Promise<PlayUrlResult | null> => {
-      try {
-        const response = await platformFetch(c.url, {
-          method: c.method,
-          headers: c.headers,
-          signal: controller.signal,
-          redirect: 'follow',
-        });
-        if (!response.ok) return null;
-        if (c.resolve) {
-          const result = await c.resolve(response);
-          if (result) return result;
-        }
-        return null;
-      } catch { return null; }
-    });
-
-    const results = await Promise.allSettled(promises);
-    const matched = results
-      .filter((r): r is PromiseFulfilledResult<PlayUrlResult | null> => r.status === 'fulfilled')
-      .map((r) => r.value)
-      .filter((r): r is PlayUrlResult => r !== null);
-
-    // 优先返回 accurate 候选（拒绝服务端降级链）
-    const accurate = matched.find((r) => r.accurate !== false);
-    if (accurate) {
-      controller.abort();
-      return accurate;
-    }
-
-    if (matched.length > 0) {
-      controller.abort();
-      return matched[0];
-    }
-
-    throw new Error(`酷我取链失败：所有候选均不可用 (rid=${rid})`);
-  }
+  // getPlayUrl 使用 BaseHttpSource 的优化版 linkRace（并行竞速 + 成功通道记忆 + 去重锁）
 
   protected buildEndpointCandidates(songId: string, quality: Quality): ResolvedCandidate[] {
     const rid = songId.replace(/^kw_/, '');
@@ -265,14 +220,15 @@ export class KuwoSource extends BaseHttpSource {
       },
     });
 
-    // 海棠第三方代理
+    // 海棠第三方代理（超时 3 秒，不阻塞主链路）
     const level = this.haitangLevel(quality);
     const expectedBitrate = this.brToBitrate(br);
     candidates.push({
       url: `${this.HAITANG_HOST}/music/kw.php?id=${rid}&level=${level}&type=mp3`,
       method: 'GET',
-      timeout: 10000,
+      timeout: 3000,
       priority: 2,
+      key: 'haitang',
       resolve: async (resp) => {
         const ct = resp.headers.get('content-type') || '';
         if (!ct.includes('audio') && !ct.includes('octet-stream')) return null;

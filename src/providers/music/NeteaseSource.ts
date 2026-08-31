@@ -136,16 +136,18 @@ export class NeteaseSource extends BaseHttpSource {
       resolve: async (resp) => this.resolveOfficialBr(resp, quality),
     });
 
-    // 海棠第三方代理（POST JSON）
+    // 海棠第三方代理（POST JSON，超时 3 秒）
     candidates.push({
       url: 'https://musicserver.haitangw.cc/v1/music/resolve-url',
       method: 'POST',
-      timeout: 10000,
+      timeout: 3000,
       priority: 2,
+      key: 'haitang',
       headers: {
         'Content-Type': 'application/json',
         Referer: 'https://musicserver.haitangw.cc/',
       },
+      body: JSON.stringify({ source: 'wy', rid: id, level: this.neteaseLevel(quality) }),
       resolve: async (resp) => {
         const data = await resp.json().catch(() => null);
         if (!data?.url) return null;
@@ -157,16 +159,14 @@ export class NeteaseSource extends BaseHttpSource {
         };
       },
     });
-    // 注意：POST body需要在fetch时传入，但这里resolve只处理response。
-    // 实际POST body在linkRace的fetch调用中已经发出，但BaseHttpSource的linkRace没有支持POST body。
-    // 需要改造linkRace或让NeteaseSource覆写getPlayUrl。
 
-    // gdstudio 第三方（GET）
+    // gdstudio 第三方（GET，超时 3 秒）
     candidates.push({
       url: `https://music-api.gdstudio.xyz/api.php?types=url&source=netease&id=${id}&br=${br}`,
       method: 'GET',
-      timeout: 10000,
+      timeout: 3000,
       priority: 2,
+      key: 'gdstudio',
       resolve: async (resp) => {
         const data = await resp.json().catch(() => null);
         const url = data?.url || data?.data?.url;
@@ -175,12 +175,13 @@ export class NeteaseSource extends BaseHttpSource {
       },
     });
 
-    // qijieya 第三方（GET，302直出）
+    // qijieya 第三方（GET，302直出，超时 3 秒）
     candidates.push({
       url: `https://api.qijieya.cn/meting/?type=url&id=${id}&server=netease&br=${br}`,
       method: 'GET',
-      timeout: 10000,
+      timeout: 3000,
       priority: 3,
+      key: 'qijieya',
       resolve: async (resp) => {
         // 302 redirect，最终URL在响应中
         const url = resp.url;
@@ -192,113 +193,7 @@ export class NeteaseSource extends BaseHttpSource {
     return candidates;
   }
 
-  // 覆写getPlayUrl，因为海棠需要POST body
-  async getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult> {
-    const id = songId.replace(/^ne_/, '');
-    const level = this.neteaseLevel(quality);
-    const br = this.neteaseBr(quality);
-
-    const controller = new AbortController();
-    const candidates: Promise<PlayUrlResult | null>[] = [];
-
-    // 官方v1
-    candidates.push(this.fetchOfficialV1(id, level, quality, controller.signal));
-    // 官方br
-    candidates.push(this.fetchOfficialBr(id, br, quality, controller.signal));
-    // 海棠POST
-    candidates.push(this.fetchHaitang(id, level, quality, controller.signal));
-    // gdstudio
-    candidates.push(this.fetchGdstudio(id, br, quality, controller.signal));
-    // qijieya
-    candidates.push(this.fetchQijieya(id, br, quality, controller.signal));
-
-    const results = await Promise.allSettled(candidates);
-    const matched = results
-      .filter((r): r is PromiseFulfilledResult<PlayUrlResult | null> => r.status === 'fulfilled')
-      .map((r) => r.value)
-      .filter((r): r is PlayUrlResult => r !== null);
-
-    // 优先返回 accurate 候选（拒绝服务端降级链）
-    const accurate = matched.find((r) => r.accurate !== false);
-    if (accurate) {
-      controller.abort();
-      return accurate;
-    }
-
-    // 无 accurate 则降级首非空
-    if (matched.length > 0) {
-      controller.abort();
-      return matched[0];
-    }
-
-    throw new Error(`网易云取链失败：所有候选均不可用 (id=${id})`);
-  }
-
-  private async fetchOfficialV1(id: string, level: string, quality: Quality, signal: AbortSignal): Promise<PlayUrlResult | null> {
-    try {
-      const resp = await platformFetch(`${this.HOST}/api/song/enhance/player/url/v1?ids=[${id}]&level=${level}&encodeType=flac`, {
-        headers: { Cookie: this.VIP_COOKIE, Referer: this.REF },
-        signal,
-      });
-      return this.resolveOfficialV1(resp, quality);
-    } catch { return null; }
-  }
-
-  private async fetchOfficialBr(id: string, br: number, quality: Quality, signal: AbortSignal): Promise<PlayUrlResult | null> {
-    try {
-      const resp = await platformFetch(`${this.HOST}/api/song/enhance/player/url?ids=[${id}]&br=${br}`, {
-        headers: { Cookie: this.VIP_COOKIE, Referer: this.REF },
-        signal,
-      });
-      return this.resolveOfficialBr(resp, quality);
-    } catch { return null; }
-  }
-
-  private async fetchHaitang(id: string, level: string, quality: Quality, signal: AbortSignal): Promise<PlayUrlResult | null> {
-    try {
-      const resp = await platformFetch('https://musicserver.haitangw.cc/v1/music/resolve-url', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Referer: 'https://musicserver.haitangw.cc/',
-        },
-        body: JSON.stringify({ source: 'wy', rid: id, level }),
-        signal,
-      });
-      const data = await resp.json().catch(() => null);
-      if (!data?.url) return null;
-      return {
-        url: data.url,
-        quality,
-        bitrate: this.levelToBitrate(level),
-        format: this.detectFormat('', data.url),
-      };
-    } catch { return null; }
-  }
-
-  private async fetchGdstudio(id: string, br: number, quality: Quality, signal: AbortSignal): Promise<PlayUrlResult | null> {
-    try {
-      const resp = await platformFetch(`https://music-api.gdstudio.xyz/api.php?types=url&source=netease&id=${id}&br=${br}`, {
-        signal,
-      });
-      const data = await resp.json().catch(() => null);
-      const url = data?.url || data?.data?.url;
-      if (!url) return null;
-      return { url, quality, bitrate: this.brToBitrate(br), format: this.detectFormat('', url) };
-    } catch { return null; }
-  }
-
-  private async fetchQijieya(id: string, br: number, quality: Quality, signal: AbortSignal): Promise<PlayUrlResult | null> {
-    try {
-      const resp = await platformFetch(`https://api.qijieya.cn/meting/?type=url&id=${id}&server=netease&br=${br}`, {
-        signal,
-        redirect: 'follow',
-      });
-      const url = resp.url;
-      if (!url || !url.startsWith('http')) return null;
-      return { url, quality, bitrate: this.brToBitrate(br), format: this.detectFormat('', url) };
-    } catch { return null; }
-  }
+  // getPlayUrl 使用 BaseHttpSource 的优化版 linkRace（并行竞速 + 成功通道记忆 + 去重锁）
 
   private async resolveOfficialV1(resp: Response, quality: Quality): Promise<PlayUrlResult | null> {
     const data = await resp.json().catch(() => null);
