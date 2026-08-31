@@ -1,16 +1,36 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, ListMusic, Mic2, Download } from 'lucide-react';
+import {
+  Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
+  ListMusic, Mic2, Download, Repeat, Repeat1, Shuffle,
+} from 'lucide-react';
 import { usePlayerStore } from '../../shared/store/playerStore';
 import { playerEngine } from '../../core/player';
 import { lyricsManager } from '../../modules/music/lyrics';
 import { downloadEngine } from '../../core/download';
 import FullScreenPlayer from './FullScreenPlayer';
+import QueuePanel from './QueuePanel';
 import type { ParsedLyrics } from '../../modules/music/lyrics';
+import type { RepeatMode } from '../../shared/store/playerStore';
+
+const MODE_ICONS: Record<RepeatMode, typeof Repeat> = {
+  sequence: ListMusic,
+  'repeat-all': Repeat,
+  'repeat-one': Repeat1,
+  shuffle: Shuffle,
+};
+
+const MODE_LABELS: Record<RepeatMode, string> = {
+  sequence: '顺序播放',
+  'repeat-all': '列表循环',
+  'repeat-one': '单曲循环',
+  shuffle: '随机播放',
+};
 
 export default function PlayerBar() {
-  const { state, currentTrack, currentTime, duration, volume, isMuted } = usePlayerStore();
+  const { state, currentTrack, currentTime, duration, volume, isMuted, queue, repeatMode } = usePlayerStore();
   const [showFullScreen, setShowFullScreen] = useState(false);
   const [showLyrics, setShowLyrics] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
   const [lyrics, setLyrics] = useState<ParsedLyrics | null>(null);
   const [currentLineIndex, setCurrentLineIndex] = useState(-1);
   const isPlaying = state === 'playing';
@@ -45,7 +65,6 @@ export default function PlayerBar() {
 
   const handleDownload = useCallback(() => {
     if (!currentTrack) return;
-    const { usePlayerStore } = require('../../shared/store/playerStore');
     const quality = usePlayerStore.getState().currentQuality;
     downloadEngine.addDownload(
       currentTrack.sourceSongId,
@@ -58,6 +77,12 @@ export default function PlayerBar() {
       }
     );
   }, [currentTrack]);
+
+  const handlePrev = () => playerEngine.playPrevious();
+  const handleNext = () => playerEngine.playNext();
+  const handleCycleMode = () => usePlayerStore.getState().cycleRepeatMode();
+
+  const ModeIcon = MODE_ICONS[repeatMode];
 
   return (
     <>
@@ -91,6 +116,9 @@ export default function PlayerBar() {
           </div>
         </div>
       )}
+
+      {/* Queue Panel */}
+      {showQueue && <QueuePanel onClose={() => setShowQueue(false)} />}
 
       <div className="bg-[var(--bg-secondary)]/95 backdrop-blur-md border-t border-[var(--border-subtle)] px-5 py-2.5">
         {/* Progress bar */}
@@ -138,9 +166,9 @@ export default function PlayerBar() {
           {/* Controls */}
           <div className="flex items-center gap-1.5">
             <button
-              onClick={() => playerEngine.seek(Math.max(0, currentTime - 10))}
+              onClick={handlePrev}
               className="p-2 rounded-full hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors focus-ring"
-              title="后退 10 秒"
+              title="上一首"
             >
               <SkipBack className="w-4 h-4" />
             </button>
@@ -155,9 +183,9 @@ export default function PlayerBar() {
               {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
             </button>
             <button
-              onClick={() => playerEngine.seek(Math.min(duration, currentTime + 10))}
+              onClick={handleNext}
               className="p-2 rounded-full hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors focus-ring"
-              title="前进 10 秒"
+              title="下一首"
             >
               <SkipForward className="w-4 h-4" />
             </button>
@@ -165,6 +193,33 @@ export default function PlayerBar() {
 
           {/* Extra Controls */}
           <div className="hidden md:flex items-center gap-1.5">
+            {/* Playback mode */}
+            <button
+              onClick={handleCycleMode}
+              className={`p-1.5 rounded-full hover:bg-[var(--bg-tertiary)] transition-colors focus-ring ${
+                repeatMode !== 'sequence' ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)]'
+              }`}
+              title={MODE_LABELS[repeatMode]}
+            >
+              <ModeIcon className="w-4 h-4" />
+            </button>
+
+            {/* Queue */}
+            <button
+              onClick={() => setShowQueue(!showQueue)}
+              className={`p-1.5 rounded-full hover:bg-[var(--bg-tertiary)] transition-colors focus-ring relative ${
+                showQueue ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)]'
+              }`}
+              title="播放队列"
+            >
+              <ListMusic className="w-4 h-4" />
+              {queue.length > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 bg-[var(--accent)] text-white text-[9px] font-bold rounded-full flex items-center justify-center">
+                  {queue.length}
+                </span>
+              )}
+            </button>
+
             <button
               onClick={() => setShowLyrics(!showLyrics)}
               className={`p-1.5 rounded-full hover:bg-[var(--bg-tertiary)] transition-colors focus-ring ${showLyrics ? 'text-[var(--accent)] bg-[var(--accent-soft)]' : 'text-[var(--text-secondary)]'}`}

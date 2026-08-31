@@ -188,6 +188,21 @@ html.dark {
   }
 }
 
+/* ===== Scrollbar hide utility ===== */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* ===== Bounce animation for playing indicator ===== */
+@keyframes bounce {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+
 /* ===== Slide animations ===== */
 @keyframes slideInLeft {
   from { transform: translateX(-100%); }

@@ -1,11 +1,28 @@
 import { useState, useCallback } from 'react';
-import { Search, Loader2, Music, Filter, AlertCircle, WifiOff, ShieldAlert } from 'lucide-react';
+import { Search, Loader2, Music, Filter, AlertCircle, WifiOff, ShieldAlert, Play, Plus } from 'lucide-react';
 import { useSearchStore } from '../shared/store/searchStore';
 import { searchEngine } from '../core/search';
 import { playerEngine } from '../core/player';
+import { usePlayerStore } from '../shared/store/playerStore';
 import { SkeletonSearchResult } from '../components/ui/Skeleton';
 import type { AggregatedSearchResult } from '../core/search';
+import type { PlayerTrack } from '../core/player';
 import { Quality } from '../core/types';
+
+function resultToTrack(result: AggregatedSearchResult): PlayerTrack {
+  const bestSource = result.sources[0];
+  return {
+    id: result.id,
+    title: result.title,
+    artist: result.artist,
+    album: result.album,
+    coverUrl: result.coverUrl,
+    duration: result.duration,
+    sourceId: bestSource?.sourceId ?? 'kuwo',
+    sourceSongId: result.sourceSongId,
+    uri: `stream://${bestSource?.sourceId ?? 'kuwo'}/${result.sourceSongId}`,
+  };
+}
 
 export default function SearchPage() {
   const {
@@ -49,21 +66,32 @@ export default function SearchPage() {
     }
   }, [inputValue, selectedSources]);
 
-  const handlePlay = async (result: AggregatedSearchResult) => {
-    const bestSource = result.sources[0];
-    if (!bestSource) return;
+  const handlePlayNow = async (result: AggregatedSearchResult) => {
+    const track = resultToTrack(result);
+    const store = usePlayerStore.getState();
+    const existingIndex = store.queue.findIndex((t) => t.id === track.id);
 
-    await playerEngine.playTrack({
-      id: result.id,
-      title: result.title,
-      artist: result.artist,
-      album: result.album,
-      coverUrl: result.coverUrl,
-      duration: result.duration,
-      sourceId: bestSource.sourceId,
-      sourceSongId: result.sourceSongId,
-      uri: `stream://${bestSource.sourceId}/${result.sourceSongId}`,
-    }, selectedQuality);
+    if (existingIndex !== -1) {
+      // Already in queue — play from that position
+      store.playTrackAtIndex(existingIndex);
+      await playerEngine.playTrack(track, selectedQuality);
+    } else {
+      // Insert after current index and play
+      const insertIndex = store.currentIndex >= 0 ? store.currentIndex + 1 : 0;
+      const newQueue = [...store.queue];
+      newQueue.splice(insertIndex, 0, track);
+      store.setQueue(newQueue, insertIndex);
+      await playerEngine.playTrack(track, selectedQuality);
+    }
+  };
+
+  const handleAddToQueue = (result: AggregatedSearchResult) => {
+    const track = resultToTrack(result);
+    usePlayerStore.getState().addToQueue(track);
+  };
+
+  const handlePlay = async (result: AggregatedSearchResult) => {
+    await handlePlayNow(result);
   };
 
   const sourceColors: Record<string, string> = {
@@ -222,15 +250,23 @@ export default function SearchPage() {
                 {result.bitrate && `${result.bitrate}kbps`}
               </div>
 
-              <button
-                onClick={() => handlePlay(result)}
-                className="p-3 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 focus-ring"
-                title="播放"
-              >
-                <svg className="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              </button>
+              {/* Action buttons */}
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => handleAddToQueue(result)}
+                  className="p-2.5 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)] opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--border)] hover:text-[var(--text-primary)] active:scale-95 focus-ring"
+                  title="加入队列"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => handlePlay(result)}
+                  className="p-3 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 focus-ring"
+                  title="立即播放"
+                >
+                  <Play className="w-4 h-4 ml-0.5" />
+                </button>
+              </div>
             </div>
           ))}
         </div>

@@ -1,5 +1,5 @@
 import { Routes, Route } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import Layout from './components/layout/Layout';
 import SearchPage from './pages/SearchPage';
 import PlaylistPage from './pages/PlaylistPage';
@@ -14,14 +14,17 @@ import { usePlayerStore } from './shared/store/playerStore';
 function App() {
   useEffect(() => {
     // 播放器事件绑定（数据库和Provider已在main.tsx初始化）
-    const unsub1 = playerEngine.on('stateChange', ({ state }) => {
+    const unsub1 = playerEngine.on('stateChange', ({ state, index }) => {
       usePlayerStore.getState().setState(state);
+      if (typeof index === 'number') {
+        usePlayerStore.getState().playTrackAtIndex(index);
+      }
     });
     const unsub2 = playerEngine.on('progress', ({ currentTime, duration }) => {
       usePlayerStore.getState().setProgress(currentTime, duration);
     });
     const unsub3 = playerEngine.on('ended', () => {
-      // Auto-play next logic would go here
+      // Auto-advance handled inside PlayerEngine.handleTrackEnded
     });
 
     return () => {
@@ -29,6 +32,30 @@ function App() {
       unsub2();
       unsub3();
     };
+  }, []);
+
+  // Sync store queue/mode changes to engine (with diff guard)
+  const lastQueueLen = useRef(0);
+  const lastIndex = useRef(-1);
+  const lastMode = useRef<string>('sequence');
+
+  useEffect(() => {
+    const unsub = usePlayerStore.subscribe((state) => {
+      const queueLen = state.queue.length;
+      const index = state.currentIndex;
+      const mode = state.repeatMode;
+
+      // Only sync when queue, index, or mode actually changes
+      if (queueLen !== lastQueueLen.current || index !== lastIndex.current || mode !== lastMode.current) {
+        lastQueueLen.current = queueLen;
+        lastIndex.current = index;
+        lastMode.current = mode;
+
+        playerEngine.setQueue(state.queue, state.currentIndex);
+        playerEngine.setRepeatMode(state.repeatMode);
+      }
+    });
+    return unsub;
   }, []);
 
   return (
