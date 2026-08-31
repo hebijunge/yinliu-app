@@ -72,6 +72,8 @@ export interface PlayUrlResult {
   isPreview?: boolean;
   /** 实际音质是否与请求音质一致 */
   accurate?: boolean;
+  /** 加密文件的 ekey（酷我 mflac/mgg 需要） */
+  ekey?: string;
 }
 
 export interface SongDetail {

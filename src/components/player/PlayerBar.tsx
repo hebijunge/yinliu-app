@@ -50,7 +50,12 @@ export default function PlayerBar() {
     downloadEngine.addDownload(
       currentTrack.sourceSongId,
       currentTrack.sourceId,
-      quality
+      quality,
+      {
+        title: currentTrack.title,
+        artist: currentTrack.artist,
+        album: currentTrack.album,
+      }
     );
   }, [currentTrack]);
 

@@ -122,13 +122,21 @@ export default function DownloadPage() {
               <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
               <div className="flex-1 min-w-0">
                 <div className="font-medium truncate">
-                  {task.songId}
+                  {task.title || task.songId}
+                  {task.artist && (
+                    <span className="text-[var(--text-secondary)] text-sm ml-1">— {task.artist}</span>
+                  )}
                   {task.isFallback && (
                     <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-500">
                       兜底
                     </span>
                   )}
                 </div>
+                {task.localPath && task.status === 'completed' && (
+                  <div className="text-xs text-[var(--text-tertiary)] truncate mt-0.5">
+                    已保存: {task.localPath.split('/').pop()}
+                  </div>
+                )}
               </div>
               <div className={`text-sm font-medium ${getStatusColor(task.status)}`}>
                 {getStatusText(task.status)}

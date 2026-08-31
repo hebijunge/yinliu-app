@@ -1,7 +1,8 @@
 import { Quality } from '@core/types';
 import type { DownloadTask, DownloadStatus } from '@core/types';
 import { sourceRegistry } from '@providers/music/registry';
-import { v4 as uuidv4 } from './uuid';
+import { deriveRawKey } from '@utils/crypto/kuwoEkey';
+import { qmc2DecryptBytes, isDecryptedMagic } from '@utils/crypto/qmc2';
 
 // 使用简单UUID生成（避免引入完整uuid库）
 function generateId(): string {
@@ -14,6 +15,10 @@ export interface DownloadQueueItem extends DownloadTask {
   fileSize?: number;
   downloadedSize?: number;
   retryCount?: number;
+  /** 歌曲标题（用于文件命名） */
+  title?: string;
+  /** 歌手名 */
+  artist?: string;
 }
 
 export interface DownloadEngineOptions {
@@ -24,6 +29,8 @@ export interface DownloadEngineOptions {
 /**
  * 下载管理引擎
  * 功能：下载队列管理、多档音质下载、进度显示、暂停/恢复/取消
+ *       支持写入本地文件系统（Capacitor Filesystem）
+ *       支持酷我加密内容解密（mflac/mgg → flac/ogg）
  */
 export class DownloadEngine {
   private queue: DownloadQueueItem[] = [];
@@ -73,6 +80,8 @@ export class DownloadEngine {
       progress: 0,
       speed: 0,
       isFallback: false,
+      title: metadata?.title,
+      artist: metadata?.artist,
     };
 
     this.queue.push(task);
@@ -85,7 +94,7 @@ export class DownloadEngine {
    * 批量添加下载任务
    */
   async addBatchDownloads(
-    items: Array<{ songId: string; sourceId: string; quality: Quality }>
+    items: Array<{ songId: string; sourceId: string; quality: Quality; metadata?: { title?: string; artist?: string } }>
   ): Promise<DownloadQueueItem[]> {
     const tasks = items.map((item) => ({
       id: generateId(),
@@ -96,6 +105,8 @@ export class DownloadEngine {
       progress: 0,
       speed: 0,
       isFallback: false,
+      title: item.metadata?.title,
+      artist: item.metadata?.artist,
     }));
 
     this.queue.push(...tasks);
@@ -140,7 +151,7 @@ export class DownloadEngine {
         throw new Error(`Source ${task.sourceId} not found`);
       }
 
-      // 获取播放URL
+      // 获取播放URL（下载链接）
       let playUrl;
       try {
         playUrl = await source.getPlayUrl(task.songId, task.quality);
@@ -153,6 +164,10 @@ export class DownloadEngine {
         } else {
           throw new Error('无法获取下载链接');
         }
+      }
+
+      if (!playUrl?.url) {
+        throw new Error('下载链接为空');
       }
 
       // 开始下载
@@ -196,11 +211,39 @@ export class DownloadEngine {
       }
 
       // 合并chunks为Blob
-      const blob = new Blob(chunks as BlobPart[]);
+      let blob = new Blob(chunks as BlobPart[]);
       task.blob = blob;
-      task.status = 'completed';
       task.progress = 1;
       task.speed = 0;
+
+      // 酷我加密内容解密（mflac/mgg → flac/ogg）
+      if (playUrl.ekey) {
+        try {
+          const rawKey = deriveRawKey(playUrl.ekey);
+          if (rawKey) {
+            const encrypted = new Uint8Array(await blob.arrayBuffer());
+            const decrypted = qmc2DecryptBytes(encrypted, rawKey);
+            if (isDecryptedMagic(decrypted)) {
+              blob = new Blob([decrypted]);
+              task.blob = blob;
+              // 解密成功，修正格式后缀
+              if (playUrl.format === 'mflac') playUrl.format = 'flac';
+              if (playUrl.format === 'mgg') playUrl.format = 'ogg';
+            } else {
+              console.warn('酷我解密后魔数校验失败，保留原始加密文件');
+            }
+          } else {
+            console.warn('酷我 ekey 派生密钥失败，保留原始加密文件');
+          }
+        } catch (decryptErr) {
+          console.warn('酷我解密异常，保留原始加密文件:', decryptErr);
+        }
+      }
+
+      // 保存到本地文件系统
+      const localPath = await this.saveToLocalFile(task, blob, playUrl);
+      task.localPath = localPath;
+      task.status = 'completed';
 
       this.emit('complete', task);
       this.emit('statusChange', task);
@@ -213,6 +256,112 @@ export class DownloadEngine {
       this.emit('error', task);
       this.emit('statusChange', task);
     }
+  }
+
+  /**
+   * 保存下载文件到本地存储
+   */
+  private async saveToLocalFile(
+    task: DownloadQueueItem,
+    blob: Blob,
+    playUrl: any
+  ): Promise<string | undefined> {
+    try {
+      // 检测平台
+      const isCapacitor = typeof (window as any)?.Capacitor !== 'undefined';
+      if (!isCapacitor) {
+        // Web环境：触发浏览器下载
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = this.buildFileName(task, playUrl.format);
+        a.click();
+        URL.revokeObjectURL(url);
+        return undefined;
+      }
+
+      // Capacitor环境：写入外部存储
+      const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem');
+
+      // 构建文件名和路径
+      const ext = playUrl.format || 'mp3';
+      const fileName = this.buildFileName(task, ext);
+      const subDir = 'YinliuDownloads';
+
+      // 确保目录存在
+      try {
+        await Filesystem.mkdir({
+          path: subDir,
+          directory: Directory.ExternalStorage,
+          recursive: true,
+        });
+      } catch {
+        // 目录可能已存在
+      }
+
+      // 读取blob为base64
+      const arrayBuffer = await blob.arrayBuffer();
+      const base64 = this.arrayBufferToBase64(arrayBuffer);
+
+      // 写入文件
+      const filePath = `${subDir}/${fileName}`;
+      await Filesystem.writeFile({
+        path: filePath,
+        data: base64,
+        directory: Directory.ExternalStorage,
+        recursive: true,
+      });
+
+      // 获取文件URI
+      const stat = await Filesystem.stat({
+        path: filePath,
+        directory: Directory.ExternalStorage,
+      });
+
+      return stat.uri || filePath;
+    } catch (err) {
+      console.warn('保存文件失败:', err);
+      return undefined;
+    }
+  }
+
+  /**
+   * 构建文件名
+   */
+  private buildFileName(task: DownloadQueueItem, ext: string): string {
+    const safe = (s?: string) => (s || '').replace(/[\\/:*?"<>|]/g, '_').trim() || 'unknown';
+    const title = safe(task.title);
+    const artist = safe(task.artist);
+    const qualityLabel = this.qualityLabel(task.quality);
+    const name = artist && artist !== 'unknown'
+      ? `${artist} - ${title}`
+      : title;
+    return `${name} [${qualityLabel}].${ext}`;
+  }
+
+  private qualityLabel(q: Quality): string {
+    switch (q) {
+      case Quality.LOW: return '48k';
+      case Quality.STANDARD: return '128k';
+      case Quality.HIGH: return '320k';
+      case Quality.LOSSLESS: return 'FLAC';
+      case Quality.HIFI: return 'HiFi';
+      case Quality.HIRES: return 'Hi-Res';
+      default: return 'audio';
+    }
+  }
+
+  /**
+   * ArrayBuffer 转 Base64
+   */
+  private arrayBufferToBase64(buffer: ArrayBuffer): string {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
   }
 
   /**

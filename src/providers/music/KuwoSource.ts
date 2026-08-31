@@ -7,13 +7,19 @@ import { platformFetch } from '@shared/utils/platformFetch';
 /**
  * 酷我音乐音源Provider
  * 基于DJMusic Kotlin源码移植 + 接口文档实测
- * 
+ *
  * 搜索：kuwo.cn/search/searchMusicBykeyWord（免登录标准JSON，优先）
  *       search.kuwo.cn/r.s（Python dict格式，回退）
  * 取链：nmobi.kuwo.cn/mobi.s（convert_url_with_sign，多域名并发）
  *       + antiserver.kuwo.cn/anti.s（低音质兜底）
  *       + musicapi.haitangw.net（第三方代理）
  * 歌词：kuwo.cn/openapi/v1/www/lyric/getlyric（免Cookie）
+ *
+ * 音质档实测结论（2026-08-27）：
+ *  - 128kmp3：✅ 真 128k MP3
+ *  - 320kmp3：✅ 真 320k MP3（有免费档的歌）
+ *  - 2000kflac：✅ 真 FLAC 无损
+ *  - 4000kflac：⚠️ 行为不确定（降级128k或加密mflac）
  */
 export class KuwoSource extends BaseHttpSource {
   readonly id = 'kuwo';
@@ -113,7 +119,6 @@ export class KuwoSource extends BaseHttpSource {
     const artist = (o.ARTIST || o.artist || '').toString().replace(/&nbsp;/g, ' ').trim();
     const album = (o.ALBUM || o.album || '').toString().trim();
     const dur = parseInt((o.DURATION || o.duration || '0').toString(), 10) || 0;
-    const isPoint = (o.IS_POINT || o.is_point || '').toString() === '1';
     const minfo = (o.N_MINFO || o.MINFO || o.minfo || '').toString();
     const cover = (o.web_artistpic_short || o.web_artistpic || '')
       ? `${this.COVER_BASE}${o.web_artistpic_short || o.web_artistpic}`
@@ -175,6 +180,7 @@ export class KuwoSource extends BaseHttpSource {
   protected buildEndpointCandidates(songId: string, quality: Quality): ResolvedCandidate[] {
     const rid = songId.replace(/^kw_/, '');
     const br = this.brOf(quality);
+    const expected = this.qualityExpectation(quality);
 
     const candidates: ResolvedCandidate[] = [];
 
@@ -189,7 +195,7 @@ export class KuwoSource extends BaseHttpSource {
           'User-Agent': this.NMOBI_UA,
           Referer: 'https://www.kuwo.cn/',
         },
-        resolve: async (resp) => this.resolveNmobi(resp, quality),
+        resolve: async (resp) => this.resolveNmobi(resp, quality, expected),
       });
     }
 
@@ -204,7 +210,7 @@ export class KuwoSource extends BaseHttpSource {
         const text = await resp.text();
         const url = text.trim();
         if (!url.startsWith('http')) return null;
-        return { url, quality, bitrate: 128, format: 'mp3', accurate: this.isBitrateAccurate(quality, 128) };
+        return { url, quality, bitrate: 128, format: 'mp3', accurate: quality === Quality.LOW || quality === Quality.STANDARD };
       },
     });
 
@@ -227,8 +233,8 @@ export class KuwoSource extends BaseHttpSource {
     return candidates;
   }
 
-  /** nmobi JSON解析 */
-  private async resolveNmobi(resp: Response, quality: Quality): Promise<PlayUrlResult | null> {
+  /** nmobi JSON解析，带精确音质校验 */
+  private async resolveNmobi(resp: Response, quality: Quality, expected: { bitrate: number; format: string } | null): Promise<PlayUrlResult | null> {
     let data: any;
     try {
       data = await resp.json();
@@ -240,32 +246,58 @@ export class KuwoSource extends BaseHttpSource {
 
     const url = d.url as string;
     const bitrate = parseInt((d.bitrate || '0').toString(), 10) || 128;
-    const format = (d.format || 'mp3').toString();
+    const format = (d.format || 'mp3').toString().toLowerCase();
+    const ekey = d.ekey ? String(d.ekey) : undefined;
 
     // 防盗链占位校验
     if (this.isAntiTheft(url)) return null;
 
-    const accurate = this.isBitrateAccurate(quality, bitrate);
-    return { url, quality, bitrate, format, accurate };
-  }
+    // 精确音质匹配（参照 DJMusic qualityExpectation/bitrateTolerance）
+    const accurate = this.isBitrateAccurate(quality, bitrate, format);
 
-  /** 判断实际码率是否与请求音质匹配（容许 50% 误差） */
-  private isBitrateAccurate(requestedQuality: Quality, actualBitrate: number): boolean {
-    const expected = this.kuwoQualityToExpectedBitrate(requestedQuality);
-    return actualBitrate >= expected * 0.5;
-  }
-
-  private kuwoQualityToExpectedBitrate(quality: Quality): number {
-    switch (quality) {
-      case Quality.LOW: return 48;
-      case Quality.STANDARD: return 128;
-      case Quality.HIGH: return 320;
-      case Quality.LOSSLESS:
-      case Quality.HIFI:
-      case Quality.HIRES:
-        return 2000;
-      default: return 128;
+    // 如果 expected 存在且完全不匹配，丢弃此链
+    if (expected && !accurate) {
+      return null;
     }
+
+    // 判断加密：有 ekey 或格式为 mflac/mgg
+    const isEncrypted = !!ekey || format === 'mflac' || format === 'mgg' || url.endsWith('.mflac') || url.endsWith('.mgg');
+
+    return { url, quality, bitrate, format, accurate, isEncrypted, ekey };
+  }
+
+  /**
+   * 选定音质档 → 期望的 (bitrate, format)，用于并发取链时拒绝回退假链
+   * 酷我按歌曲策略：免费档无某高品时，请求 320kmp3 会返回 128k 直链，
+   * 这种「降级链」大小/码率与所选音质不符，必须丢弃。
+   */
+  private qualityExpectation(quality: Quality): { bitrate: number; format: string } | null {
+    switch (quality) {
+      case Quality.LOW: return { bitrate: 48, format: 'aac' };
+      case Quality.STANDARD: return { bitrate: 128, format: 'mp3' };
+      case Quality.HIGH: return { bitrate: 320, format: 'mp3' };
+      case Quality.LOSSLESS: return { bitrate: 2000, format: 'flac' };
+      default: return null;
+    }
+  }
+
+  /**
+   * bitrate 匹配容差（不同编码实测码率有小幅浮动）
+   * 参照 DJMusic：flac 80kbps / mp3,aac 8kbps
+   */
+  private bitrateTolerance(format: string): number {
+    const f = format.toLowerCase();
+    if (f === 'flac') return 80;
+    return 8;
+  }
+
+  /** 判断实际码率是否与请求音质匹配 */
+  private isBitrateAccurate(requestedQuality: Quality, actualBitrate: number, actualFormat?: string): boolean {
+    const expected = this.qualityExpectation(requestedQuality);
+    if (!expected) return true;
+    const tol = this.bitrateTolerance(actualFormat || expected.format);
+    const formatMatch = !actualFormat || actualFormat === expected.format;
+    return formatMatch && Math.abs(actualBitrate - expected.bitrate) <= tol;
   }
 
   private isAntiTheft(url: string): boolean {
