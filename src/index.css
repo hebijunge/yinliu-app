@@ -1,0 +1,106 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== CSS Variables ===== */
+:root {
+  /* Light theme (default) */
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8fafc;
+  --bg-tertiary: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #94a3b8;
+  --accent: #0ea5e9;
+  --accent-hover: #0284c7;
+  --border: #e2e8f0;
+  --sidebar-width: 220px;
+  --player-height: 72px;
+}
+
+html.dark {
+  /* Dark theme */
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-tertiary: #334155;
+  --text-primary: #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --text-tertiary: #64748b;
+  --accent: #38bdf8;
+  --accent-hover: #0ea5e9;
+  --border: #334155;
+}
+
+/* Yinliu component utilities */
+@layer components {
+  .yinliu-input {
+    @apply px-4 py-2.5 rounded-xl border bg-[var(--bg-secondary)] text-[var(--text-primary)] outline-none transition-all;
+    border-color: var(--border);
+  }
+  .yinliu-input::placeholder {
+    color: var(--text-tertiary);
+  }
+  .yinliu-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+
+  .yinliu-btn {
+    @apply px-4 py-2.5 rounded-xl text-white font-medium transition-all disabled:opacity-50;
+    background-color: var(--accent);
+  }
+  .yinliu-btn:hover {
+    background-color: var(--accent-hover);
+  }
+  .yinliu-btn:active {
+    transform: scale(0.95);
+  }
+
+  .yinliu-btn-secondary {
+    @apply px-4 py-2.5 rounded-xl transition-all;
+    background-color: var(--bg-tertiary);
+    color: var(--text-secondary);
+  }
+  .yinliu-btn-secondary:hover {
+    background-color: var(--border);
+  }
+  .yinliu-btn-secondary:active {
+    transform: scale(0.95);
+  }
+
+  .yinliu-card {
+    @apply rounded-xl p-4;
+    border: 1px solid var(--border);
+    background-color: var(--bg-secondary);
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.5);
+}
+
+/* Lyrics highlight animation */
+.lyrics-line {
+  transition: all 0.3s ease;
+}
+
+.lyrics-line.active {
+  color: var(--primary-color, #3b82f6);
+  font-weight: 600;
+  transform: scale(1.02);
+}
