@@ -306,8 +306,20 @@ export class DownloadEngine {
   }
 
   // === 便捷方法（兼容 v10 调用方）===
-  async addDownload(songId: string, sourceId: string, quality: Quality): Promise<string> {
-    const task = await this.createTask({ songId, sourceId, quality, title: '' });
+  async addDownload(
+    songId: string,
+    sourceId: string,
+    quality: Quality,
+    metadata?: { title?: string; artist?: string; album?: string }
+  ): Promise<string> {
+    const task = await this.createTask({
+      songId,
+      sourceId,
+      quality,
+      title: metadata?.title || '',
+      artist: metadata?.artist,
+      album: metadata?.album,
+    });
     await this.startDownload(task.id);
     return task.id;
   }
