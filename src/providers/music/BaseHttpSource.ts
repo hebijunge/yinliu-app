@@ -2,7 +2,7 @@ import type { MusicSource, EndpointCandidate } from './types';
 import { Quality } from '@core/types';
 import type { SearchParams, SearchResult, PlayUrlResult, SongDetail, HealthStatus } from '@core/types';
 import { YinliuError, ErrorCode, qualityRank } from '@core/types';
-import { platformFetch } from '@shared/utils/platformFetch';
+import { platformFetch, platformPostJson, platformPostForm, type PlatformFetchError } from '@shared/utils/platformFetch';
 
 export interface ResolvedCandidate extends EndpointCandidate {
   /** 自定义解析函数：fetch响应 → PlayUrlResult | null */
@@ -146,75 +146,122 @@ export abstract class BaseHttpSource implements MusicSource {
 
   /**
    * 通用 GET 请求辅助
+   * 失败时抛出 PlatformFetchError，包含具体错误类型、状态码和 URL
    */
-  protected async httpGet(url: string, headers?: Record<string, string>): Promise<Response | null> {
-    try {
-      return await platformFetch(url, {
-        method: 'GET',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/json, text/plain, */*',
-          ...headers,
-        },
-      });
-    } catch {
-      return null;
-    }
+  protected async httpGet(url: string, headers?: Record<string, string>): Promise<Response> {
+    return platformFetch(url, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        ...headers,
+      },
+    });
   }
 
   /**
    * 通用 GET 请求并解析JSON
+   * 返回 { data, ok, status, statusText }，HTTP 非 2xx 或网络失败均保留错误信息
    */
-  protected async httpGetJson(url: string, headers?: Record<string, string>): Promise<any | null> {
-    const resp = await this.httpGet(url, headers);
-    if (!resp || !resp.ok) return null;
+  protected async httpGetJson(url: string, headers?: Record<string, string>): Promise<{ data: any | null; ok: boolean; status: number; statusText: string; error?: string }> {
     try {
-      return await resp.json();
-    } catch {
-      return null;
+      const resp = await this.httpGet(url, headers);
+      if (!resp.ok) {
+        return {
+          data: null,
+          ok: false,
+          status: resp.status,
+          statusText: resp.statusText,
+          error: `HTTP ${resp.status} ${resp.statusText}`,
+        };
+      }
+      try {
+        const data = await resp.json();
+        return { data, ok: true, status: resp.status, statusText: resp.statusText };
+      } catch {
+        return { data: null, ok: false, status: resp.status, statusText: 'JSON解析失败', error: 'JSON解析失败' };
+      }
+    } catch (err) {
+      const pfe = err as PlatformFetchError;
+      return {
+        data: null,
+        ok: false,
+        status: pfe.status || 0,
+        statusText: pfe.type,
+        error: pfe.message,
+      };
     }
   }
 
   /**
    * 通用 POST JSON 请求
    */
-  protected async httpPostJson(url: string, body: object, headers?: Record<string, string>): Promise<any | null> {
+  protected async httpPostJson(url: string, body: object, headers?: Record<string, string>): Promise<{ data: any | null; ok: boolean; status: number; statusText: string; error?: string }> {
     try {
-      const resp = await platformFetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          ...headers,
-        },
-        body: JSON.stringify(body),
+      const resp = await platformPostJson(url, body, {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        ...headers,
       });
-      if (!resp.ok) return null;
-      return await resp.json();
-    } catch {
-      return null;
+      if (!resp.ok) {
+        return {
+          data: null,
+          ok: false,
+          status: resp.status,
+          statusText: resp.statusText,
+          error: `HTTP ${resp.status} ${resp.statusText}`,
+        };
+      }
+      try {
+        const data = await resp.json();
+        return { data, ok: true, status: resp.status, statusText: resp.statusText };
+      } catch {
+        return { data: null, ok: false, status: resp.status, statusText: 'JSON解析失败', error: 'JSON解析失败' };
+      }
+    } catch (err) {
+      const pfe = err as PlatformFetchError;
+      return {
+        data: null,
+        ok: false,
+        status: pfe.status || 0,
+        statusText: pfe.type,
+        error: pfe.message,
+      };
     }
   }
 
   /**
    * 通用 POST Form 请求
    */
-  protected async httpPostForm(url: string, params: Record<string, string>, headers?: Record<string, string>): Promise<any | null> {
+  protected async httpPostForm(url: string, params: Record<string, string>, headers?: Record<string, string>): Promise<{ data: any | null; ok: boolean; status: number; statusText: string; error?: string }> {
     try {
-      const form = new URLSearchParams(params);
-      const resp = await platformFetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          ...headers,
-        },
-        body: form.toString(),
+      const resp = await platformPostForm(url, params, {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        ...headers,
       });
-      if (!resp.ok) return null;
-      return await resp.json();
-    } catch {
-      return null;
+      if (!resp.ok) {
+        return {
+          data: null,
+          ok: false,
+          status: resp.status,
+          statusText: resp.statusText,
+          error: `HTTP ${resp.status} ${resp.statusText}`,
+        };
+      }
+      try {
+        const data = await resp.json();
+        return { data, ok: true, status: resp.status, statusText: resp.statusText };
+      } catch {
+        return { data: null, ok: false, status: resp.status, statusText: 'JSON解析失败', error: 'JSON解析失败' };
+      }
+    } catch (err) {
+      const pfe = err as PlatformFetchError;
+      return {
+        data: null,
+        ok: false,
+        status: pfe.status || 0,
+        statusText: pfe.type,
+        error: pfe.message,
+      };
     }
   }
 }

@@ -45,11 +45,14 @@ export class KuwoSource extends BaseHttpSource {
 
   async search(params: SearchParams): Promise<SearchResult[]> {
     // 优先V2免登录标准JSON，失败回退r.s
-    const v2Results = await this.searchV2(params.keyword, params.page || 0);
-    if (v2Results.length > 0) return v2Results;
+    try {
+      const v2Results = await this.searchV2(params.keyword, params.page || 0);
+      if (v2Results.length > 0) return v2Results;
+    } catch {
+      // V2失败，继续尝试r.s
+    }
 
-    const rsResults = await this.searchRs(params.keyword, params.page || 0);
-    return rsResults;
+    return await this.searchRs(params.keyword, params.page || 0);
   }
 
   /**
@@ -61,8 +64,13 @@ export class KuwoSource extends BaseHttpSource {
     const pn = page;
     const url = `${this.SEARCH_V2_HOST}/search/searchMusicBykeyWord?all=${q}&pn=${pn}&rn=30&ft=music&client=kt&encoding=utf8&rformat=json&mobi=1&vipver=1&cluster=0&strategy=2012&issubtitle=1&show_copyright_off=1`;
 
-    const data = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
-    if (!data) return [];
+    const { data, ok, error } = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
+    if (!ok) {
+      throw new Error(error || `酷我V2搜索请求失败`);
+    }
+    if (!data) {
+      throw new Error(`酷我V2搜索返回空数据`);
+    }
 
     const abslist = data.abslist || [];
     return abslist.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[];
@@ -77,11 +85,19 @@ export class KuwoSource extends BaseHttpSource {
     const pn = page;
     const url = `${this.SEARCH_HOST}/r.s?all=${q}&ft=music&itemset=web_2013&client=kt&pn=${pn}&rn=30&rformat=json&encoding=utf8`;
 
-    const resp = await this.httpGet(url, { Referer: 'http://m.kuwo.cn/' });
-    if (!resp || !resp.ok) return [];
+    let resp: Response;
+    try {
+      resp = await this.httpGet(url, { Referer: 'http://m.kuwo.cn/' });
+    } catch (err: any) {
+      throw new Error(`酷我r.s搜索请求失败: ${err?.message || err}`);
+    }
+
+    if (!resp.ok) {
+      throw new Error(`酷我r.s搜索 HTTP ${resp.status} ${resp.statusText}`);
+    }
 
     let text: string;
-    try { text = await resp.text(); } catch { return []; }
+    try { text = await resp.text(); } catch { throw new Error(`酷我r.s搜索响应读取失败`); }
 
     let data: any;
     try {
@@ -98,7 +114,7 @@ export class KuwoSource extends BaseHttpSource {
           .replace(/;\s*$/, '');
         data = JSON.parse(normalized);
       } catch {
-        return [];
+        throw new Error(`酷我r.s搜索响应解析失败`);
       }
     }
 
@@ -347,17 +363,20 @@ export class KuwoSource extends BaseHttpSource {
 
     // 优先免Cookie openapi
     const url = `${this.SEARCH_V2_HOST}/openapi/v1/www/lyric/getlyric?musicId=${rid}&httpsStatus=1&plat=web_www&from=`;
-    const data = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
+    const { data, ok } = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
 
-    if (data?.code === 200) {
+    if (ok && data?.code === 200) {
       const lrc = this.buildLrc(data.data?.lrclist);
       if (lrc) return lrc;
     }
 
     // 回退m.kuwo.cn
     const fallbackUrl = `http://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=${rid}`;
-    const fbData = await this.httpGetJson(fallbackUrl, { Referer: 'http://m.kuwo.cn/' });
-    return this.buildLrc(fbData?.data?.lrclist);
+    const { data: fbData, ok: fbOk } = await this.httpGetJson(fallbackUrl, { Referer: 'http://m.kuwo.cn/' });
+    if (fbOk && fbData) {
+      return this.buildLrc(fbData.data?.lrclist);
+    }
+    return null;
   }
 
   private buildLrc(lrclist: any[] | null): string | null {

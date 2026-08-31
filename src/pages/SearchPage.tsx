@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Search, Loader2, Music, Filter } from 'lucide-react';
+import { Search, Loader2, Music, Filter, AlertCircle, WifiOff, ShieldAlert, Clock } from 'lucide-react';
 import { useSearchStore } from '../shared/store/searchStore';
 import { searchEngine } from '../core/search';
 import { playerEngine } from '../core/player';
@@ -16,11 +16,14 @@ export default function SearchPage() {
   const [inputValue, setInputValue] = useState(keyword);
   const [showFilters, setShowFilters] = useState(false);
 
+  const [searchError, setSearchError] = useState<string | null>(null);
+
   const handleSearch = useCallback(async () => {
     if (!inputValue.trim()) return;
 
     setKeyword(inputValue);
     setSearching(true);
+    setSearchError(null);
     addToHistory(inputValue);
 
     try {
@@ -30,8 +33,19 @@ export default function SearchPage() {
       );
       setResults(results);
       setSourceStats(sourceStats);
+
+      // 如果所有源都报错，显示聚合错误提示
+      const allFailed = Object.values(sourceStats).every(s => s.error);
+      if (allFailed && Object.keys(sourceStats).length > 0) {
+        const errors = Object.entries(sourceStats)
+          .map(([id, s]) => `${id}: ${s.error}`)
+          .join('; ');
+        setSearchError(`所有音源请求失败 — ${errors}`);
+      }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : '搜索异常';
       console.error('Search failed:', err);
+      setSearchError(msg);
     } finally {
       setSearching(false);
     }
@@ -125,11 +139,26 @@ export default function SearchPage() {
       {/* Source Stats */}
       {Object.keys(sourceStats).length > 0 && (
         <div className="flex gap-2 mb-4 flex-wrap">
-          {Object.entries(sourceStats).map(([id, stat]) => (
-            <div key={id} className="text-xs px-3 py-1.5 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border-subtle)]">
-              {id}: {stat.total}条 {stat.latency}ms {stat.error && <span className="text-red-500">(错误)</span>}
-            </div>
-          ))}
+          {Object.entries(sourceStats).map(([id, stat]) => {
+            const hasError = !!stat.error;
+            const errorIcon = stat.errorType === 'network' ? <WifiOff className="w-3 h-3" />
+              : stat.errorType === 'http' ? <ShieldAlert className="w-3 h-3" />
+              : hasError ? <AlertCircle className="w-3 h-3" />
+              : null;
+            return (
+              <div key={id} className={`text-xs px-3 py-1.5 rounded-full border flex items-center gap-1.5 ${hasError ? 'bg-red-500/10 text-red-400 border-red-500/20' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border-[var(--border-subtle)]'}`}>
+                <span className="font-medium">{id}</span>
+                <span>{stat.total}条</span>
+                <span className="text-[var(--text-tertiary)]">{stat.latency}ms</span>
+                {hasError && (
+                  <span className="flex items-center gap-1" title={stat.error}>
+                    {errorIcon}
+                    <span className="max-w-[200px] truncate">{stat.error}</span>
+                  </span>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -209,8 +238,19 @@ export default function SearchPage() {
         </div>
       )}
 
+      {/* Error Banner */}
+      {searchError && (
+        <div className="mb-4 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+          <div className="text-sm break-all">
+            <div className="font-medium mb-1">搜索出错</div>
+            <div className="opacity-90">{searchError}</div>
+          </div>
+        </div>
+      )}
+
       {/* Empty state */}
-      {!isSearching && results.length === 0 && keyword && (
+      {!isSearching && results.length === 0 && keyword && !searchError && (
         <div className="text-center py-16">
           <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center">
             <Search className="w-8 h-8 text-[var(--text-tertiary)]" />

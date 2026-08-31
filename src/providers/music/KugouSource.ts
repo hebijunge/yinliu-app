@@ -36,8 +36,13 @@ export class KugouSource extends BaseHttpSource {
     const kw = encodeURIComponent(params.keyword);
     const url = `${this.SEARCH_HOST}/search/song?format=json&keyword=${kw}&page=${page}&pagesize=30`;
 
-    const data = await this.httpGetJson(url, { Referer: this.M_REF });
-    if (!data) return [];
+    const { data, ok, error } = await this.httpGetJson(url, { Referer: this.M_REF });
+    if (!ok) {
+      throw new Error(error || `酷狗搜索请求失败`);
+    }
+    if (!data) {
+      throw new Error(`酷狗搜索返回空数据`);
+    }
 
     const info = data?.data?.info || [];
     return info.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[];
@@ -114,8 +119,8 @@ export class KugouSource extends BaseHttpSource {
 
     try {
       const url = `${this.GET_SONG_INFO}?cmd=playInfo&hash=${hash}`;
-      const data = await this.httpGetJson(url, { Referer: this.M_REF });
-      if (data) {
+      const { data, ok } = await this.httpGetJson(url, { Referer: this.M_REF });
+      if (ok && data) {
         return {
           id: songId,
           title: data.songName || '未知歌曲',
@@ -293,8 +298,9 @@ export class KugouSource extends BaseHttpSource {
     try {
       // 第一步：搜索krcs
       const searchUrl = `${this.KRC_SEARCH}?ver=1&man=yes&client=mobi&hash=${hash}&album_audio_id=`;
-      const searchData = await this.httpGetJson(searchUrl, { Referer: this.M_REF });
-      const cands = searchData?.candidates || [];
+      const { data: searchData, ok: searchOk } = await this.httpGetJson(searchUrl, { Referer: this.M_REF });
+      if (!searchOk || !searchData) return null;
+      const cands = searchData.candidates || [];
       if (cands.length === 0) return null;
 
       const best = cands[0];
@@ -304,8 +310,9 @@ export class KugouSource extends BaseHttpSource {
 
       // 第二步：下载歌词
       const downloadUrl = `${this.LYRICS_DOWNLOAD}?ver=1&client=pc&id=${id}&accesskey=${akey}&fmt=lrc&charset=utf8`;
-      const lyricData = await this.httpGetJson(downloadUrl, { Referer: this.M_REF });
-      const content = lyricData?.content;
+      const { data: lyricData, ok: lyricOk } = await this.httpGetJson(downloadUrl, { Referer: this.M_REF });
+      if (!lyricOk || !lyricData) return null;
+      const content = lyricData.content;
       if (!content) return null;
 
       // Base64解码
@@ -324,8 +331,8 @@ export class KugouSource extends BaseHttpSource {
   async getPlaylist(playlistId: string) {
     try {
       const url = `${this.M_HOST}/plist/list/${playlistId}?json=true`;
-      const data = await this.httpGetJson(url, { Referer: this.M_REF });
-      if (!data) throw new Error('Empty response');
+      const { data, ok, error } = await this.httpGetJson(url, { Referer: this.M_REF });
+      if (!ok || !data) throw new Error(error || 'Empty response');
 
       const info = data.info?.list || {};
       const songs = data.list?.list?.info || [];

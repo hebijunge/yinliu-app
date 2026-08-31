@@ -103,12 +103,13 @@ export class SearchEngine {
       return (b.bitrate || 0) - (a.bitrate || 0);
     });
 
-    const sourceStats: Record<string, { total: number; latency: number; error?: string }> = {};
+    const sourceStats: Record<string, { total: number; latency: number; error?: string; errorType?: string }> = {};
     for (const sr of fulfilled) {
       sourceStats[sr.source.id] = {
         total: sr.results.length,
         latency: sr.latency,
         error: sr.error || undefined,
+        errorType: sr.error ? (sr.error.includes('HTTP') ? 'http' : sr.error.includes('网络') || sr.error.includes('CORS') || sr.error.includes('超时') ? 'network' : 'unknown') : undefined,
       };
     }
 

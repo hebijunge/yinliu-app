@@ -37,11 +37,19 @@ export class NeteaseSource extends BaseHttpSource {
     const offset = (params.page || 0) * 30;
     const url = `${this.HOST}/api/search/get?s=${q}&type=1&limit=30&offset=${offset}`;
 
-    const data = await this.httpGetJson(url);
-    if (!data) return [];
+    const { data, ok, error } = await this.httpGetJson(url);
+    if (!ok) {
+      throw new Error(error || `网易云搜索请求失败`);
+    }
+    if (!data) {
+      throw new Error(`网易云搜索返回空数据`);
+    }
 
     const result = data.result;
-    if (!result) return [];
+    if (!result) {
+      // result为空可能是接口返回了空结果（非错误），返回空数组
+      return [];
+    }
 
     const songs = result.songs || [];
     return songs.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[];
@@ -93,9 +101,9 @@ export class NeteaseSource extends BaseHttpSource {
   async getSongDetail(songId: string): Promise<SongDetail> {
     const id = songId.replace(/^ne_/, '');
     const url = `${this.HOST}/api/song/detail?ids=[${id}]`;
-    const data = await this.httpGetJson(url);
-    if (!data?.songs || data.songs.length === 0) {
-      throw new YinliuError(ErrorCode.SONG_NOT_FOUND, `网易云歌曲详情获取失败: ${id}`);
+    const { data, ok, error } = await this.httpGetJson(url);
+    if (!ok || !data?.songs || data.songs.length === 0) {
+      throw new YinliuError(ErrorCode.SONG_NOT_FOUND, error || `网易云歌曲详情获取失败: ${id}`);
     }
     const s = data.songs[0];
     return {
@@ -372,8 +380,8 @@ export class NeteaseSource extends BaseHttpSource {
   async getLyrics(songId: string): Promise<string | null> {
     const id = songId.replace(/^ne_/, '');
     const url = `${this.HOST}/api/song/lyric?id=${id}&lv=1&kv=1&tv=-1`;
-    const data = await this.httpGetJson(url);
-    if (!data) return null;
+    const { data, ok } = await this.httpGetJson(url);
+    if (!ok || !data) return null;
 
     // 优先原词，无则译词
     const lrc = data.lrc?.lyric || data.tlyric?.lyric || data.klyric?.lyric;

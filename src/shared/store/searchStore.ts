@@ -6,7 +6,7 @@ interface SearchStore {
   keyword: string;
   results: AggregatedSearchResult[];
   isSearching: boolean;
-  sourceStats: Record<string, { total: number; latency: number; error?: string }>;
+  sourceStats: Record<string, { total: number; latency: number; error?: string; errorType?: string }>;
   selectedSources: string[];
   selectedQuality: Quality;
   searchHistory: string[];
@@ -14,7 +14,7 @@ interface SearchStore {
   setKeyword: (keyword: string) => void;
   setResults: (results: AggregatedSearchResult[]) => void;
   setSearching: (isSearching: boolean) => void;
-  setSourceStats: (stats: Record<string, { total: number; latency: number; error?: string }>) => void;
+  setSourceStats: (stats: Record<string, { total: number; latency: number; error?: string; errorType?: string }>) => void;
   toggleSource: (sourceId: string) => void;
   setQuality: (quality: Quality) => void;
   addToHistory: (keyword: string) => void;
