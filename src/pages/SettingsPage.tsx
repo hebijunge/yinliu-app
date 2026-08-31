@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings, Music, Info, Trash2, Check, ListOrdered, Bug } from 'lucide-react';
+import { Settings, Music, Info, Trash2, Check, ListOrdered, Bug, Car } from 'lucide-react';
 import { useThemeStore } from '../shared/store/themeStore';
 import { useSettingsStore } from '../shared/store/settingsStore';
 import { useSearchStore } from '../shared/store/searchStore';
@@ -28,9 +28,9 @@ export default function SettingsPage() {
   const [cleanDone, setCleanDone] = useState<string | null>(null);
 
   const { preferredQuality, enabledSources, downloadQuality, maxConcurrentDownloads, downloadDir,
-    autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause, debugMode,
+    autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause, debugMode, carMode,
     setPreferredQuality, setSourceEnabled, setDownloadQuality, setMaxConcurrentDownloads,
-    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause, setDebugMode, clearAllSettings } =
+    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause, setDebugMode, setCarMode, clearAllSettings } =
     useSettingsStore();
 
   const sources = sourceRegistry.getAll();
@@ -103,26 +103,48 @@ export default function SettingsPage() {
       {/* Content */}
       <div className="space-y-4">
         {activeTab === 'general' && (
-          <div className="yinliu-card">
-            <h3 className="font-semibold mb-4 text-[var(--text-primary)]">主题设置</h3>
-            <div className="flex gap-2">
-              {(['light', 'dark', 'system'] as const).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setMode(m)}
-                  className={`px-5 py-2.5 rounded-2xl text-sm font-medium transition-all focus-ring ${
-                    mode === m
-                      ? 'bg-[var(--accent)] text-white'
-                      : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]'
-                  }`}
-                >
-                  {m === 'light' && '浅色'}
-                  {m === 'dark' && '深色'}
-                  {m === 'system' && '跟随系统'}
-                </button>
-              ))}
+          <>
+            <div className="yinliu-card">
+              <h3 className="font-semibold mb-4 text-[var(--text-primary)]">主题设置</h3>
+              <div className="flex gap-2">
+                {(['light', 'dark', 'system'] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setMode(m)}
+                    className={`px-5 py-2.5 rounded-2xl text-sm font-medium transition-all focus-ring ${
+                      mode === m
+                        ? 'bg-[var(--accent)] text-white'
+                        : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]'
+                    }`}
+                  >
+                    {m === 'light' && '浅色'}
+                    {m === 'dark' && '深色'}
+                    {m === 'system' && '跟随系统'}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+
+            {/* v15: 车机模式 — 大按钮、精简层级、适合驾驶场景 */}
+            <div className="yinliu-card">
+              <h3 className="font-semibold mb-1 text-[var(--text-primary)] flex items-center gap-2">
+                <Car className="w-4 h-4" />
+                车机模式
+              </h3>
+              <p className="text-xs text-[var(--text-tertiary)] mb-4">
+                适合驾驶场景：字体放大 1.25 倍、按钮热区 ≥ 48dp、弱化搜索输入、强化播放控制
+              </p>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
+                  <div>
+                    <div className="font-medium text-sm text-[var(--text-primary)]">启用车机模式</div>
+                    <div className="text-xs text-[var(--text-tertiary)]">开启后全局应用大按钮与简化层级</div>
+                  </div>
+                  <Toggle on={carMode} onChange={setCarMode} />
+                </div>
+              </div>
+            </div>
+          </>
         )}
 
         {activeTab === 'music' && (

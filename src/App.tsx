@@ -19,6 +19,16 @@ import { configureAudioFocus, updateAudioFocusOptions } from './core/player/audi
 import { initDatabase } from './shared/database';
 
 function App() {
+  // 启动时同步车机模式到 body class
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (useSettingsStore.getState().carMode) {
+      document.body.classList.add('car-mode');
+    } else {
+      document.body.classList.remove('car-mode');
+    }
+  }, []);
+
   useEffect(() => {
     // 初始化数据库（支持从 IndexedDB 恢复）
     initDatabase().then(async () => {

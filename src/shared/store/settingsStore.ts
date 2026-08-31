@@ -24,6 +24,8 @@ export interface SettingsPersisted {
   dismissNotificationOnPause?: boolean;
   /** 调试模式：开启后记录所有操作和事件日志 */
   debugMode?: boolean;
+  /** 车机模式：大按钮、精简层级、适合驾驶场景 */
+  carMode?: boolean;
 }
 
 function loadPersisted(): SettingsPersisted {
@@ -47,6 +49,7 @@ function persist(state: SettingsState): void {
       enableNotificationControls: state.enableNotificationControls,
       dismissNotificationOnPause: state.dismissNotificationOnPause,
       debugMode: state.debugMode,
+      carMode: state.carMode,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch {
@@ -73,6 +76,8 @@ interface SettingsState {
   dismissNotificationOnPause: boolean;
   /** 调试模式：开启后记录所有操作和事件日志 */
   debugMode: boolean;
+  /** 车机模式：大按钮、精简层级、适合驾驶场景 */
+  carMode: boolean;
 
   setPreferredQuality: (quality: Quality) => void;
   setSourceEnabled: (sourceId: string, enabled: boolean) => void;
@@ -82,6 +87,7 @@ interface SettingsState {
   setEnableNotificationControls: (v: boolean) => void;
   setDismissNotificationOnPause: (v: boolean) => void;
   setDebugMode: (enabled: boolean) => void;
+  setCarMode: (enabled: boolean) => void;
   clearAllSettings: () => void;
 }
 
@@ -97,6 +103,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   enableNotificationControls: persisted.enableNotificationControls ?? true,
   dismissNotificationOnPause: persisted.dismissNotificationOnPause ?? false,
   debugMode: persisted.debugMode ?? false,
+  carMode: persisted.carMode ?? false,
 
   setPreferredQuality: (preferredQuality) => {
     set({ preferredQuality });
@@ -141,6 +148,19 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     persist(get());
   },
 
+  setCarMode: (carMode) => {
+    set({ carMode });
+    persist(get());
+    // 车机模式切换时，同步应用到 document.body 的 class
+    if (typeof document !== 'undefined') {
+      if (carMode) {
+        document.body.classList.add('car-mode');
+      } else {
+        document.body.classList.remove('car-mode');
+      }
+    }
+  },
+
   clearAllSettings: () => {
     try {
       localStorage.removeItem(STORAGE_KEY);
@@ -156,7 +176,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       enableNotificationControls: true,
       dismissNotificationOnPause: false,
       debugMode: false,
+      carMode: false,
     });
+    if (typeof document !== 'undefined') {
+      document.body.classList.remove('car-mode');
+    }
     debugLogger.setEnabled(false);
   },
 }));

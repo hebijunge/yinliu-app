@@ -214,6 +214,85 @@ html.dark {
   to { opacity: 1; }
 }
 
+/* ===== Car Mode: 车机模式全局样式 ===== */
+.car-mode {
+  --font-scale: 1.25;
+  --touch-min-size: 48px;
+}
+
+.car-mode,
+.car-mode * {
+  font-size: calc(1rem * var(--font-scale, 1));
+}
+
+.car-mode button,
+.car-mode [role="button"],
+.car-mode a,
+.car-mode .yinliu-btn,
+.car-mode .yinliu-btn-secondary,
+.car-mode select,
+.car-mode input,
+.car-mode .yinliu-input,
+.car-mode [class*="rounded"] {
+  min-height: var(--touch-min-size, 48px);
+  min-width: var(--touch-min-size, 48px);
+}
+
+.car-mode nav [class*="py-"] {
+  padding-top: 0.75rem !important;
+  padding-bottom: 0.75rem !important;
+}
+
+.car-mode .player-control-btn {
+  min-width: 56px;
+  min-height: 56px;
+}
+
+.car-mode .player-control-btn svg {
+  width: 28px;
+  height: 28px;
+}
+
+/* 车机模式下弱化搜索输入 */
+.car-mode .search-input-wrap {
+  opacity: 0.7;
+}
+.car-mode .search-input-wrap:focus-within {
+  opacity: 1;
+}
+
+/* ===== Landscape Player Bar: 横屏播放器控制区 ===== */
+@media (min-width: 640px) and (max-width: 839px) {
+  .landscape-player {
+    --player-height: 88px;
+  }
+  .landscape-player .player-main-controls {
+    gap: 1rem;
+  }
+  .landscape-player .player-main-controls button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .landscape-player .player-main-controls button svg {
+    width: 22px;
+    height: 22px;
+  }
+}
+
+/* ===== Tablet Sidebar: 平板双栏 ===== */
+@media (min-width: 840px) and (max-width: 1279px) {
+  .tablet-sidebar {
+    --sidebar-width: 200px;
+  }
+}
+
+/* ===== Desktop Wide: 大屏三栏/宽版 ===== */
+@media (min-width: 1280px) {
+  .desktop-wide {
+    --sidebar-width: 240px;
+  }
+}
+
 /* ===== Reduced motion ===== */
 @media (prefers-reduced-motion: reduce) {
   .skeleton-shimmer,
