@@ -1,12 +1,6 @@
 import type { SearchResult } from '@core/types';
 import { Quality } from '@core/types';
-
-/**
- * 本地音乐文件扫描器
- * 支持：Tauri fs插件 / Capacitor Filesystem / Web File API
- * 扫描目录：Music/音乐/下载等
- * 读取元数据：ID3/MP4（标题/歌手/专辑/封面/时长）
- */
+import { Filesystem, Directory } from '@capacitor/filesystem';
 
 export interface LocalFileInfo {
   path: string;
@@ -28,6 +22,13 @@ export interface ScannedSong {
   bitrate?: number;
 }
 
+export interface ScanProgress {
+  phase: 'listing' | 'parsing';
+  current: number;
+  total: number;
+  currentFile: string;
+}
+
 /**
  * 判断当前运行环境
  */
@@ -41,15 +42,19 @@ function getPlatform(): 'tauri' | 'capacitor' | 'web' {
   return 'web';
 }
 
+const AUDIO_EXTENSIONS = ['.mp3', '.flac', '.aac', '.m4a', '.ogg', '.wav', '.wma'];
+
 /**
  * 扫描指定目录的音频文件
  */
 export async function scanLocalMusic(
-  directories?: string[]
+  directories?: string[],
+  onProgress?: (progress: ScanProgress) => void
 ): Promise<ScannedSong[]> {
   const platform = getPlatform();
   const defaultDirs = directories || getDefaultMusicDirs(platform);
 
+  // === Phase 1: 列出所有音频文件 ===
   const allFiles: LocalFileInfo[] = [];
 
   for (const dir of defaultDirs) {
@@ -57,18 +62,27 @@ export async function scanLocalMusic(
       const files = await listAudioFiles(dir, platform);
       allFiles.push(...files);
     } catch (err) {
-      console.warn(`扫描目录失败: ${dir}`, err);
+      console.warn(`[LocalScanner] 扫描目录失败: ${dir}`, err);
     }
   }
 
-  // 解析每个音频文件的元数据
+  // === Phase 2: 解析元数据 ===
   const songs: ScannedSong[] = [];
-  for (const file of allFiles) {
+  for (let i = 0; i < allFiles.length; i++) {
+    const file = allFiles[i];
     try {
+      if (onProgress) {
+        onProgress({
+          phase: 'parsing',
+          current: i + 1,
+          total: allFiles.length,
+          currentFile: file.name,
+        });
+      }
       const song = await parseAudioMetadata(file, platform);
       if (song) songs.push(song);
     } catch (err) {
-      console.warn(`解析元数据失败: ${file.path}`, err);
+      console.warn(`[LocalScanner] 解析元数据失败: ${file.path}`, err);
     }
   }
 
@@ -81,7 +95,6 @@ export async function scanLocalMusic(
 function getDefaultMusicDirs(platform: 'tauri' | 'capacitor' | 'web'): string[] {
   switch (platform) {
     case 'tauri':
-      // Tauri桌面端：使用系统音乐目录
       return [
         'Music',
         'music',
@@ -92,8 +105,8 @@ function getDefaultMusicDirs(platform: 'tauri' | 'capacitor' | 'web'): string[] 
         'Music/酷我音乐',
       ];
     case 'capacitor':
-      // Capacitor移动端
       return [
+        'yinliu/downloads',
         'music',
         'Music',
         'Download',
@@ -102,34 +115,28 @@ function getDefaultMusicDirs(platform: 'tauri' | 'capacitor' | 'web'): string[] 
       ];
     case 'web':
     default:
-      // Web端：仅支持用户手动选择
       return [];
   }
 }
 
 /**
- * 列出目录中的音频文件
+ * 列出目录中的音频文件（含递归）
  */
 async function listAudioFiles(
   dir: string,
   platform: 'tauri' | 'capacitor' | 'web'
 ): Promise<LocalFileInfo[]> {
-  const audioExtensions = ['.mp3', '.flac', '.aac', '.m4a', '.ogg', '.wav', '.wma'];
-
   if (platform === 'tauri') {
-    return listTauriFiles(dir, audioExtensions);
+    return listTauriFiles(dir, AUDIO_EXTENSIONS);
   }
-
   if (platform === 'capacitor') {
-    return listCapacitorFiles(dir, audioExtensions);
+    return listCapacitorFilesRecursive(dir, AUDIO_EXTENSIONS);
   }
-
-  // Web端：使用File System Access API
-  return listWebFiles(dir, audioExtensions);
+  return listWebFiles(dir, AUDIO_EXTENSIONS);
 }
 
 /**
- * Tauri文件列表
+ * Tauri 文件列表（递归）
  */
 async function listTauriFiles(dir: string, extensions: string[]): Promise<LocalFileInfo[]> {
   try {
@@ -137,18 +144,19 @@ async function listTauriFiles(dir: string, extensions: string[]): Promise<LocalF
     const entries = await readDir(dir);
     const files: LocalFileInfo[] = [];
 
-    function traverse(entries: any[], basePath: string) {
+    async function traverse(entries: any[], basePath: string) {
       for (const entry of entries) {
         const fullPath = `${basePath}/${entry.name}`;
-        if (entry.children) {
-          traverse(entry.children, fullPath);
+        if (entry.isDirectory || entry.children) {
+          const children = entry.children || [];
+          await traverse(children, fullPath);
         } else {
           const ext = entry.name.slice(entry.name.lastIndexOf('.')).toLowerCase();
           if (extensions.includes(ext)) {
             files.push({
               path: fullPath,
               name: entry.name,
-              size: 0, // Tauri readDir不返回大小
+              size: 0,
               modifiedAt: 0,
             });
           }
@@ -156,46 +164,78 @@ async function listTauriFiles(dir: string, extensions: string[]): Promise<LocalF
       }
     }
 
-    traverse(entries, dir);
+    await traverse(entries, dir);
     return files;
-  } catch {
+  } catch (err) {
+    console.warn('[LocalScanner] Tauri readDir failed:', err);
     return [];
   }
 }
 
 /**
- * Capacitor文件列表
+ * Capacitor 文件列表（递归，多目录尝试）
  */
-async function listCapacitorFiles(dir: string, extensions: string[]): Promise<LocalFileInfo[]> {
-  try {
-    const { Filesystem, Directory } = await import('@capacitor/filesystem');
-    const result = await Filesystem.readdir({
-      path: dir,
-      directory: Directory.ExternalStorage,
-    });
+async function listCapacitorFilesRecursive(
+  dir: string,
+  extensions: string[]
+): Promise<LocalFileInfo[]> {
+  const files: LocalFileInfo[] = [];
 
-    const files: LocalFileInfo[] = [];
+  // 尝试的目录优先级：Data（应用内部，下载目录）> External > Documents
+  const dirsToTry: { directory: Directory; path: string }[] = [
+    { directory: Directory.Data, path: dir },
+    { directory: Directory.ExternalStorage, path: dir },
+    { directory: Directory.Documents, path: dir },
+    { directory: Directory.Data, path: `yinliu/downloads` },
+  ];
 
-    for (const entry of result.files) {
+  for (const { directory, path } of dirsToTry) {
+    try {
+      const result = await Filesystem.readdir({ path, directory });
+      await traverseCapacitorDir(result.files, path, directory, extensions, files);
+      // 如果成功读取到一个目录，通常就够了（避免重复扫描）
+      if (files.length > 0) break;
+    } catch {
+      // 目录不存在或无权限，继续尝试下一个
+    }
+  }
+
+  return files;
+}
+
+async function traverseCapacitorDir(
+  entries: any[],
+  basePath: string,
+  directory: Directory,
+  extensions: string[],
+  files: LocalFileInfo[]
+): Promise<void> {
+  for (const entry of entries) {
+    const fullPath = `${basePath}/${entry.name}`;
+
+    if (entry.type === 'directory') {
+      try {
+        const subResult = await Filesystem.readdir({ path: fullPath, directory });
+        await traverseCapacitorDir(subResult.files, fullPath, directory, extensions, files);
+      } catch {
+        // 跳过无法读取的子目录
+      }
+    } else {
       const ext = entry.name.slice(entry.name.lastIndexOf('.')).toLowerCase();
       if (extensions.includes(ext)) {
         files.push({
-          path: `${dir}/${entry.name}`,
+          path: fullPath,
           name: entry.name,
           size: entry.size || 0,
           modifiedAt: entry.mtime || 0,
         });
       }
     }
-
-    return files;
-  } catch {
-    return [];
   }
 }
 
 /**
- * Web文件列表（File System Access API）
+ * Web 文件列表（File System Access API）
  */
 async function listWebFiles(_dir: string, _extensions: string[]): Promise<LocalFileInfo[]> {
   try {
@@ -240,27 +280,46 @@ async function parseAudioMetadata(
       const bytes = await readFile(file.path);
       arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     } else if (platform === 'capacitor') {
-      const { Filesystem, Directory } = await import('@capacitor/filesystem');
-      const result = await Filesystem.readFile({
-        path: file.path,
-        directory: Directory.ExternalStorage,
-      });
-      const base64 = result.data as string;
-      const binary = atob(base64);
-      arrayBuffer = new ArrayBuffer(binary.length);
-      const view = new Uint8Array(arrayBuffer);
-      for (let i = 0; i < binary.length; i++) {
-        view[i] = binary.charCodeAt(i);
-      }
+      arrayBuffer = await readCapacitorFile(file.path);
     } else {
-      // Web: 无法直接读取文件系统
+      return createBasicSongInfo(file);
+    }
+
+    if (!arrayBuffer || arrayBuffer.byteLength === 0) {
       return createBasicSongInfo(file);
     }
 
     return parseId3Tags(arrayBuffer, file);
-  } catch {
+  } catch (err) {
+    console.warn('[LocalScanner] parseAudioMetadata failed:', err);
     return createBasicSongInfo(file);
   }
+}
+
+/**
+ * 从 Capacitor 读取文件为 ArrayBuffer（多目录尝试）
+ */
+async function readCapacitorFile(filePath: string): Promise<ArrayBuffer> {
+  const dirsToTry = [Directory.Data, Directory.ExternalStorage, Directory.Documents];
+
+  for (const directory of dirsToTry) {
+    try {
+      const result = await Filesystem.readFile({ path: filePath, directory });
+      const base64 = typeof result.data === 'string' ? result.data : '';
+      if (!base64) continue;
+      const binary = atob(base64);
+      const buffer = new ArrayBuffer(binary.length);
+      const view = new Uint8Array(buffer);
+      for (let i = 0; i < binary.length; i++) {
+        view[i] = binary.charCodeAt(i);
+      }
+      return buffer;
+    } catch {
+      // 尝试下一个目录
+    }
+  }
+
+  throw new Error(`无法读取文件: ${filePath}`);
 }
 
 /**
@@ -268,15 +327,13 @@ async function parseAudioMetadata(
  */
 function createBasicSongInfo(file: LocalFileInfo): ScannedSong {
   const name = file.name.replace(/\.[^.]+$/, '');
-  // 尝试从文件名解析歌手-歌名格式
   const parts = name.split(/[-–—_]/);
   const artist = parts.length > 1 ? parts[0].trim() : '未知歌手';
   const title = parts.length > 1 ? parts.slice(1).join(' - ').trim() : name.trim();
-
   const ext = file.name.slice(file.name.lastIndexOf('.') + 1).toLowerCase();
 
   return {
-    id: `local_${btoa(file.path).replace(/[^a-zA-Z0-9]/g, '')}`,
+    id: `local_${btoa(unescape(encodeURIComponent(file.path))).replace(/[^a-zA-Z0-9]/g, '').slice(0, 32)}`,
     title: title || '未知歌曲',
     artist: artist || '未知歌手',
     album: '',
@@ -288,62 +345,69 @@ function createBasicSongInfo(file: LocalFileInfo): ScannedSong {
 }
 
 /**
- * 解析ID3标签（简化版）
- * 支持ID3v2.3/2.4和ID3v1
+ * 解析 ID3 标签（简化版）
+ * 支持 ID3v2.3/2.4 和 ID3v1
  */
 function parseId3Tags(arrayBuffer: ArrayBuffer, file: LocalFileInfo): ScannedSong {
   const view = new Uint8Array(arrayBuffer);
   const info = createBasicSongInfo(file);
 
-  // 检查ID3v2标签
-  if (view[0] === 0x49 && view[1] === 0x44 && view[2] === 0x33) {
-    // ID3v2 header
+  // 检查 ID3v2 标签
+  if (view.length >= 10 && view[0] === 0x49 && view[1] === 0x44 && view[2] === 0x33) {
     const version = view[3];
     const flags = view[5];
     const size = syncSafeInt(view, 6);
     let offset = 10;
 
-    // 如果有扩展头，跳过
     if (flags & 0x40) {
       const extSize = syncSafeInt(view, offset);
       offset += 4 + extSize;
     }
 
-    const endOffset = 10 + size;
+    const endOffset = Math.min(10 + size, view.length);
 
     while (offset < endOffset && offset < view.length - 10) {
       const frameId = String.fromCharCode(view[offset], view[offset + 1], view[offset + 2], view[offset + 3]);
       const frameSize = version >= 4 ? syncSafeInt(view, offset + 4) : readInt32BE(view, offset + 4);
-      const frameFlags = (view[offset + 8] << 8) | view[offset + 9];
 
       if (frameId === '\x00\x00\x00\x00') break;
+      if (frameSize < 0 || frameSize > view.length) break;
 
       const contentOffset = offset + 10;
 
       try {
         switch (frameId) {
           case 'TIT2':
-            info.title = readTextFrame(view, contentOffset, frameSize);
+            info.title = readTextFrame(view, contentOffset, frameSize) || info.title;
             break;
           case 'TPE1':
           case 'TPE2':
-            info.artist = readTextFrame(view, contentOffset, frameSize);
+            info.artist = readTextFrame(view, contentOffset, frameSize) || info.artist;
             break;
           case 'TALB':
-            info.album = readTextFrame(view, contentOffset, frameSize);
+            info.album = readTextFrame(view, contentOffset, frameSize) || info.album;
             break;
           case 'TLEN':
             info.duration = parseInt(readTextFrame(view, contentOffset, frameSize), 10) / 1000;
             break;
           case 'APIC': {
-            // 封面图片 - 简化处理
             const picData = extractApicData(view, contentOffset, frameSize);
             if (picData) {
-              const blob = new Blob([picData as BlobPart]);
-              info.coverUrl = URL.createObjectURL(blob);
+              try {
+                // 复制到独立的 ArrayBuffer 避免 SharedArrayBuffer 类型冲突
+                const ab = new ArrayBuffer(picData.byteLength);
+                new Uint8Array(ab).set(new Uint8Array(picData));
+                const blob = new Blob([ab]);
+                info.coverUrl = URL.createObjectURL(blob);
+              } catch {
+                // ignore blob creation failure
+              }
             }
             break;
           }
+          case 'TBPM':
+            // 比特率信息可能在其他帧
+            break;
         }
       } catch {
         // 跳过解析失败的帧
@@ -353,11 +417,10 @@ function parseId3Tags(arrayBuffer: ArrayBuffer, file: LocalFileInfo): ScannedSon
     }
   }
 
-  // 检查ID3v1标签（在文件末尾）
+  // 检查 ID3v1 标签（在文件末尾）
   if (view.length >= 128) {
     const id3v1Offset = view.length - 128;
     if (view[id3v1Offset] === 0x54 && view[id3v1Offset + 1] === 0x41 && view[id3v1Offset + 2] === 0x47) {
-      // TAG found
       const decoder = new TextDecoder('utf-8', { fatal: false });
       const getString = (start: number, len: number) => {
         const bytes = view.slice(id3v1Offset + start, id3v1Offset + start + len);
@@ -365,22 +428,21 @@ function parseId3Tags(arrayBuffer: ArrayBuffer, file: LocalFileInfo): ScannedSon
         return str.replace(/\x00/g, '').trim();
       };
 
-      if (!info.title) info.title = getString(3, 30) || info.title;
-      if (!info.artist) info.artist = getString(33, 30) || info.artist;
+      if (!info.title || info.title === '未知歌曲') info.title = getString(3, 30) || info.title;
+      if (!info.artist || info.artist === '未知歌手') info.artist = getString(33, 30) || info.artist;
       if (!info.album) info.album = getString(63, 30) || info.album;
     }
   }
 
   // 估算时长（基于文件大小和比特率）
   if (info.duration === 0 && file.size > 0) {
-    // 假设平均比特率192kbps
     info.duration = Math.round((file.size * 8) / (192 * 1000));
   }
 
   return info;
 }
 
-// ID3辅助函数
+// ID3 辅助函数
 function syncSafeInt(view: Uint8Array, offset: number): number {
   return (view[offset] << 21) | (view[offset + 1] << 14) | (view[offset + 2] << 7) | view[offset + 3];
 }
@@ -400,15 +462,12 @@ function readTextFrame(view: Uint8Array, offset: number, size: number): string {
   let bytes: Uint8Array;
 
   if (encoding === 0) {
-    // ISO-8859-1
     decoder = new TextDecoder('iso-8859-1');
     bytes = view.slice(contentStart, contentStart + contentLength);
   } else if (encoding === 1 || encoding === 2) {
-    // UTF-16 with BOM
     decoder = new TextDecoder('utf-16');
     bytes = view.slice(contentStart, contentStart + contentLength);
   } else if (encoding === 3) {
-    // UTF-8
     decoder = new TextDecoder('utf-8');
     bytes = view.slice(contentStart, contentStart + contentLength);
   } else {
@@ -424,15 +483,15 @@ function extractApicData(view: Uint8Array, offset: number, size: number): Uint8A
     let pos = offset;
     const encoding = view[pos++];
 
-    // 跳过MIME类型
+    // 跳过 MIME 类型
     while (pos < offset + size && view[pos] !== 0) pos++;
-    pos++; // 跳过null
+    pos++;
 
     // 跳过图片类型
     pos++;
 
     // 跳过描述
-    if (encoding === 0) {
+    if (encoding === 0 || encoding === 3) {
       while (pos < offset + size && view[pos] !== 0) pos++;
       pos++;
     } else {
@@ -440,7 +499,6 @@ function extractApicData(view: Uint8Array, offset: number, size: number): Uint8A
       pos += 2;
     }
 
-    // 剩余的是图片数据
     if (pos < offset + size) {
       return view.slice(pos, offset + size);
     }
@@ -451,7 +509,7 @@ function extractApicData(view: Uint8Array, offset: number, size: number): Uint8A
 }
 
 /**
- * 将扫描到的本地歌曲转换为SearchResult格式
+ * 将扫描到的本地歌曲转换为 SearchResult 格式
  */
 export function localSongToSearchResult(song: ScannedSong): SearchResult {
   return {
@@ -467,4 +525,41 @@ export function localSongToSearchResult(song: ScannedSong): SearchResult {
     quality: Quality.STANDARD,
     bitrate: song.bitrate || 128,
   };
+}
+
+/**
+ * 读取本地音频文件并生成 Blob URL（用于播放）
+ */
+export async function readLocalAudioAsUrl(filePath: string): Promise<string> {
+  const dirsToTry = [Directory.Data, Directory.ExternalStorage, Directory.Documents];
+  const ext = filePath.split('.').pop()?.toLowerCase() || 'mp3';
+  const mimeMap: Record<string, string> = {
+    mp3: 'audio/mpeg',
+    flac: 'audio/flac',
+    wav: 'audio/wav',
+    m4a: 'audio/mp4',
+    ogg: 'audio/ogg',
+    aac: 'audio/aac',
+  };
+  const mime = mimeMap[ext] || 'audio/mpeg';
+
+  for (const directory of dirsToTry) {
+    try {
+      const result = await Filesystem.readFile({ path: filePath, directory });
+      const base64 = typeof result.data === 'string' ? result.data : '';
+      if (!base64) continue;
+
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: mime });
+      return URL.createObjectURL(blob);
+    } catch {
+      // 尝试下一个目录
+    }
+  }
+
+  throw new Error(`无法读取本地音频文件: ${filePath}`);
 }

@@ -218,7 +218,16 @@ export class DownloadEngine {
       const decrypted = task.sourceId === 'kuwo' ? qmc2DecryptBytes(merged) : merged;
 
       // 转为 base64 写入 Capacitor Filesystem
-      const base64 = btoa(String.fromCharCode(...decrypted));
+      // 分块转换以避免大文件栈溢出（Hi-Res FLAC >50MB）
+      let binary = '';
+      const CHUNK = 0x8000; // 32KB
+      for (let i = 0; i < decrypted.length; i += CHUNK) {
+        binary += String.fromCharCode.apply(
+          null,
+          decrypted.subarray(i, i + CHUNK) as unknown as number[]
+        );
+      }
+      const base64 = btoa(binary);
       await Filesystem.writeFile({
         path: filePath,
         data: base64,
