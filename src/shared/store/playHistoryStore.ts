@@ -1,43 +1,44 @@
-/**
- * 播放历史 Store
- * v13: 管理最近播放列表（UI 持久化部分）
- */
 import { create } from 'zustand';
+import { playHistoryService, type HistoryRecord, type HistoryInput } from '@shared/services/PlayHistoryService';
 
-export interface PlayHistoryItem {
-  id?: string;
-  songId: string;
-  title: string;
-  artist?: string;
-  album?: string;
-  coverUrl?: string;
-  source: string;
-  duration?: number;
-  playedAt: number;
+export type { HistoryRecord, HistoryInput };
+
+interface PlayHistoryStore {
+  records: HistoryRecord[];
+  isLoading: boolean;
+
+  loadRecords: () => Promise<void>;
+  addRecord: (input: HistoryInput) => Promise<void>;
+  clearHistory: () => Promise<void>;
+  removeRecord: (id: number) => Promise<void>;
 }
 
-interface PlayHistoryState {
-  /** v13 SearchPage 使用的别名 */
-  records: PlayHistoryItem[];
-  /** 兼容旧字段 */
-  items: PlayHistoryItem[];
-  addItem: (item: Omit<PlayHistoryItem, 'playedAt'>) => void;
-  addRecord: (item: Omit<PlayHistoryItem, 'playedAt'>) => void;
-  clear: () => void;
-}
-
-export const usePlayHistoryStore = create<PlayHistoryState>((set) => ({
+export const usePlayHistoryStore = create<PlayHistoryStore>((set, get) => ({
   records: [],
-  items: [],
-  addItem: (item) =>
-    set((s) => {
-      const next = [{ ...item, playedAt: Date.now() }, ...s.items].slice(0, 200);
-      return { items: next, records: next };
-    }),
-  addRecord: (item) =>
-    set((s) => {
-      const next = [{ ...item, playedAt: Date.now() }, ...s.records].slice(0, 200);
-      return { records: next, items: next };
-    }),
-  clear: () => set({ items: [], records: [] }),
+  isLoading: false,
+
+  loadRecords: async () => {
+    set({ isLoading: true });
+    try {
+      const records = await playHistoryService.getRecent(200);
+      set({ records });
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  addRecord: async (input) => {
+    await playHistoryService.addRecord(input);
+    await get().loadRecords();
+  },
+
+  clearHistory: async () => {
+    await playHistoryService.clearAll();
+    set({ records: [] });
+  },
+
+  removeRecord: async (id) => {
+    await playHistoryService.removeRecord(id);
+    set({ records: get().records.filter((r) => r.id !== id) });
+  },
 }));

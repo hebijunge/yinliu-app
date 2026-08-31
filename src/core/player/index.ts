@@ -47,8 +47,6 @@ interface PlayerEventMap {
   ended: void;
   /** 取链完成（含实际音质/试听标记），UI 据此回写 actualQuality */
   trackLoaded: { track: PlayerTrack; result: PlayUrlResult; actualSourceId: string };
-  /** 系统媒体会话 / 锁屏控制触发的事件 */
-  mediaAction: { action: string; seekTime: number | null };
   /**
    * v13: 取链降级事件。首选源不可用时触发，携带从哪个源降级到哪个源。
    * 上层可监听做埋点 / 提示。
@@ -59,6 +57,8 @@ interface PlayerEventMap {
     toSourceId: string;
     reason: string;
   };
+  /** 系统媒体会话 / 锁屏控制触发的事件 */
+  mediaAction: { action: string; seekTime: number | null };
 }
 
 export class PlayerEngine {
@@ -114,15 +114,12 @@ export class PlayerEngine {
     } else if (state === 'paused') {
       await updatePlaybackState('paused');
     } else if (state === 'idle' || state === 'error') {
-      // idle/error 暂时保留通知（用户可继续在通知栏恢复），只在 stop() 时才彻底清空
       await updatePlaybackState('paused');
     }
   }
 
   /**
    * 处理来自通知栏 / 锁屏 / 硬件按键的媒体控制事件
-   * - 内部保持 PlayerEngine 自身行为
-   * - 通过 mediaAction 事件转发给上层（供埋点、状态广播等场景使用）
    */
   private async handleMediaAction(action: string, details: { seekTime: number | null }): Promise<void> {
     this.emit('mediaAction', { action, seekTime: details.seekTime });
@@ -175,7 +172,6 @@ export class PlayerEngine {
 
   /**
    * 初始化媒体会话；幂等，多次调用安全
-   * 必须在 App 启动早期调用（绑定 mediaAction 等）
    */
   async initMediaSessionBridge(): Promise<void> {
     if (this.mediaSessionReady) return;
@@ -183,7 +179,6 @@ export class PlayerEngine {
     await initMediaSession((action, details) => {
       void this.handleMediaAction(action, details);
     });
-    // 启动时把当前进度定期同步到系统
     startPositionSync(() => ({
       currentTime: this.getCurrentTime(),
       duration: this.getDuration(),
@@ -201,7 +196,6 @@ export class PlayerEngine {
   // === 统一 URL 解析器：本地歌曲 → 已下载本地文件 → 在线取链（带优先级降级链） ===
   private async resolvePlayUrl(track: PlayerTrack, quality: Quality): Promise<{ url: string; isLocal: boolean; result: PlayUrlResult; actualSourceId: string }> {
     // 0. 本地歌曲（sourceId === 'local'，v12 已合并分支）：直接读取文件系统
-    //    优先级降级链对本地音乐完全不可见——本地音乐本来就是「最优先」的播放来源。
     if (track.sourceId === 'local') {
       const filePath = track.sourceSongId;
       const localUrl = await readLocalAudioAsUrl(filePath);
@@ -226,20 +220,22 @@ export class PlayerEngine {
     if (completedTask?.filePath) {
       const exists = await downloadEngine.checkLocalFile(completedTask.filePath);
       if (exists) {
-        const localUrl = await downloadEngine.readLocalFileAsUrl(completedTask.filePath);
-        console.log('[PlayerEngine] Playing from local file:', completedTask.filePath);
-        return {
-          url: localUrl,
-          isLocal: true,
-          result: { url: localUrl, quality, bitrate: 0, format: 'mp3' },
-          actualSourceId: track.sourceId,
-        };
+        try {
+          const localUrl = await downloadEngine.readLocalFileAsUrl(completedTask.filePath);
+          console.log('[PlayerEngine] Playing from local file:', completedTask.filePath);
+          return {
+            url: localUrl,
+            isLocal: true,
+            result: { url: localUrl, quality, bitrate: 0, format: 'mp3' },
+            actualSourceId: track.sourceId,
+          };
+        } catch (localErr) {
+          console.warn('[PlayerEngine] Local file read failed, falling back to online:', localErr);
+        }
       }
     }
 
     // 2. 在线取链 —— v13: 多平台降级链
-    //    降级链由 buildFallbackChain 根据 track.sourceId + availableSources 构造。
-    //    单平台歌曲（无 availableSources 或只有一个）：行为与 v12 等价。
     const availableIds = (track.availableSources || []).map((s) => s.sourceId);
     const sourceSongIdMap = new Map<string, string>();
     for (const s of track.availableSources || []) {
@@ -260,7 +256,6 @@ export class PlayerEngine {
       const source = sourceRegistry.get(trySourceId);
       if (!source) continue;
       if (!source.enabled) {
-        // 禁用源直接跳过
         continue;
       }
       const trySongId = sourceSongIdMap.get(trySourceId) || track.sourceSongId;
@@ -268,7 +263,6 @@ export class PlayerEngine {
       try {
         const playUrl = await source.getPlayUrl(trySongId, quality);
         if (i > 0) {
-          // 之前有降级过 → 提示用户
           const fromName = PLATFORM_DISPLAY_NAMES[chain[i - 1]] || chain[i - 1];
           const toName = PLATFORM_DISPLAY_NAMES[trySourceId] || trySourceId;
           const reason = lastError instanceof Error ? lastError.message : '不可用';
@@ -293,7 +287,6 @@ export class PlayerEngine {
           `[PlayerEngine] getPlayUrl failed on ${trySourceId}:`,
           err instanceof Error ? err.message : err
         );
-        // 继续降级
       }
     }
 
@@ -308,6 +301,7 @@ export class PlayerEngine {
     this.lastQuality = quality;
     this.setState('loading');
     this.currentTrack = track;
+
     // 提前把 metadata 推到系统（用户切歌时立即更新通知）
     void updateMetadata({
       title: track.title,
@@ -380,7 +374,6 @@ export class PlayerEngine {
 
     this.audio.addEventListener('pause', () => {
       // 区分用户主动暂停与系统焦点丢失
-      // 如果当前是「用户主动调用了 play 但系统又触发了 pause」（常见于被其他 App 抢焦点）
       if (this.state === 'playing') {
         this.setState('paused', 'system');
       }
@@ -395,7 +388,7 @@ export class PlayerEngine {
     try {
       await this.audio.play();
     } catch (err) {
-      // play() 可能因自动播放策略被拒绝（少见，发生在用户没交互时）
+      // play() 可能因自动播放策略被拒绝
       this.setState('paused', 'system');
       this.emit('error', { message: '自动播放被阻止，请点击播放' });
     }

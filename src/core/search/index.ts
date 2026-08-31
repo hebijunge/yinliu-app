@@ -36,7 +36,7 @@ export interface SearchEngineOptions {
  *    又不会把 cover / live / remix 版本误并入原版）
  * 4. 若原 key 已存在但时长差 > 5s，则创建带时长的二级 key
  */
-const DURATION_TOLERANCE_SEC = 5;
+const DURATION_TOLERANCE_SEC = 10;
 
 /** 归一化歌曲标题：去空白、小写、移除常见版本/装饰标记 */
 function normalizeTitle(raw: string): string {

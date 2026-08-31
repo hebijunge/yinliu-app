@@ -11,6 +11,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
 
   const navItems = [
     { to: '/', icon: Search, label: '发现/搜索' },
+    { to: '/history', icon: Clock, label: '最近播放' },
     { to: '/playlists', icon: ListMusic, label: '我的歌单' },
     { to: '/downloads', icon: Download, label: '下载管理' },
     { to: '/reading', icon: BookOpen, label: '书架' },

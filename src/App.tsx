@@ -6,11 +6,15 @@ import PlaylistPage from './pages/PlaylistPage';
 import DownloadPage from './pages/DownloadPage';
 import ReadingPage from './pages/ReadingPage';
 import SettingsPage from './pages/SettingsPage';
+import HistoryPage from './pages/HistoryPage';
 import { playerEngine } from './core/player';
 import { downloadEngine } from './core/download';
 import { usePlayerStore } from './shared/store/playerStore';
 import { useDownloadStore } from './shared/store/downloadStore';
 import { usePlaylistStore } from './shared/store/playlistStore';
+import { usePlayHistoryStore } from './shared/store/playHistoryStore';
+import { useSettingsStore } from './shared/store/settingsStore';
+import { configureAudioFocus, updateAudioFocusOptions } from './core/player/audioFocus';
 import { initDatabase } from './shared/database';
 
 function App() {
@@ -27,6 +31,19 @@ function App() {
       // 从数据库加载歌单
       await usePlaylistStore.getState().loadPlaylists();
       await usePlaylistStore.getState().loadFavorites();
+
+      // 加载播放历史
+      await usePlayHistoryStore.getState().loadRecords();
+    });
+
+    // 初始化媒体会话（通知栏 / 锁屏 / 硬件按键控制）
+    void playerEngine.initMediaSessionBridge();
+
+    // 初始化音频焦点管理（让设置项即时生效）
+    const s = useSettingsStore.getState();
+    configureAudioFocus(playerEngine, { autoResumeOnFocusGain: s.autoResumeOnAudioFocus });
+    const unsubSettings = useSettingsStore.subscribe((state) => {
+      updateAudioFocusOptions({ autoResumeOnFocusGain: state.autoResumeOnAudioFocus });
     });
 
     // 绑定播放器事件到 Store
@@ -41,6 +58,9 @@ function App() {
     });
     const unsub3b = playerEngine.on('trackLoaded', ({ actualSourceId }) => {
       usePlayerStore.getState().setActualSourceId(actualSourceId || null);
+    });
+    const unsub3c = playerEngine.on('mediaAction', ({ action }) => {
+      console.log('[App] media action from system control:', action);
     });
 
     // 绑定下载事件到 Store
@@ -67,10 +87,12 @@ function App() {
       unsub2();
       unsub3();
       unsub3b();
+      unsub3c();
       unsub4();
       unsub5();
       unsub6();
       unsub7();
+      unsubSettings();
     };
   }, []);
 
@@ -79,6 +101,7 @@ function App() {
       <Routes>
         <Route path="/" element={<SearchPage />} />
         <Route path="/search" element={<SearchPage />} />
+        <Route path="/history" element={<HistoryPage />} />
         <Route path="/playlists" element={<PlaylistPage />} />
         <Route path="/downloads" element={<DownloadPage />} />
         <Route path="/reading" element={<ReadingPage />} />

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Settings, Music, Info, Trash2, Check, Headphones, ListOrdered } from 'lucide-react';
+import { Settings, Music, Info, Trash2, Check, ListOrdered } from 'lucide-react';
 import { useThemeStore } from '../shared/store/themeStore';
 import { useSettingsStore } from '../shared/store/settingsStore';
 import { useSearchStore } from '../shared/store/searchStore';
@@ -26,13 +26,11 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const [cleanDone, setCleanDone] = useState<string | null>(null);
 
-  const {
-    preferredQuality, enabledSources, downloadQuality, maxConcurrentDownloads, downloadDir,
+  const { preferredQuality, enabledSources, downloadQuality, maxConcurrentDownloads, downloadDir,
     autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause,
     setPreferredQuality, setSourceEnabled, setDownloadQuality, setMaxConcurrentDownloads,
-    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause,
-    clearAllSettings,
-  } = useSettingsStore();
+    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause, clearAllSettings } =
+    useSettingsStore();
 
   const sources = sourceRegistry.getAll();
 
@@ -44,7 +42,6 @@ export default function SettingsPage() {
 
   const handleQualityPreference = (q: Quality) => {
     setPreferredQuality(q);
-    // 与播放器 / 搜索页共用同一偏好
     usePlayerStore.getState().setQuality(q);
     useSearchStore.getState().setQuality(q);
   };
@@ -129,40 +126,6 @@ export default function SettingsPage() {
 
         {activeTab === 'music' && (
           <>
-            {/* 后台播放 / 通知栏控制 */}
-            <div className="yinliu-card">
-              <h3 className="font-semibold mb-1 text-[var(--text-primary)] flex items-center gap-2">
-                <Headphones className="w-4 h-4" />
-                后台播放与通知栏
-              </h3>
-              <p className="text-xs text-[var(--text-tertiary)] mb-4">
-                控制 App 切后台、锁屏时的播放行为与系统通知栏媒体卡片
-              </p>
-              <div className="space-y-3">
-                <div className="flex items-center justify-between p-4 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
-                  <div className="pr-3">
-                    <div className="font-medium text-sm text-[var(--text-primary)]">显示通知栏媒体卡片</div>
-                    <div className="text-xs text-[var(--text-tertiary)] mt-0.5">关闭后系统通知栏 / 锁屏不再显示播放控件</div>
-                  </div>
-                  <Toggle on={enableNotificationControls} onChange={setEnableNotificationControls} />
-                </div>
-                <div className="flex items-center justify-between p-4 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
-                  <div className="pr-3">
-                    <div className="font-medium text-sm text-[var(--text-primary)]">音频焦点恢复后自动续播</div>
-                    <div className="text-xs text-[var(--text-tertiary)] mt-0.5">来电挂断 / 其他音乐 App 退出后自动恢复</div>
-                  </div>
-                  <Toggle on={autoResumeOnAudioFocus} onChange={setAutoResumeOnAudioFocus} />
-                </div>
-                <div className="flex items-center justify-between p-4 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
-                  <div className="pr-3">
-                    <div className="font-medium text-sm text-[var(--text-primary)]">暂停后从通知栏移除</div>
-                    <div className="text-xs text-[var(--text-tertiary)] mt-0.5">关闭则保留通知卡片，便于从通知栏恢复播放</div>
-                  </div>
-                  <Toggle on={dismissNotificationOnPause} onChange={setDismissNotificationOnPause} />
-                </div>
-              </div>
-            </div>
-
             {/* 音源开关：真实生效，关闭后聚合搜索只走启用的源 */}
             <div className="yinliu-card">
               <h3 className="font-semibold mb-1 text-[var(--text-primary)]">音源管理</h3>
@@ -253,6 +216,35 @@ export default function SettingsPage() {
               </div>
             </div>
 
+            {/* 后台播放设置 */}
+            <div className="yinliu-card">
+              <h3 className="font-semibold mb-1 text-[var(--text-primary)]">后台播放</h3>
+              <p className="text-xs text-[var(--text-tertiary)] mb-4">控制应用切到后台或被其他应用打断时的行为</p>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
+                  <div>
+                    <div className="font-medium text-sm text-[var(--text-primary)]">自动续播</div>
+                    <div className="text-xs text-[var(--text-tertiary)]">被其他应用打断后恢复时自动继续播放</div>
+                  </div>
+                  <Toggle on={autoResumeOnAudioFocus} onChange={setAutoResumeOnAudioFocus} />
+                </div>
+                <div className="flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
+                  <div>
+                    <div className="font-medium text-sm text-[var(--text-primary)]">通知栏控制</div>
+                    <div className="text-xs text-[var(--text-tertiary)]">在系统通知栏 / 锁屏显示播放控制</div>
+                  </div>
+                  <Toggle on={enableNotificationControls} onChange={setEnableNotificationControls} />
+                </div>
+                <div className="flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
+                  <div>
+                    <div className="font-medium text-sm text-[var(--text-primary)]">暂停后隐藏通知</div>
+                    <div className="text-xs text-[var(--text-tertiary)]">暂停播放后自动从通知栏移除媒体卡片</div>
+                  </div>
+                  <Toggle on={dismissNotificationOnPause} onChange={setDismissNotificationOnPause} />
+                </div>
+              </div>
+            </div>
+
             {/* 下载设置 */}
             <div className="yinliu-card">
               <h3 className="font-semibold mb-4 text-[var(--text-primary)]">下载设置</h3>
@@ -311,7 +303,7 @@ export default function SettingsPage() {
                 >
                   <span className="text-sm text-[var(--text-primary)] flex items-center gap-2">
                     <Trash2 className="w-4 h-4 text-[var(--text-tertiary)]" />
-                    恢复默认设置（含音源开关 / 音质偏好 / 下载设置 / 后台播放）
+                    恢复默认设置（含音源开关 / 音质偏好 / 下载设置）
                   </span>
                   {cleanDone === 'all' && <span className="text-xs text-green-500">已恢复</span>}
                 </button>
@@ -337,7 +329,7 @@ export default function SettingsPage() {
               <p>多音源聚合音乐播放器</p>
               <p>支持平台: 网易云 / QQ音乐 / 酷我 / 酷狗 / 咪咕</p>
               <p>功能: 音乐 / 阅读 / DJ / 本地音乐 / 下载</p>
-              <p className="mt-4 opacity-60">v12 · 新增：系统通知栏媒体控制 · 后台播放保活</p>
+              <p className="mt-4 opacity-60">v13 · 新增：聚合搜索 + 取链优先级 · 多平台降级</p>
             </div>
           </div>
         )}

@@ -90,10 +90,6 @@ export function buildFallbackChain(
   for (const id of [...candidates]) {
     if (!isKnownPlatform(id)) candidates.delete(id);
   }
-  // 优先级表里但不在 candidates 的也补上，作为「同曲其他平台未知时」的兜底
-  for (const id of PLATFORM_PRIORITY) {
-    candidates.add(id);
-  }
 
   const ranked = [...candidates].sort((a, b) => getPriorityRank(a) - getPriorityRank(b));
   return ranked;
