@@ -1,1 +1,294 @@
-aW1wb3J0IHsgRmlsZXN5c3RlbSwgRGlyZWN0b3J5IH0gZnJvbSAnQGNhcGFjaXRvci9maWxlc3lzdGVtJzsKaW1wb3J0IHsgcGxhdGZvcm1GZXRjaCB9IGZyb20gJ0BzaGFyZWQvdXRpbHMvcGxhdGZvcm1GZXRjaCc7CmltcG9ydCB7IGRlYnVnTG9nZ2VyIH0gZnJvbSAnQHNoYXJlZC91dGlscy9kZWJ1Z0xvZ2dlcic7Cgpjb25zdCBDQUNIRV9ESVIgPSAneWlubGl1L2NhY2hlJzsKY29uc3QgTUFYX0NBQ0hFX1NJWkVfTUIgPSA1MDA7CmNvbnN0IE1BWF9DQUNIRV9TSVpFX0JZVEVTID0gTUFYX0NBQ0hFX1NJWkVfTUIgKiAxMDI0ICogMTAyNDsKCmludGVyZmFjZSBDYWNoZUVudHJ5IHsKICBmaWxlUGF0aDogc3RyaW5nOwogIHNpemU6IG51bWJlcjsKICBsYXN0QWNjZXNzZWQ6IG51bWJlcjsKICBzb3VyY2VJZDogc3RyaW5nOwogIHNvbmdJZDogc3RyaW5nOwogIHF1YWxpdHk6IHN0cmluZzsKfQoKLyoqCiAqIOWcqOe6v+aSreaUvua1geW8j+e8k+WtmOeuoeeQhuWZqAogKiAtIOS9v+eUqCBwbGF0Zm9ybUZldGNo77yIQ2FwYWNpdG9yIOWOn+eUnyBIVFRQ77yJ57uV6L+HIFdlYlZpZXcg6Ziy55uX6ZO+6ZmQ5Yi2CiAqIC0g57yT5a2Y5paH5Lu25oyJIHNvdXJjZUlkK3NvbmdJZCtxdWFsaXR5IOWRveWQjQogKiAtIDUwME1CIExSVSDmt5jmsbAKICovCmV4cG9ydCBjbGFzcyBTdHJlYW1DYWNoZU1hbmFnZXIgewogIHByaXZhdGUgZW50cmllcyA9IG5ldyBNYXA8c3RyaW5nLCBDYWNoZUVudHJ5PigpOwogIHByaXZhdGUgaW5pdGlhbGl6ZWQgPSBmYWxzZTsKCiAgYXN5bmMgaW5pdCgpOiBQcm9taXNlPHZvaWQ+IHsKICAgIGlmICh0aGlzLmluaXRpYWxpemVkKSByZXR1cm47CiAgICBhd2FpdCB0aGlzLmVuc3VyZUNhY2hlRGlyKCk7CiAgICBhd2FpdCB0aGlzLnNjYW5DYWNoZURpcigpOwogICAgdGhpcy5pbml0aWFsaXplZCA9IHRydWU7CiAgfQoKICBwcml2YXRlIGFzeW5jIGVuc3VyZUNhY2hlRGlyKCk6IFByb21pc2U8dm9pZD4gewogICAgdHJ5IHsKICAgICAgYXdhaXQgRmlsZXN5c3RlbS5ta2Rpcih7IHBhdGg6IENBQ0hFX0RJUiwgZGlyZWN0b3J5OiBEaXJlY3RvcnkuRGF0YSwgcmVjdXJzaXZlOiB0cnVlIH0pOwogICAgfSBjYXRjaCB7CiAgICAgIC8vIOebruW9leWPr+iDveW3suWtmOWcqAogICAgfQogIH0KCiAgcHJpdmF0ZSBhc3luYyBzY2FuQ2FjaGVEaXIoKTogUHJvbWlzZTx2b2lkPiB7CiAgICB0cnkgewogICAgICBjb25zdCByZXN1bHQgPSBhd2FpdCBGaWxlc3lzdGVtLnJlYWRkaXIoeyBwYXRoOiBDQUNIRV9ESVIsIGRpcmVjdG9yeTogRGlyZWN0b3J5LkRhdGEgfSk7CiAgICAgIGZvciAoY29uc3QgZmlsZSBvZiByZXN1bHQuZmlsZXMpIHsKICAgICAgICAvLyDmlofku7blkI3moLzlvI86IHtzb3VyY2VJZH1fe3NvbmdJZH1fe3F1YWxpdHl9LntleHR9CiAgICAgICAgY29uc3QgbWF0Y2ggPSBmaWxlLm5hbWUubWF0Y2goL14oLispXyguKylfKC4rKVwuKC4rKSQvKTsKICAgICAgICBpZiAoIW1hdGNoKSBjb250aW51ZTsKICAgICAgICBjb25zdCBbLCBzb3VyY2VJZCwgc29uZ0lkLCBxdWFsaXR5XSA9IG1hdGNoOwogICAgICAgIGNvbnN0IGZpbGVQYXRoID0gYCR7Q0FDSEVfRElSfS8ke2ZpbGUubmFtZX1gOwogICAgICAgIHRyeSB7CiAgICAgICAgICBjb25zdCBzdGF0ID0gYXdhaXQgRmlsZXN5c3RlbS5zdGF0KHsgcGF0aDogZmlsZVBhdGgsIGRpcmVjdG9yeTogRGlyZWN0b3J5LkRhdGEgfSk7CiAgICAgICAgICBjb25zdCBrZXkgPSB0aGlzLmdldENhY2hlS2V5KHNvdXJjZUlkLCBzb25nSWQsIHF1YWxpdHkpOwogICAgICAgICAgdGhpcy5lbnRyaWVzLnNldChrZXksIHsKICAgICAgICAgICAgZmlsZVBhdGgsCiAgICAgICAgICAgIHNpemU6IHN0YXQuc2l6ZSB8fCAwLAogICAgICAgICAgICBsYXN0QWNjZXNzZWQ6IHN0YXQubXRpbWUgfHwgRGF0ZS5ub3coKSwKICAgICAgICAgICAgc291cmNlSWQsCiAgICAgICAgICAgIHNvbmdJZCwKICAgICAgICAgICAgcXVhbGl0eSwKICAgICAgICAgIH0pOwogICAgICAgIH0gY2F0Y2ggewogICAgICAgICAgLy8gc3RhdCDlpLHotKXliJnot7Pov4cKICAgICAgICB9CiAgICAgIH0KICAgIH0gY2F0Y2ggewogICAgICAvLyDnvJPlrZjnm67lvZXkuLrnqbrmiJbkuI3lrZjlnKgKICAgIH0KICB9CgogIHByaXZhdGUgZ2V0Q2FjaGVLZXkoc291cmNlSWQ6IHN0cmluZywgc29uZ0lkOiBzdHJpbmcsIHF1YWxpdHk6IHN0cmluZyk6IHN0cmluZyB7CiAgICByZXR1cm4gYCR7c291cmNlSWR9XyR7c29uZ0lkfV8ke3F1YWxpdHl9YDsKICB9CgogIHByaXZhdGUgZ2V0Q2FjaGVGaWxlTmFtZShzb3VyY2VJZDogc3RyaW5nLCBzb25nSWQ6IHN0cmluZywgcXVhbGl0eTogc3RyaW5nLCBmb3JtYXQ6IHN0cmluZyk6IHN0cmluZyB7CiAgICByZXR1cm4gYCR7c291cmNlSWR9XyR7c29uZ0lkfV8ke3F1YWxpdHl9LiR7Zm9ybWF0IHx8ICdtcDMnfWA7CiAgfQoKICAvKiog5qOA5p+l5oyH5a6a5puy55uu5piv5ZCm5Zyo57yT5a2Y5LitICovCiAgYXN5bmMgaGFzQ2FjaGUoc291cmNlSWQ6IHN0cmluZywgc29uZ0lkOiBzdHJpbmcsIHF1YWxpdHk6IHN0cmluZyk6IFByb21pc2U8Ym9vbGVhbj4gewogICAgYXdhaXQgdGhpcy5pbml0KCk7CiAgICBjb25zdCBrZXkgPSB0aGlzLmdldENhY2hlS2V5KHNvdXJjZUlkLCBzb25nSWQsIHF1YWxpdHkpOwogICAgY29uc3QgZW50cnkgPSB0aGlzLmVudHJpZXMuZ2V0KGtleSk7CiAgICBpZiAoIWVudHJ5KSByZXR1cm4gZmFsc2U7CiAgICB0cnkgewogICAgICBhd2FpdCBGaWxlc3lzdGVtLnN0YXQoeyBwYXRoOiBlbnRyeS5maWxlUGF0aCwgZGlyZWN0b3J5OiBEaXJlY3RvcnkuRGF0YSB9KTsKICAgICAgcmV0dXJuIHRydWU7CiAgICB9IGNhdGNoIHsKICAgICAgdGhpcy5lbnRyaWVzLmRlbGV0ZShrZXkpOwogICAgICByZXR1cm4gZmFsc2U7CiAgICB9CiAgfQoKICAvKiog5LuO57yT5a2Y6K+75Y+W5Li65Y+v5pKt5pS+55qEIEJsb2IgVVJMICovCiAgYXN5bmMgZ2V0Q2FjaGVBc1VybChzb3VyY2VJZDogc3RyaW5nLCBzb25nSWQ6IHN0cmluZywgcXVhbGl0eTogc3RyaW5nKTogUHJvbWlzZTxzdHJpbmcgfCBudWxsPiB7CiAgICBhd2FpdCB0aGlzLmluaXQoKTsKICAgIGNvbnN0IGtleSA9IHRoaXMuZ2V0Q2FjaGVLZXkoc291cmNlSWQsIHNvbmdJZCwgcXVhbGl0eSk7CiAgICBjb25zdCBlbnRyeSA9IHRoaXMuZW50cmllcy5nZXQoa2V5KTsKICAgIGlmICghZW50cnkpIHJldHVybiBudWxsOwogICAgdHJ5IHsKICAgICAgYXdhaXQgRmlsZXN5c3RlbS5zdGF0KHsgcGF0aDogZW50cnkuZmlsZVBhdGgsIGRpcmVjdG9yeTogRGlyZWN0b3J5LkRhdGEgfSk7CiAgICAgIGVudHJ5Lmxhc3RBY2Nlc3NlZCA9IERhdGUubm93KCk7CiAgICAgIHJldHVybiBhd2FpdCB0aGlzLnJlYWRGaWxlQXNVcmwoZW50cnkuZmlsZVBhdGgpOwogICAgfSBjYXRjaCB7CiAgICAgIHRoaXMuZW50cmllcy5kZWxldGUoa2V5KTsKICAgICAgcmV0dXJuIG51bGw7CiAgICB9CiAgfQoKICAvKioKICAgKiDkuIvovb3pn7PpopHlubblhpnlhaXnvJPlrZjvvIzov5Tlm57lj6/mkq3mlL7nmoQgQmxvYiBVUkwKICAgKiDkvb/nlKggcGxhdGZvcm1GZXRjaO+8iENhcGFjaXRvciDljp/nlJ8gSFRUUO+8iee7lei/hyBXZWJWaWV3IOmZkOWItgogICAqLwogIGFzeW5jIGZldGNoQW5kQ2FjaGUoCiAgICB1cmw6IHN0cmluZywKICAgIHNvdXJjZUlkOiBzdHJpbmcsCiAgICBzb25nSWQ6IHN0cmluZywKICAgIHF1YWxpdHk6IHN0cmluZywKICAgIGZvcm1hdDogc3RyaW5nLAogICAgaGVhZGVycz86IFJlY29yZDxzdHJpbmcsIHN0cmluZz4KICApOiBQcm9taXNlPHN0cmluZz4gewogICAgYXdhaXQgdGhpcy5pbml0KCk7CiAgICBjb25zdCBrZXkgPSB0aGlzLmdldENhY2hlS2V5KHNvdXJjZUlkLCBzb25nSWQsIHF1YWxpdHkpOwoKICAgIC8vIOWPjOmHjeajgOafpee8k+WtmO+8iOmYsuatouW5tuWPkemHjeWkjeS4i+i9ve+8iQogICAgY29uc3QgZXhpc3RpbmcgPSB0aGlzLmVudHJpZXMuZ2V0KGtleSk7CiAgICBpZiAoZXhpc3RpbmcpIHsKICAgICAgdHJ5IHsKICAgICAgICBhd2FpdCBGaWxlc3lzdGVtLnN0YXQoeyBwYXRoOiBleGlzdGluZy5maWxlUGF0aCwgZGlyZWN0b3J5OiBEaXJlY3RvcnkuRGF0YSB9KTsKICAgICAgICBleGlzdGluZy5sYXN0QWNjZXNzZWQgPSBEYXRlLm5vdygpOwogICAgICAgIHJldHVybiBhd2FpdCB0aGlzLnJlYWRGaWxlQXNVcmwoZXhpc3RpbmcuZmlsZVBhdGgpOwogICAgICB9IGNhdGNoIHsKICAgICAgICB0aGlzLmVudHJpZXMuZGVsZXRlKGtleSk7CiAgICAgIH0KICAgIH0KCiAgICBkZWJ1Z0xvZ2dlci5pbmZvKCdwbGF5ZXInLCBgc3RyZWFtQ2FjaGUg5byA5aeL5LiL6L2957yT5a2YOiAke2tleX1gLCB7CiAgICAgIHVybDogdXJsLnNsaWNlKDAsIDEyMCksCiAgICB9KTsKCiAgICAvLyDkvb/nlKggcGxhdGZvcm1GZXRjaCDotbDljp/nlJ8gSFRUUCDkuIvovb0KICAgIGNvbnN0IHJlc3BvbnNlID0gYXdhaXQgcGxhdGZvcm1GZXRjaCh1cmwsIHsKICAgICAgbWV0aG9kOiAnR0VUJywKICAgICAgaGVhZGVyczogaGVhZGVycyB8fCB7fSwKICAgICAgcmVzcG9uc2VUeXBlOiAnYXJyYXlidWZmZXInLAogICAgfSk7CgogICAgaWYgKCFyZXNwb25zZS5vaykgewogICAgICB0aHJvdyBuZXcgRXJyb3IoYEhUVFAgJHtyZXNwb25zZS5zdGF0dXN9OiAke3Jlc3BvbnNlLnN0YXR1c1RleHR9YCk7CiAgICB9CgogICAgY29uc3QgYXJyYXlCdWZmZXIgPSBhd2FpdCByZXNwb25zZS5hcnJheUJ1ZmZlcigpOwogICAgY29uc3QgdWludDhBcnJheSA9IG5ldyBVaW50OEFycmF5KGFycmF5QnVmZmVyKTsKCiAgICAvLyDlhpnlhaXnvJPlrZjmlofku7YKICAgIGNvbnN0IGZpbGVOYW1lID0gdGhpcy5nZXRDYWNoZUZpbGVOYW1lKHNvdXJjZUlkLCBzb25nSWQsIHF1YWxpdHksIGZvcm1hdCk7CiAgICBjb25zdCBmaWxlUGF0aCA9IGAke0NBQ0hFX0RJUn0vJHtmaWxlTmFtZX1gOwoKICAgIGNvbnN0IGJhc2U2NCA9IHRoaXMuYXJyYXlCdWZmZXJUb0Jhc2U2NCh1aW50OEFycmF5KTsKICAgIGF3YWl0IEZpbGVzeXN0ZW0ud3JpdGVGaWxlKHsKICAgICAgcGF0aDogZmlsZVBhdGgsCiAgICAgIGRhdGE6IGJhc2U2NCwKICAgICAgZGlyZWN0b3J5OiBEaXJlY3RvcnkuRGF0YSwKICAgICAgcmVjdXJzaXZlOiB0cnVlLAogICAgfSk7CgogICAgbGV0IHNpemUgPSB1aW50OEFycmF5Lmxlbmd0aDsKICAgIHRyeSB7CiAgICAgIGNvbnN0IHN0YXQgPSBhd2FpdCBGaWxlc3lzdGVtLnN0YXQoeyBwYXRoOiBmaWxlUGF0aCwgZGlyZWN0b3J5OiBEaXJlY3RvcnkuRGF0YSB9KTsKICAgICAgc2l6ZSA9IHN0YXQuc2l6ZSB8fCBzaXplOwogICAgfSBjYXRjaCB7CiAgICAgIC8vIOS9v+eUqOS4i+i9veWkp+Wwj+S9nOS4uiBmYWxsYmFjawogICAgfQoKICAgIHRoaXMuZW50cmllcy5zZXQoa2V5LCB7CiAgICAgIGZpbGVQYXRoLAogICAgICBzaXplLAogICAgICBsYXN0QWNjZXNzZWQ6IERhdGUubm93KCksCiAgICAgIHNvdXJjZUlkLAogICAgICBzb25nSWQsCiAgICAgIHF1YWxpdHksCiAgICB9KTsKCiAgICAvLyBMUlUg5reY5rGwCiAgICBhd2FpdCB0aGlzLmV2aWN0SWZOZWVkZWQoKTsKCiAgICBkZWJ1Z0xvZ2dlci5pbmZvKCdwbGF5ZXInLCBgc3RyZWFtQ2FjaGUg57yT5a2Y5a6M5oiQOiAke2tleX1gLCB7CiAgICAgIHNpemUsCiAgICAgIGZpbGVQYXRoLAogICAgfSk7CgogICAgcmV0dXJuIGF3YWl0IHRoaXMucmVhZEZpbGVBc1VybChmaWxlUGF0aCk7CiAgfQoKICBwcml2YXRlIGFycmF5QnVmZmVyVG9CYXNlNjQoYnVmZmVyOiBVaW50OEFycmF5KTogc3RyaW5nIHsKICAgIGNvbnN0IGNodW5rU2l6ZSA9IDMyNzY4OwogICAgbGV0IGJpbmFyeSA9ICcnOwogICAgZm9yIChsZXQgaSA9IDA7IGkgPCBidWZmZXIubGVuZ3RoOyBpICs9IGNodW5rU2l6ZSkgewogICAgICBjb25zdCBjaHVuayA9IGJ1ZmZlci5zdWJhcnJheShpLCBpICsgY2h1bmtTaXplKTsKICAgICAgYmluYXJ5ICs9IFN0cmluZy5mcm9tQ2hhckNvZGUoLi4uY2h1bmspOwogICAgfQogICAgcmV0dXJuIGJ0b2EoYmluYXJ5KTsKICB9CgogIHByaXZhdGUgYXN5bmMgcmVhZEZpbGVBc1VybChmaWxlUGF0aDogc3RyaW5nKTogUHJvbWlzZTxzdHJpbmc+IHsKICAgIGNvbnN0IHJlc3VsdCA9IGF3YWl0IEZpbGVzeXN0ZW0ucmVhZEZpbGUoewogICAgICBwYXRoOiBmaWxlUGF0aCwKICAgICAgZGlyZWN0b3J5OiBEaXJlY3RvcnkuRGF0YSwKICAgIH0pOwogICAgY29uc3QgYmFzZTY0ID0gdHlwZW9mIHJlc3VsdC5kYXRhID09PSAnc3RyaW5nJyA/IHJlc3VsdC5kYXRhIDogJyc7CiAgICBjb25zdCBleHQgPSBmaWxlUGF0aC5zcGxpdCgnLicpLnBvcCgpPy50b0xvd2VyQ2FzZSgpIHx8ICdtcDMnOwogICAgY29uc3QgbWltZU1hcDogUmVjb3JkPHN0cmluZywgc3RyaW5nPiA9IHsKICAgICAgbXAzOiAnYXVkaW8vbXBlZycsCiAgICAgIGZsYWM6ICdhdWRpby9mbGFjJywKICAgICAgd2F2OiAnYXVkaW8vd2F2JywKICAgICAgbTRhOiAnYXVkaW8vbXA0JywKICAgICAgb2dnOiAnYXVkaW8vb2dnJywKICAgICAgYWFjOiAnYXVkaW8vYWFjJywKICAgIH07CiAgICBjb25zdCBtaW1lID0gbWltZU1hcFtleHRdIHx8ICdhdWRpby9tcGVnJzsKICAgIGNvbnN0IGJpbmFyeSA9IGF0b2IoYmFzZTY0KTsKICAgIGNvbnN0IGJ5dGVzID0gbmV3IFVpbnQ4QXJyYXkoYmluYXJ5Lmxlbmd0aCk7CiAgICBmb3IgKGxldCBpID0gMDsgaSA8IGJpbmFyeS5sZW5ndGg7IGkrKykgewogICAgICBieXRlc1tpXSA9IGJpbmFyeS5jaGFyQ29kZUF0KGkpOwogICAgfQogICAgY29uc3QgYmxvYiA9IG5ldyBCbG9iKFtieXRlc10sIHsgdHlwZTogbWltZSB9KTsKICAgIHJldHVybiBVUkwuY3JlYXRlT2JqZWN0VVJMKGJsb2IpOwogIH0KCiAgcHJpdmF0ZSBhc3luYyBldmljdElmTmVlZGVkKCk6IFByb21pc2U8dm9pZD4gewogICAgbGV0IHRvdGFsU2l6ZSA9IDA7CiAgICBmb3IgKGNvbnN0IGVudHJ5IG9mIHRoaXMuZW50cmllcy52YWx1ZXMoKSkgewogICAgICB0b3RhbFNpemUgKz0gZW50cnkuc2l6ZTsKICAgIH0KCiAgICBpZiAodG90YWxTaXplIDw9IE1BWF9DQUNIRV9TSVpFX0JZVEVTKSByZXR1cm47CgogICAgLy8g5oyJ5pyA5ZCO6K6/6Zeu5pe26Ze05Y2H5bqP5o6S5YiX77yI5pyA5pen5LyY5YWI5reY5rGw77yJCiAgICBjb25zdCBzb3J0ZWQgPSBBcnJheS5mcm9tKHRoaXMuZW50cmllcy52YWx1ZXMoKSkuc29ydCgKICAgICAgKGEsIGIpID0+IGEubGFzdEFjY2Vzc2VkIC0gYi5sYXN0QWNjZXNzZWQKICAgICk7CgogICAgZm9yIChjb25zdCBlbnRyeSBvZiBzb3J0ZWQpIHsKICAgICAgaWYgKHRvdGFsU2l6ZSA8PSBNQVhfQ0FDSEVfU0laRV9CWVRFUykgYnJlYWs7CiAgICAgIHRyeSB7CiAgICAgICAgYXdhaXQgRmlsZXN5c3RlbS5kZWxldGVGaWxlKHsKICAgICAgICAgIHBhdGg6IGVudHJ5LmZpbGVQYXRoLAogICAgICAgICAgZGlyZWN0b3J5OiBEaXJlY3RvcnkuRGF0YSwKICAgICAgICB9KTsKICAgICAgfSBjYXRjaCB7CiAgICAgICAgLy8g5paH5Lu25Y+v6IO95LiN5a2Y5ZyoCiAgICAgIH0KICAgICAgdGhpcy5lbnRyaWVzLmRlbGV0ZSh0aGlzLmdldENhY2hlS2V5KGVudHJ5LnNvdXJjZUlkLCBlbnRyeS5zb25nSWQsIGVudHJ5LnF1YWxpdHkpKTsKICAgICAgdG90YWxTaXplIC09IGVudHJ5LnNpemU7CiAgICAgIGRlYnVnTG9nZ2VyLmluZm8oJ3BsYXllcicsIGBzdHJlYW1DYWNoZSBMUlUg5reY5rGwOiAke2VudHJ5LmZpbGVQYXRofWAsIHsKICAgICAgICBzaXplOiBlbnRyeS5zaXplLAogICAgICAgIGxhc3RBY2Nlc3NlZDogbmV3IERhdGUoZW50cnkubGFzdEFjY2Vzc2VkKS50b0lTT1N0cmluZygpLAogICAgICB9KTsKICAgIH0KICB9CgogIC8qKiDmuIXnqbrnvJPlrZggKi8KICBhc3luYyBjbGVhckNhY2hlKCk6IFByb21pc2U8dm9pZD4gewogICAgYXdhaXQgdGhpcy5pbml0KCk7CiAgICBmb3IgKGNvbnN0IGVudHJ5IG9mIHRoaXMuZW50cmllcy52YWx1ZXMoKSkgewogICAgICB0cnkgewogICAgICAgIGF3YWl0IEZpbGVzeXN0ZW0uZGVsZXRlRmlsZSh7CiAgICAgICAgICBwYXRoOiBlbnRyeS5maWxlUGF0aCwKICAgICAgICAgIGRpcmVjdG9yeTogRGlyZWN0b3J5LkRhdGEsCiAgICAgICAgfSk7CiAgICAgIH0gY2F0Y2ggewogICAgICAgIC8vIGlnbm9yZQogICAgICB9CiAgICB9CiAgICB0aGlzLmVudHJpZXMuY2xlYXIoKTsKICAgIGRlYnVnTG9nZ2VyLmluZm8oJ3BsYXllcicsICdzdHJlYW1DYWNoZSDnvJPlrZjlt7LmuIXnqbonKTsKICB9CgogIC8qKiDojrflj5bnvJPlrZjnu5/orqHkv6Hmga8gKi8KICBnZXRDYWNoZUluZm8oKTogeyB0b3RhbFNpemU6IG51bWJlcjsgZmlsZUNvdW50OiBudW1iZXI7IG1heFNpemU6IG51bWJlciB9IHsKICAgIGxldCB0b3RhbFNpemUgPSAwOwogICAgZm9yIChjb25zdCBlbnRyeSBvZiB0aGlzLmVudHJpZXMudmFsdWVzKCkpIHsKICAgICAgdG90YWxTaXplICs9IGVudHJ5LnNpemU7CiAgICB9CiAgICByZXR1cm4gewogICAgICB0b3RhbFNpemUsCiAgICAgIGZpbGVDb3VudDogdGhpcy5lbnRyaWVzLnNpemUsCiAgICAgIG1heFNpemU6IE1BWF9DQUNIRV9TSVpFX0JZVEVTLAogICAgfTsKICB9Cn0KCmV4cG9ydCBjb25zdCBzdHJlYW1DYWNoZSA9IG5ldyBTdHJlYW1DYWNoZU1hbmFnZXIoKTsK
+import { Filesystem, Directory } from '@capacitor/filesystem';
+import { platformFetch } from '@shared/utils/platformFetch';
+import { debugLogger } from '@shared/utils/debugLogger';
+
+const CACHE_DIR = 'yinliu/cache';
+const MAX_CACHE_SIZE_MB = 500;
+const MAX_CACHE_SIZE_BYTES = MAX_CACHE_SIZE_MB * 1024 * 1024;
+
+interface CacheEntry {
+  filePath: string;
+  size: number;
+  lastAccessed: number;
+  sourceId: string;
+  songId: string;
+  quality: string;
+}
+
+/**
+ * 在线播放流式缓存管理器
+ * - 使用 platformFetch（Capacitor 原生 HTTP）绕过 WebView 防盗链限制
+ * - 缓存文件按 sourceId+songId+quality 命名
+ * - 500MB LRU 淘汰
+ */
+export class StreamCacheManager {
+  private entries = new Map<string, CacheEntry>();
+  private initialized = false;
+
+  async init(): Promise<void> {
+    if (this.initialized) return;
+    await this.ensureCacheDir();
+    await this.scanCacheDir();
+    this.initialized = true;
+  }
+
+  private async ensureCacheDir(): Promise<void> {
+    try {
+      await Filesystem.mkdir({ path: CACHE_DIR, directory: Directory.Data, recursive: true });
+    } catch {
+      // 目录可能已存在
+    }
+  }
+
+  private async scanCacheDir(): Promise<void> {
+    try {
+      const result = await Filesystem.readdir({ path: CACHE_DIR, directory: Directory.Data });
+      for (const file of result.files) {
+        // 文件名格式: {sourceId}_{songId}_{quality}.{ext}
+        const match = file.name.match(/^(.+)_(.+)_(.+)\.(.+)$/);
+        if (!match) continue;
+        const [, sourceId, songId, quality] = match;
+        const filePath = `${CACHE_DIR}/${file.name}`;
+        try {
+          const stat = await Filesystem.stat({ path: filePath, directory: Directory.Data });
+          const key = this.getCacheKey(sourceId, songId, quality);
+          this.entries.set(key, {
+            filePath,
+            size: stat.size || 0,
+            lastAccessed: stat.mtime || Date.now(),
+            sourceId,
+            songId,
+            quality,
+          });
+        } catch {
+          // stat 失败则跳过
+        }
+      }
+    } catch {
+      // 缓存目录为空或不存在
+    }
+  }
+
+  private getCacheKey(sourceId: string, songId: string, quality: string): string {
+    return `${sourceId}_${songId}_${quality}`;
+  }
+
+  private getCacheFileName(sourceId: string, songId: string, quality: string, format: string): string {
+    return `${sourceId}_${songId}_${quality}.${format || 'mp3'}`;
+  }
+
+  /** 检查指定曲目是否在缓存中 */
+  async hasCache(sourceId: string, songId: string, quality: string): Promise<boolean> {
+    await this.init();
+    const key = this.getCacheKey(sourceId, songId, quality);
+    const entry = this.entries.get(key);
+    if (!entry) return false;
+    try {
+      await Filesystem.stat({ path: entry.filePath, directory: Directory.Data });
+      return true;
+    } catch {
+      this.entries.delete(key);
+      return false;
+    }
+  }
+
+  /** 从缓存读取为可播放的 Blob URL */
+  async getCacheAsUrl(sourceId: string, songId: string, quality: string): Promise<string | null> {
+    await this.init();
+    const key = this.getCacheKey(sourceId, songId, quality);
+    const entry = this.entries.get(key);
+    if (!entry) return null;
+    try {
+      await Filesystem.stat({ path: entry.filePath, directory: Directory.Data });
+      entry.lastAccessed = Date.now();
+      return await this.readFileAsUrl(entry.filePath);
+    } catch {
+      this.entries.delete(key);
+      return null;
+    }
+  }
+
+  /**
+   * 下载音频并写入缓存，返回可播放的 Blob URL
+   * 使用 platformFetch（Capacitor 原生 HTTP）绕过 WebView 限制
+   */
+  async fetchAndCache(
+    url: string,
+    sourceId: string,
+    songId: string,
+    quality: string,
+    format: string,
+    headers?: Record<string, string>
+  ): Promise<string> {
+    await this.init();
+    const key = this.getCacheKey(sourceId, songId, quality);
+
+    // 双重检查缓存（防止并发重复下载）
+    const existing = this.entries.get(key);
+    if (existing) {
+      try {
+        await Filesystem.stat({ path: existing.filePath, directory: Directory.Data });
+        existing.lastAccessed = Date.now();
+        return await this.readFileAsUrl(existing.filePath);
+      } catch {
+        this.entries.delete(key);
+      }
+    }
+
+    debugLogger.info('player', `streamCache 开始下载缓存: ${key}`, {
+      url: url.slice(0, 120),
+    });
+
+    // 使用 platformFetch 走原生 HTTP 下载
+    const response = await platformFetch(url, {
+      method: 'GET',
+      headers: headers || {},
+      responseType: 'arraybuffer',
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const uint8Array = new Uint8Array(arrayBuffer);
+
+    // 写入缓存文件
+    const fileName = this.getCacheFileName(sourceId, songId, quality, format);
+    const filePath = `${CACHE_DIR}/${fileName}`;
+
+    const base64 = this.arrayBufferToBase64(uint8Array);
+    await Filesystem.writeFile({
+      path: filePath,
+      data: base64,
+      directory: Directory.Data,
+      recursive: true,
+    });
+
+    let size = uint8Array.length;
+    try {
+      const stat = await Filesystem.stat({ path: filePath, directory: Directory.Data });
+      size = stat.size || size;
+    } catch {
+      // 使用下载大小作为 fallback
+    }
+
+    this.entries.set(key, {
+      filePath,
+      size,
+      lastAccessed: Date.now(),
+      sourceId,
+      songId,
+      quality,
+    });
+
+    // LRU 淘汰
+    await this.evictIfNeeded();
+
+    debugLogger.info('player', `streamCache 缓存完成: ${key}`, {
+      size,
+      filePath,
+    });
+
+    return await this.readFileAsUrl(filePath);
+  }
+
+  private arrayBufferToBase64(buffer: Uint8Array): string {
+    const chunkSize = 32768;
+    let binary = '';
+    for (let i = 0; i < buffer.length; i += chunkSize) {
+      const chunk = buffer.subarray(i, i + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+  }
+
+  private async readFileAsUrl(filePath: string): Promise<string> {
+    const result = await Filesystem.readFile({
+      path: filePath,
+      directory: Directory.Data,
+    });
+    const base64 = typeof result.data === 'string' ? result.data : '';
+    const ext = filePath.split('.').pop()?.toLowerCase() || 'mp3';
+    const mimeMap: Record<string, string> = {
+      mp3: 'audio/mpeg',
+      flac: 'audio/flac',
+      wav: 'audio/wav',
+      m4a: 'audio/mp4',
+      ogg: 'audio/ogg',
+      aac: 'audio/aac',
+    };
+    const mime = mimeMap[ext] || 'audio/mpeg';
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: mime });
+    return URL.createObjectURL(blob);
+  }
+
+  private async evictIfNeeded(): Promise<void> {
+    let totalSize = 0;
+    for (const entry of this.entries.values()) {
+      totalSize += entry.size;
+    }
+
+    if (totalSize <= MAX_CACHE_SIZE_BYTES) return;
+
+    // 按最后访问时间升序排列（最旧优先淘汰）
+    const sorted = Array.from(this.entries.values()).sort(
+      (a, b) => a.lastAccessed - b.lastAccessed
+    );
+
+    for (const entry of sorted) {
+      if (totalSize <= MAX_CACHE_SIZE_BYTES) break;
+      try {
+        await Filesystem.deleteFile({
+          path: entry.filePath,
+          directory: Directory.Data,
+        });
+      } catch {
+        // 文件可能不存在
+      }
+      this.entries.delete(this.getCacheKey(entry.sourceId, entry.songId, entry.quality));
+      totalSize -= entry.size;
+      debugLogger.info('player', `streamCache LRU 淘汰: ${entry.filePath}`, {
+        size: entry.size,
+        lastAccessed: new Date(entry.lastAccessed).toISOString(),
+      });
+    }
+  }
+
+  /** 清空缓存 */
+  async clearCache(): Promise<void> {
+    await this.init();
+    for (const entry of this.entries.values()) {
+      try {
+        await Filesystem.deleteFile({
+          path: entry.filePath,
+          directory: Directory.Data,
+        });
+      } catch {
+        // ignore
+      }
+    }
+    this.entries.clear();
+    debugLogger.info('player', 'streamCache 缓存已清空');
+  }
+
+  /** 获取缓存统计信息 */
+  getCacheInfo(): { totalSize: number; fileCount: number; maxSize: number } {
+    let totalSize = 0;
+    for (const entry of this.entries.values()) {
+      totalSize += entry.size;
+    }
+    return {
+      totalSize,
+      fileCount: this.entries.size,
+      maxSize: MAX_CACHE_SIZE_BYTES,
+    };
+  }
+}
+
+export const streamCache = new StreamCacheManager();

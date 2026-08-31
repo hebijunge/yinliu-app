@@ -1,1 +1,185 @@
-LyoqCiAqIOmfs+mikeeEpueCue+8iEF1ZGlvIEZvY3Vz77yJ566h55CGCiAqCiAqIOebruagh++8muiuqeacrOW6lOeUqOWcqOS4juWFtuS7lumfs+mikeW6lOeUqOS6pOS6kuaXtuihqOeOsOato+ehrgogKiAtIOWFtuS7luW6lOeUqOiOt+WPlueEpueCue+8iOWmguadpeeUteOAgeWFtuS7lumfs+S5kCBBcHAg5pKt5pS+77yJIOKGkiDoh6rliqjmmoLlgZwKICogLSDnhKbngrnmgaLlpI3vvIjmnaXnlLXmjILmlq3jgIHlr7nmlrkgQXBwIOmAgOWHuu+8iSAgICAgICAgICAg4oaSIOaMieeUqOaIt+iuvue9ruWGs+WumuaYr+WQpuiHquWKqOe7reaSrQogKgogKiDlrp7njrDnrZbnlaXvvIjlpJrlubPlj7DljY/lkIzvvInvvJoKICogMS4gQW5kcm9pZO+8mumAmui/hyBAam9mci9jYXBhY2l0b3ItbWVkaWEtc2Vzc2lvbiDms6jlhoznmoQgTWVkaWFTZXNzaW9u77yMCiAqICAgIOezu+e7n+WcqOadpeeUtS/lhbbku5YgQXBwIOaKoueEpueCueaXtuS8muiHquWKqOaaguWBnOaSreaUvu+8iOmfs+mikeWFg+e0oOinpuWPkSBwYXVzZSDkuovku7bvvInjgIIKICogMi4gV2ViL2lPU++8muS9v+eUqCBXZWIgQXVkaW8gQVBJIOebkeWQrCBhdWRpbyDlhYPntKDnmoQgcGF1c2Ug5LqL5Lu277yMCiAqICAgIOWMuuWIhuOAjOeUqOaIt+S4u+WKqOaaguWBnOOAjeS4juOAjOezu+e7n+eEpueCueS4ouWkseWvvOiHtOeahOaaguWBnOOAjeOAggogKiAzLiDnhKbngrnmgaLlpI3mo4DmtYvvvJrnu7zlkIjkvb/nlKggYGRvY3VtZW50LnZpc2liaWxpdHljaGFuZ2VgICsg5a6a5pe25Zmo6L2u6K+iIGF1ZGlvIOeahAogKiAgICBwYXVzZWQvY3VycmVudFRpbWUg54q25oCB77yM6YG/5YWN5Zyo5ZCO5Y+w6L+H5bqm5ZSk6YaS44CCCiAqCiAqIOazqOaEj++8muatpOaooeWdl+S4jiBQbGF5ZXJFbmdpbmUg5Y2P5ZCM5bel5L2c77yM5L2/55SoIGBpbXBvcnQgdHlwZWAg6YG/5YWN6L+Q6KGM5pe25b6q546v5L6d6LWW44CCCiAqLwppbXBvcnQgdHlwZSB7IFBsYXllckVuZ2luZSB9IGZyb20gJy4vaW5kZXgnOwoKZXhwb3J0IGludGVyZmFjZSBBdWRpb0ZvY3VzT3B0aW9ucyB7CiAgLyoqIOW9k+ezu+e7n+eEpueCueaBouWkjeaXtuaYr+WQpuiHquWKqOe7reaSre+8iOeUqOaIt+WcqOiuvue9rumhteWPr+WFs+mXre+8iSAqLwogIGF1dG9SZXN1bWVPbkZvY3VzR2FpbjogYm9vbGVhbjsKfQoKLyoqCiAqIOW8leaTjuaPkOS+m+eahOacgOWwj+aTjeS9nOaOpeWPo++8iOmBv+WFjeebtOaOpSBpbXBvcnQgUGxheWVyRW5naW5lIOexu+Wei++8iQogKiDlj6rmmrTpnLLpn7PpopHnhKbngrnmqKHlnZfpnIDopoHnmoTmlrnms5UKICovCmV4cG9ydCBpbnRlcmZhY2UgQXVkaW9Gb2N1c0VuZ2luZSB7CiAgZ2V0U3RhdGU6ICgpID0+IHN0cmluZzsKICByZXN1bWU6ICgpID0+IHZvaWQ7Cn0KCmxldCBlbmdpbmVSZWY6IEF1ZGlvRm9jdXNFbmdpbmUgfCBudWxsID0gbnVsbDsKbGV0IG9wdGlvbnM6IEF1ZGlvRm9jdXNPcHRpb25zID0geyBhdXRvUmVzdW1lT25Gb2N1c0dhaW46IHRydWUgfTsKCi8vIOS4iuS4gOasoeeUqOaIt+S4u+WKqOiwg+eUqOeahOaSreaUvueKtuaAge+8iOeUqOS6juWMuuWIhuOAjOeUqOaIt+aaguWBnOOAjeS4juOAjOezu+e7n+eEpueCueS4ouWkseOAje+8iQpsZXQgdXNlckludGVudFBsYXk6IGJvb2xlYW4gPSBmYWxzZTsKLy8g57O757uf54Sm54K55Lii5aSx5pe25piv5ZCm5aSE5LqO5pKt5pS+54q25oCBCmxldCB3YXNQbGF5aW5nQmVmb3JlRm9jdXNMb3NzOiBib29sZWFuID0gZmFsc2U7Ci8vIOajgOa1i+WumuaXtuWZqApsZXQgdmlzaWJpbGl0eUNoZWNrVGltZXI6IG51bWJlciB8IG51bGwgPSBudWxsOwovLyByZXN1bWUg5Y676YeN77ya5oyC6LW355qEIHRpbWVvdXQgaWQKbGV0IHJlc3VtZVRpbWVvdXRJZDogbnVtYmVyIHwgbnVsbCA9IG51bGw7Ci8vIHJlc3VtZSDljrvph43vvJrkuIrmrKHlrp7pmYXmiafooYwgcmVzdW1lIOeahOaXtumXtOaIswpsZXQgbGFzdFJlc3VtZVRpbWUgPSAwOwovLyByZXN1bWUg5Ya35Y2056qX5Y+j77yIbXPvvIkKY29uc3QgUkVTVU1FX0NPT0xET1dOX01TID0gNTAwOwoKZXhwb3J0IGZ1bmN0aW9uIGNvbmZpZ3VyZUF1ZGlvRm9jdXMoZW5naW5lOiBBdWRpb0ZvY3VzRW5naW5lLCBvcHRzOiBBdWRpb0ZvY3VzT3B0aW9ucyk6IHZvaWQgewogIGVuZ2luZVJlZiA9IGVuZ2luZTsKICBvcHRpb25zID0gb3B0czsKICBhdHRhY2hMaXN0ZW5lcnMoKTsKICBzdGFydFZpc2liaWxpdHlNb25pdG9yKCk7Cn0KCmV4cG9ydCBmdW5jdGlvbiB1cGRhdGVBdWRpb0ZvY3VzT3B0aW9ucyhvcHRzOiBQYXJ0aWFsPEF1ZGlvRm9jdXNPcHRpb25zPik6IHZvaWQgewogIG9wdGlvbnMgPSB7IC4uLm9wdGlvbnMsIC4uLm9wdHMgfTsKfQoKZnVuY3Rpb24gYXR0YWNoTGlzdGVuZXJzKCk6IHZvaWQgewogIGlmICh0eXBlb2YgZG9jdW1lbnQgPT09ICd1bmRlZmluZWQnKSByZXR1cm47CiAgZG9jdW1lbnQucmVtb3ZlRXZlbnRMaXN0ZW5lcigndmlzaWJpbGl0eWNoYW5nZScsIGhhbmRsZVZpc2liaWxpdHlDaGFuZ2UpOwogIGRvY3VtZW50LmFkZEV2ZW50TGlzdGVuZXIoJ3Zpc2liaWxpdHljaGFuZ2UnLCBoYW5kbGVWaXNpYmlsaXR5Q2hhbmdlKTsKCiAgd2luZG93LnJlbW92ZUV2ZW50TGlzdGVuZXIoJ3BhZ2VoaWRlJywgaGFuZGxlUGFnZUhpZGUpOwogIHdpbmRvdy5hZGRFdmVudExpc3RlbmVyKCdwYWdlaGlkZScsIGhhbmRsZVBhZ2VIaWRlKTsKCiAgd2luZG93LnJlbW92ZUV2ZW50TGlzdGVuZXIoJ3BhZ2VzaG93JywgaGFuZGxlUGFnZVNob3cpOwogIHdpbmRvdy5hZGRFdmVudExpc3RlbmVyKCdwYWdlc2hvdycsIGhhbmRsZVBhZ2VTaG93KTsKfQoKZnVuY3Rpb24gaGFuZGxlVmlzaWJpbGl0eUNoYW5nZSgpOiB2b2lkIHsKICAvLyBBcHAg5Zue5Yiw5YmN5Y+w5pe277yM5bCd6K+V5qOA5rWL5piv5ZCm6ZyA6KaB5oGi5aSN5pKt5pS+CiAgaWYgKGRvY3VtZW50LnZpc2liaWxpdHlTdGF0ZSA9PT0gJ3Zpc2libGUnKSB7CiAgICBtYXliZVJlc3VtZUFmdGVyRm9jdXNHYWluKCk7CiAgfSBlbHNlIHsKICAgIC8vIEFwcCDov5vlhaXlkI7lj7Dml7borrDlvZXnirbmgIEKICAgIHJlY29yZEZvY3VzTG9zc1N0YXRlKCk7CiAgfQp9CgpmdW5jdGlvbiBoYW5kbGVQYWdlSGlkZSgpOiB2b2lkIHsKICByZWNvcmRGb2N1c0xvc3NTdGF0ZSgpOwp9CgpmdW5jdGlvbiBoYW5kbGVQYWdlU2hvdygpOiB2b2lkIHsKICBtYXliZVJlc3VtZUFmdGVyRm9jdXNHYWluKCk7Cn0KCmZ1bmN0aW9uIHJlY29yZEZvY3VzTG9zc1N0YXRlKCk6IHZvaWQgewogIGlmICghZW5naW5lUmVmKSByZXR1cm47CiAgY29uc3Qgc3RhdGUgPSBlbmdpbmVSZWYuZ2V0U3RhdGUoKTsKICB3YXNQbGF5aW5nQmVmb3JlRm9jdXNMb3NzID0gc3RhdGUgPT09ICdwbGF5aW5nJyB8fCBzdGF0ZSA9PT0gJ2xvYWRpbmcnOwp9CgovKioKICog5qOA5rWL57O757uf54Sm54K55oGi5aSN5ZCO5piv5ZCm6ZyA6KaB6Ieq5Yqo57ut5pKtCiAqCiAqIOinpuWPkeaXtuacuu+8mkFwcCDlm57liLDliY3lj7AKICog5Yik5pat5p2h5Lu277yaCiAqICAgLSDnlKjmiLflnKjlpLHljrvnhKbngrnliY3mraPlnKjmkq3mlL4KICogICAtIOW8leaTjuW9k+WJjeeKtuaAgeS4uiBwYXVzZWTvvIjns7vnu5/lvLrliLbmmoLlgZznmoTmoIflv5fvvIkKICogICAtIOW8gOWQryBhdXRvUmVzdW1lT25Gb2N1c0dhaW4g6K6+572uCiAqICAgLSDmsqHmnIkgcGVuZGluZyDnmoTnlKjmiLfkuLvliqjmmoLlgZzmhI/lm74KICogICAtIOi3neemu+S4iuasoSByZXN1bWUg6LaF6L+H5Ya35Y2056qX5Y+j77yI5Y676YeN77yJCiAqLwpmdW5jdGlvbiBtYXliZVJlc3VtZUFmdGVyRm9jdXNHYWluKCk6IHZvaWQgewogIGlmICghZW5naW5lUmVmKSByZXR1cm47CiAgaWYgKCFvcHRpb25zLmF1dG9SZXN1bWVPbkZvY3VzR2FpbikgcmV0dXJuOwogIGlmICghd2FzUGxheWluZ0JlZm9yZUZvY3VzTG9zcykgcmV0dXJuOwogIGlmICghdXNlckludGVudFBsYXkpIHJldHVybjsKICAvLyDlj6rmnInlnKjlvZPliY3noa7lrp7mmK/mmoLlgZznirbmgIHml7bmiY3nu63mkq0KICBpZiAoZW5naW5lUmVmLmdldFN0YXRlKCkgIT09ICdwYXVzZWQnKSByZXR1cm47CgogIGNvbnN0IG5vdyA9IERhdGUubm93KCk7CiAgaWYgKG5vdyAtIGxhc3RSZXN1bWVUaW1lIDwgUkVTVU1FX0NPT0xET1dOX01TKSByZXR1cm47CgogIGlmICh0eXBlb2Ygd2luZG93ICE9PSAndW5kZWZpbmVkJykgewogICAgLy8g5riF6Zmk5LmL5YmN5oyC6LW355qEIHRpbWVvdXTvvIzpmLLmraLph43lpI3osIPluqYKICAgIGlmIChyZXN1bWVUaW1lb3V0SWQgIT09IG51bGwpIHsKICAgICAgd2luZG93LmNsZWFyVGltZW91dChyZXN1bWVUaW1lb3V0SWQpOwogICAgICByZXN1bWVUaW1lb3V0SWQgPSBudWxsOwogICAgfQoKICAgIHJlc3VtZVRpbWVvdXRJZCA9IHdpbmRvdy5zZXRUaW1lb3V0KCgpID0+IHsKICAgICAgcmVzdW1lVGltZW91dElkID0gbnVsbDsKICAgICAgdHJ5IHsKICAgICAgICAvLyDlho3mrKHmo4Dmn6XnirbmgIHvvIx0aW1lb3V0IOacn+mXtOeUqOaIt+WPr+iDveW3suS4u+WKqOaTjeS9nAogICAgICAgIGlmIChlbmdpbmVSZWY/LmdldFN0YXRlKCkgPT09ICdwYXVzZWQnKSB7CiAgICAgICAgICBlbmdpbmVSZWY/LnJlc3VtZSgpOwogICAgICAgICAgbGFzdFJlc3VtZVRpbWUgPSBEYXRlLm5vdygpOwogICAgICAgIH0KICAgICAgfSBjYXRjaCAoZXJyKSB7CiAgICAgICAgY29uc29sZS53YXJuKCdbYXVkaW9Gb2N1c10gYXV0byByZXN1bWUgZmFpbGVkOicsIGVycik7CiAgICAgIH0KICAgIH0sIDMwMCk7CiAgfQp9CgovKioKICog55SxIFBsYXllckVuZ2luZSDlnKjnirbmgIHlj5jljJbml7bosIPnlKjvvIzpgJrnn6Xpn7PpopHnhKbngrnmqKHlnZcKICog55So5Lul5ZCM5q2l5YaF6YOo44CM55So5oi35oSP5Zu+44CN5LiO44CM57O757uf54q25oCB44CNCiAqLwpleHBvcnQgZnVuY3Rpb24gbm90aWZ5UGxheWJhY2tTdGF0ZUNoYW5nZShzdGF0ZTogJ3BsYXlpbmcnIHwgJ3BhdXNlZCcgfCAnaWRsZScgfCAnbG9hZGluZycgfCAnZXJyb3InLCBzb3VyY2U6ICd1c2VyJyB8ICdzeXN0ZW0nIHwgJ2VuZ2luZScpOiB2b2lkIHsKICBpZiAoc291cmNlID09PSAndXNlcicpIHsKICAgIHVzZXJJbnRlbnRQbGF5ID0gc3RhdGUgPT09ICdwbGF5aW5nJyB8fCBzdGF0ZSA9PT0gJ2xvYWRpbmcnOwogIH0gZWxzZSBpZiAoc291cmNlID09PSAnc3lzdGVtJykgewogICAgLy8g57O757uf5a+86Ie055qE5pqC5YGcIOKGkiDmoIforrDkuYvliY3mmK/lkKblnKjmkq3mlL4KICAgIGlmIChzdGF0ZSA9PT0gJ3BhdXNlZCcgfHwgc3RhdGUgPT09ICdpZGxlJykgewogICAgICBpZiAodXNlckludGVudFBsYXkpIHsKICAgICAgICB3YXNQbGF5aW5nQmVmb3JlRm9jdXNMb3NzID0gdHJ1ZTsKICAgICAgfQogICAgfSBlbHNlIGlmIChzdGF0ZSA9PT0gJ3BsYXlpbmcnKSB7CiAgICAgIHdhc1BsYXlpbmdCZWZvcmVGb2N1c0xvc3MgPSBmYWxzZTsKICAgIH0KICB9Cn0KCmZ1bmN0aW9uIHN0YXJ0VmlzaWJpbGl0eU1vbml0b3IoKTogdm9pZCB7CiAgaWYgKHR5cGVvZiB3aW5kb3cgPT09ICd1bmRlZmluZWQnKSByZXR1cm47CiAgaWYgKHZpc2liaWxpdHlDaGVja1RpbWVyICE9PSBudWxsKSByZXR1cm47CiAgLy8g5YWc5bqV77ya5q+PIDNzIOajgOafpeS4gOasoSBhdWRpbyDlrp7pmYXnirbmgIHvvIzpgb/lhY0gdmlzaWJpbGl0eWNoYW5nZSDmvI/op6blj5EKICB2aXNpYmlsaXR5Q2hlY2tUaW1lciA9IHdpbmRvdy5zZXRJbnRlcnZhbCgoKSA9PiB7CiAgICBpZiAodHlwZW9mIGRvY3VtZW50ID09PSAndW5kZWZpbmVkJykgcmV0dXJuOwogICAgaWYgKGRvY3VtZW50LnZpc2liaWxpdHlTdGF0ZSA9PT0gJ3Zpc2libGUnKSB7CiAgICAgIG1heWJlUmVzdW1lQWZ0ZXJGb2N1c0dhaW4oKTsKICAgIH0KICB9LCAzMDAwKTsKfQoKZXhwb3J0IGZ1bmN0aW9uIGRpc3Bvc2VBdWRpb0ZvY3VzKCk6IHZvaWQgewogIGlmICh0eXBlb2YgZG9jdW1lbnQgIT09ICd1bmRlZmluZWQnKSB7CiAgICBkb2N1bWVudC5yZW1vdmVFdmVudExpc3RlbmVyKCd2aXNpYmlsaXR5Y2hhbmdlJywgaGFuZGxlVmlzaWJpbGl0eUNoYW5nZSk7CiAgfQogIGlmICh0eXBlb2Ygd2luZG93ICE9PSAndW5kZWZpbmVkJykgewogICAgd2luZG93LnJlbW92ZUV2ZW50TGlzdGVuZXIoJ3BhZ2VoaWRlJywgaGFuZGxlUGFnZUhpZGUpOwogICAgd2luZG93LnJlbW92ZUV2ZW50TGlzdGVuZXIoJ3BhZ2VzaG93JywgaGFuZGxlUGFnZVNob3cpOwogICAgaWYgKHZpc2liaWxpdHlDaGVja1RpbWVyICE9PSBudWxsKSB7CiAgICAgIHdpbmRvdy5jbGVhckludGVydmFsKHZpc2liaWxpdHlDaGVja1RpbWVyKTsKICAgICAgdmlzaWJpbGl0eUNoZWNrVGltZXIgPSBudWxsOwogICAgfQogIH0KICBlbmdpbmVSZWYgPSBudWxsOwp9Cg==
+/**
+ * 音频焦点（Audio Focus）管理
+ *
+ * 目标：让本应用在与其他音频应用交互时表现正确
+ * - 其他应用获取焦点（如来电、其他音乐 App 播放） → 自动暂停
+ * - 焦点恢复（来电挂断、对方 App 退出）           → 按用户设置决定是否自动续播
+ *
+ * 实现策略（多平台协同）：
+ * 1. Android：通过 @jofr/capacitor-media-session 注册的 MediaSession，
+ *    系统在来电/其他 App 抢焦点时会自动暂停播放（音频元素触发 pause 事件）。
+ * 2. Web/iOS：使用 Web Audio API 监听 audio 元素的 pause 事件，
+ *    区分「用户主动暂停」与「系统焦点丢失导致的暂停」。
+ * 3. 焦点恢复检测：综合使用 `document.visibilitychange` + 定时器轮询 audio 的
+ *    paused/currentTime 状态，避免在后台过度唤醒。
+ *
+ * 注意：此模块与 PlayerEngine 协同工作，使用 `import type` 避免运行时循环依赖。
+ */
+import type { PlayerEngine } from './index';
+
+export interface AudioFocusOptions {
+  /** 当系统焦点恢复时是否自动续播（用户在设置页可关闭） */
+  autoResumeOnFocusGain: boolean;
+}
+
+/**
+ * 引擎提供的最小操作接口（避免直接 import PlayerEngine 类型）
+ * 只暴露音频焦点模块需要的方法
+ */
+export interface AudioFocusEngine {
+  getState: () => string;
+  resume: () => void;
+}
+
+let engineRef: AudioFocusEngine | null = null;
+let options: AudioFocusOptions = { autoResumeOnFocusGain: true };
+
+// 上一次用户主动调用的播放状态（用于区分「用户暂停」与「系统焦点丢失」）
+let userIntentPlay: boolean = false;
+// 系统焦点丢失时是否处于播放状态
+let wasPlayingBeforeFocusLoss: boolean = false;
+// 检测定时器
+let visibilityCheckTimer: number | null = null;
+// resume 去重：挂起的 timeout id
+let resumeTimeoutId: number | null = null;
+// resume 去重：上次实际执行 resume 的时间戳
+let lastResumeTime = 0;
+// resume 冷却窗口（ms）
+const RESUME_COOLDOWN_MS = 500;
+
+export function configureAudioFocus(engine: AudioFocusEngine, opts: AudioFocusOptions): void {
+  engineRef = engine;
+  options = opts;
+  attachListeners();
+  startVisibilityMonitor();
+}
+
+export function updateAudioFocusOptions(opts: Partial<AudioFocusOptions>): void {
+  options = { ...options, ...opts };
+}
+
+function attachListeners(): void {
+  if (typeof document === 'undefined') return;
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+
+  window.removeEventListener('pagehide', handlePageHide);
+  window.addEventListener('pagehide', handlePageHide);
+
+  window.removeEventListener('pageshow', handlePageShow);
+  window.addEventListener('pageshow', handlePageShow);
+}
+
+function handleVisibilityChange(): void {
+  // App 回到前台时，尝试检测是否需要恢复播放
+  if (document.visibilityState === 'visible') {
+    maybeResumeAfterFocusGain();
+  } else {
+    // App 进入后台时记录状态
+    recordFocusLossState();
+  }
+}
+
+function handlePageHide(): void {
+  recordFocusLossState();
+}
+
+function handlePageShow(): void {
+  maybeResumeAfterFocusGain();
+}
+
+function recordFocusLossState(): void {
+  if (!engineRef) return;
+  const state = engineRef.getState();
+  wasPlayingBeforeFocusLoss = state === 'playing' || state === 'loading';
+}
+
+/**
+ * 检测系统焦点恢复后是否需要自动续播
+ *
+ * 触发时机：App 回到前台
+ * 判断条件：
+ *   - 用户在失去焦点前正在播放
+ *   - 引擎当前状态为 paused（系统强制暂停的标志）
+ *   - 开启 autoResumeOnFocusGain 设置
+ *   - 没有 pending 的用户主动暂停意图
+ *   - 距离上次 resume 超过冷却窗口（去重）
+ */
+function maybeResumeAfterFocusGain(): void {
+  if (!engineRef) return;
+  if (!options.autoResumeOnFocusGain) return;
+  if (!wasPlayingBeforeFocusLoss) return;
+  if (!userIntentPlay) return;
+  // 只有在当前确实是暂停状态时才续播
+  if (engineRef.getState() !== 'paused') return;
+
+  const now = Date.now();
+  if (now - lastResumeTime < RESUME_COOLDOWN_MS) return;
+
+  if (typeof window !== 'undefined') {
+    // 清除之前挂起的 timeout，防止重复调度
+    if (resumeTimeoutId !== null) {
+      window.clearTimeout(resumeTimeoutId);
+      resumeTimeoutId = null;
+    }
+
+    resumeTimeoutId = window.setTimeout(() => {
+      resumeTimeoutId = null;
+      try {
+        // 再次检查状态，timeout 期间用户可能已主动操作
+        if (engineRef?.getState() === 'paused') {
+          engineRef?.resume();
+          lastResumeTime = Date.now();
+        }
+      } catch (err) {
+        console.warn('[audioFocus] auto resume failed:', err);
+      }
+    }, 300);
+  }
+}
+
+/**
+ * 由 PlayerEngine 在状态变化时调用，通知音频焦点模块
+ * 用以同步内部「用户意图」与「系统状态」
+ */
+export function notifyPlaybackStateChange(state: 'playing' | 'paused' | 'idle' | 'loading' | 'error', source: 'user' | 'system' | 'engine'): void {
+  if (source === 'user') {
+    userIntentPlay = state === 'playing' || state === 'loading';
+  } else if (source === 'system') {
+    // 系统导致的暂停 → 标记之前是否在播放
+    if (state === 'paused' || state === 'idle') {
+      if (userIntentPlay) {
+        wasPlayingBeforeFocusLoss = true;
+      }
+    } else if (state === 'playing') {
+      wasPlayingBeforeFocusLoss = false;
+    }
+  }
+}
+
+function startVisibilityMonitor(): void {
+  if (typeof window === 'undefined') return;
+  if (visibilityCheckTimer !== null) return;
+  // 兜底：每 3s 检查一次 audio 实际状态，避免 visibilitychange 漏触发
+  visibilityCheckTimer = window.setInterval(() => {
+    if (typeof document === 'undefined') return;
+    if (document.visibilityState === 'visible') {
+      maybeResumeAfterFocusGain();
+    }
+  }, 3000);
+}
+
+export function disposeAudioFocus(): void {
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('pagehide', handlePageHide);
+    window.removeEventListener('pageshow', handlePageShow);
+    if (visibilityCheckTimer !== null) {
+      window.clearInterval(visibilityCheckTimer);
+      visibilityCheckTimer = null;
+    }
+  }
+  engineRef = null;
+}
