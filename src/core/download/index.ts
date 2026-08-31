@@ -5,6 +5,7 @@ import { getSqliteDb, flushDatabase } from '@shared/database';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { buildFallbackChain, PLATFORM_DISPLAY_NAMES } from '@core/platformPriority';
 import { toast } from '@shared/components/Toast';
+import { debugLogger } from '@shared/utils/debugLogger';
 
 function qmc2DecryptBytes(data: Uint8Array): Uint8Array {
   // Kuwo QMC2 格式解密；若全局未注册解密器则透传
@@ -128,6 +129,11 @@ export class DownloadEngine {
         meta.artist = params.artist || meta.artist;
         this.taskMeta.set(existing.id, meta);
       }
+      debugLogger.info('download', `下载任务已存在: ${params.title}`, {
+        taskId: existing.id,
+        sourceId: params.sourceId,
+        quality: params.quality,
+      });
       return existing;
     }
 
@@ -140,6 +146,11 @@ export class DownloadEngine {
       });
     }
     await this.persistTask(task);
+    debugLogger.info('download', `创建下载任务: ${params.title}`, {
+      taskId: id,
+      sourceId: params.sourceId,
+      quality: params.quality,
+    });
     return task;
   }
 
@@ -155,9 +166,17 @@ export class DownloadEngine {
     await this.persistTask(task);
     this.emit('stateChange', { taskId, status: 'downloading', task });
 
+    const meta = this.taskMeta.get(taskId);
+    const title = meta?.title || task.songId;
+
+    debugLogger.info('download', `开始下载: ${title}`, {
+      taskId,
+      sourceId: task.sourceId,
+      quality: task.quality,
+    });
+
     try {
       // 1. 取链（v13: 多平台降级链）
-      const meta = this.taskMeta.get(taskId);
       const availableIds = (meta?.availableSources || []).map((s) => s.sourceId);
       const songIdMap = new Map<string, string>();
       for (const s of meta?.availableSources || []) {
@@ -191,6 +210,12 @@ export class DownloadEngine {
               `下载已切换到 ${toName}`,
               `${fromName} 取链失败（${reason}），已自动降级到 ${toName}`
             );
+            debugLogger.warn('download', `下载取链降级: ${fromName} → ${toName}`, {
+              taskId,
+              from: chain[i - 1],
+              to: trySourceId,
+              reason,
+            });
           }
           resolved = {
             sourceId: trySourceId,
@@ -210,6 +235,10 @@ export class DownloadEngine {
             `[DownloadEngine] getPlayUrl failed on ${trySourceId}:`,
             err instanceof Error ? err.message : err
           );
+          debugLogger.warn('download', `下载取链失败: ${trySourceId}`, {
+            taskId,
+            error: err instanceof Error ? err.message : String(err),
+          });
           // 继续降级
         }
       }
@@ -220,6 +249,7 @@ export class DownloadEngine {
             lastError instanceof Error ? lastError.message : 'unknown'
           }`
         );
+
       }
 
       // 2. 确保下载目录存在
@@ -332,6 +362,11 @@ export class DownloadEngine {
       await this.persistTask(task);
       this.emit('stateChange', { taskId, status: 'completed', task });
       this.emit('completed', { taskId, filePath });
+      debugLogger.info('download', `下载完成: ${title}`, {
+        taskId,
+        filePath,
+        size: totalLength,
+      });
 
       this.abortControllers.delete(taskId);
     } catch (err) {
@@ -341,6 +376,10 @@ export class DownloadEngine {
       await this.persistTask(task);
       this.emit('stateChange', { taskId, status: 'failed', task });
       this.emit('failed', { taskId, error: msg });
+      debugLogger.error('download', `下载失败: ${title}`, {
+        taskId,
+        error: msg,
+      });
       this.abortControllers.delete(taskId);
     }
   }
@@ -359,12 +398,18 @@ export class DownloadEngine {
     task.status = 'paused';
     await this.persistTask(task);
     this.emit('stateChange', { taskId, status: 'paused', task });
+    debugLogger.info('download', `下载暂停: ${this.taskMeta.get(taskId)?.title || taskId}`, {
+      taskId,
+    });
   }
 
   // === 继续下载（paused → downloading）===
   async resumeDownload(taskId: string): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task || task.status !== 'paused') return;
+    debugLogger.info('download', `下载恢复: ${this.taskMeta.get(taskId)?.title || taskId}`, {
+      taskId,
+    });
     await this.startDownload(taskId);
   }
 
@@ -404,6 +449,10 @@ export class DownloadEngine {
     }
 
     this.emit('stateChange', { taskId, status: 'failed', task: { ...task, status: 'failed' } });
+    debugLogger.info('download', `下载任务取消/删除: ${taskId}`, {
+      taskId,
+      wasCompleted: task.status === 'completed',
+    });
   }
 
   // === 便捷方法（兼容 v10 调用方）===

@@ -77,10 +77,19 @@ export default function DebugLogPage() {
   };
 
   const handleDeleteByCategory = (category: DebugLogCategory) => {
-    if (window.confirm(`确定删除「${CATEGORY_LABELS[category]}」类别的所有日志吗？`)) {
-      const count = debugLogger.deleteByCategory(category);
+    const count = entries.filter((e) => e.category === category).length;
+    if (count === 0) {
+      alert('该类别暂无日志');
+      return;
+    }
+    if (
+      window.confirm(
+        `确定删除「${CATEGORY_LABELS[category]}」类别的 ${count} 条日志吗？此操作不可恢复。`
+      )
+    ) {
+      const deleted = debugLogger.deleteByCategory(category);
       refresh();
-      alert(`已删除 ${count} 条日志`);
+      alert(`已删除 ${deleted} 条日志`);
     }
   };
 

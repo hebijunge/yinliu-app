@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings, Music, Info, Trash2, Check, ListOrdered, Bug, Car } from 'lucide-react';
+import { Settings, Music, Info, Trash2, Check, ListOrdered, Bug, Download, FileText } from 'lucide-react';
 import { useThemeStore } from '../shared/store/themeStore';
 import { useSettingsStore } from '../shared/store/settingsStore';
 import { useSearchStore } from '../shared/store/searchStore';
@@ -12,6 +12,7 @@ import {
   PLATFORM_DISPLAY_NAMES,
   PLATFORM_COLORS,
 } from '../core/platformPriority';
+import { debugLogger } from '@shared/utils/debugLogger';
 
 type TabId = 'general' | 'music' | 'about';
 
@@ -28,9 +29,9 @@ export default function SettingsPage() {
   const [cleanDone, setCleanDone] = useState<string | null>(null);
 
   const { preferredQuality, enabledSources, downloadQuality, maxConcurrentDownloads, downloadDir,
-    autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause, debugMode, carMode,
+    autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause, debugMode,
     setPreferredQuality, setSourceEnabled, setDownloadQuality, setMaxConcurrentDownloads,
-    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause, setDebugMode, setCarMode, clearAllSettings } =
+    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause, setDebugMode, clearAllSettings } =
     useSettingsStore();
 
   const sources = sourceRegistry.getAll();
@@ -63,6 +64,16 @@ export default function SettingsPage() {
     useSearchStore.getState().clearHistory();
     setCleanDone('all');
     setTimeout(() => setCleanDone(null), 2000);
+  };
+
+  const handleExportLogs = (format: 'txt' | 'md') => {
+    debugLogger.triggerExport(format);
+  };
+
+  const handleClearLogs = () => {
+    if (window.confirm('确定要清空所有调试日志吗？此操作不可恢复。')) {
+      debugLogger.clear();
+    }
   };
 
   const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => (
@@ -103,48 +114,26 @@ export default function SettingsPage() {
       {/* Content */}
       <div className="space-y-4">
         {activeTab === 'general' && (
-          <>
-            <div className="yinliu-card">
-              <h3 className="font-semibold mb-4 text-[var(--text-primary)]">主题设置</h3>
-              <div className="flex gap-2">
-                {(['light', 'dark', 'system'] as const).map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setMode(m)}
-                    className={`px-5 py-2.5 rounded-2xl text-sm font-medium transition-all focus-ring ${
-                      mode === m
-                        ? 'bg-[var(--accent)] text-white'
-                        : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]'
-                    }`}
-                  >
-                    {m === 'light' && '浅色'}
-                    {m === 'dark' && '深色'}
-                    {m === 'system' && '跟随系统'}
-                  </button>
-                ))}
-              </div>
+          <div className="yinliu-card">
+            <h3 className="font-semibold mb-4 text-[var(--text-primary)]">主题设置</h3>
+            <div className="flex gap-2">
+              {(['light', 'dark', 'system'] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className={`px-5 py-2.5 rounded-2xl text-sm font-medium transition-all focus-ring ${
+                    mode === m
+                      ? 'bg-[var(--accent)] text-white'
+                      : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]'
+                  }`}
+                >
+                  {m === 'light' && '浅色'}
+                  {m === 'dark' && '深色'}
+                  {m === 'system' && '跟随系统'}
+                </button>
+              ))}
             </div>
-
-            {/* v15: 车机模式 — 大按钮、精简层级、适合驾驶场景 */}
-            <div className="yinliu-card">
-              <h3 className="font-semibold mb-1 text-[var(--text-primary)] flex items-center gap-2">
-                <Car className="w-4 h-4" />
-                车机模式
-              </h3>
-              <p className="text-xs text-[var(--text-tertiary)] mb-4">
-                适合驾驶场景：字体放大 1.25 倍、按钮热区 ≥ 48dp、弱化搜索输入、强化播放控制
-              </p>
-              <div className="space-y-3">
-                <div className="flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
-                  <div>
-                    <div className="font-medium text-sm text-[var(--text-primary)]">启用车机模式</div>
-                    <div className="text-xs text-[var(--text-tertiary)]">开启后全局应用大按钮与简化层级</div>
-                  </div>
-                  <Toggle on={carMode} onChange={setCarMode} />
-                </div>
-              </div>
-            </div>
-          </>
+          </div>
         )}
 
         {activeTab === 'music' && (
@@ -305,35 +294,6 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            {/* 调试模式 */}
-            <div className="yinliu-card">
-              <h3 className="font-semibold mb-1 text-[var(--text-primary)] flex items-center gap-2">
-                <Bug className="w-4 h-4" />
-                调试模式
-              </h3>
-              <p className="text-xs text-[var(--text-tertiary)] mb-4">
-                开启后记录点击、导航、网络、播放、下载等事件日志，仅本地存储，不上传
-              </p>
-              <div className="space-y-3">
-                <div className="flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
-                  <div>
-                    <div className="font-medium text-sm text-[var(--text-primary)]">启用调试日志</div>
-                    <div className="text-xs text-[var(--text-tertiary)]">记录所有操作和事件到本地日志</div>
-                  </div>
-                  <Toggle on={debugMode} onChange={setDebugMode} />
-                </div>
-                {debugMode && (
-                  <Link
-                    to="/debug"
-                    className="block w-full p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-colors focus-ring text-sm text-[var(--text-primary)] flex items-center gap-2"
-                  >
-                    <Bug className="w-4 h-4 text-[var(--text-tertiary)]" />
-                    查看调试日志（{'> '})
-                  </Link>
-                )}
-              </div>
-            </div>
-
             {/* 数据清理 */}
             <div className="yinliu-card">
               <h3 className="font-semibold mb-1 text-[var(--text-primary)]">数据清理</h3>
@@ -365,25 +325,82 @@ export default function SettingsPage() {
         )}
 
         {activeTab === 'about' && (
-          <div className="yinliu-card text-center py-12">
-            <div className="w-16 h-16 mx-auto mb-5 rounded-3xl bg-[var(--accent)]/10 flex items-center justify-center">
-              <svg className="w-10 h-10 text-[var(--accent)]" viewBox="0 0 64 64" fill="none">
-                <rect x="6" y="6" width="52" height="52" rx="18" stroke="currentColor" strokeWidth="2" opacity="0.2" />
-                <path d="M24 46V22l20-4v20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                <circle cx="20" cy="46" r="5" stroke="currentColor" strokeWidth="2" />
-                <circle cx="40" cy="42" r="5" stroke="currentColor" strokeWidth="2" />
-              </svg>
+          <>
+            <div className="yinliu-card text-center py-12">
+              <div className="w-16 h-16 mx-auto mb-5 rounded-3xl bg-[var(--accent)]/10 flex items-center justify-center">
+                <svg className="w-10 h-10 text-[var(--accent)]" viewBox="0 0 64 64" fill="none">
+                  <rect x="6" y="6" width="52" height="52" rx="18" stroke="currentColor" strokeWidth="2" opacity="0.2" />
+                  <path d="M24 46V22l20-4v20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                  <circle cx="20" cy="46" r="5" stroke="currentColor" strokeWidth="2" />
+                  <circle cx="40" cy="42" r="5" stroke="currentColor" strokeWidth="2" />
+                </svg>
+              </div>
+              <div className="text-2xl font-light mb-1 text-[var(--text-primary)] tracking-widest">音流</div>
+              <div className="text-sm text-[var(--text-secondary)] mb-8">Audio Stream</div>
+              <div className="text-xs text-[var(--text-tertiary)] space-y-1.5">
+                <p>版本: v0.1.0 MVP</p>
+                <p>多音源聚合音乐播放器</p>
+                <p>支持平台: 网易云 / QQ音乐 / 酷我 / 酷狗 / 咪咕</p>
+                <p>功能: 音乐 / 阅读 / DJ / 本地音乐 / 下载</p>
+                <p className="mt-4 opacity-60">v13 · 新增：聚合搜索 + 取链优先级 · 多平台降级</p>
+              </div>
             </div>
-            <div className="text-2xl font-light mb-1 text-[var(--text-primary)] tracking-widest">音流</div>
-            <div className="text-sm text-[var(--text-secondary)] mb-8">Audio Stream</div>
-            <div className="text-xs text-[var(--text-tertiary)] space-y-1.5">
-              <p>版本: v0.1.0 MVP</p>
-              <p>多音源聚合音乐播放器</p>
-              <p>支持平台: 网易云 / QQ音乐 / 酷我 / 酷狗 / 咪咕</p>
-              <p>功能: 音乐 / 阅读 / DJ / 本地音乐 / 下载</p>
-              <p className="mt-4 opacity-60">v13 · 新增：聚合搜索 + 取链优先级 · 多平台降级</p>
+
+            {/* 调试模式（about tab） */}
+            <div className="yinliu-card">
+              <h3 className="font-semibold mb-1 text-[var(--text-primary)] flex items-center gap-2">
+                <Bug className="w-4 h-4" />
+                调试模式
+              </h3>
+              <p className="text-xs text-[var(--text-tertiary)] mb-4">
+                开启后记录点击、导航、网络、播放、下载等事件日志，仅本地存储，不上传
+              </p>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
+                  <div>
+                    <div className="font-medium text-sm text-[var(--text-primary)]">启用调试日志</div>
+                    <div className="text-xs text-[var(--text-tertiary)]">记录所有操作和事件到本地日志</div>
+                  </div>
+                  <Toggle on={debugMode} onChange={setDebugMode} />
+                </div>
+                {debugMode && (
+                  <>
+                    <Link
+                      to="/debug-log"
+                      className="block w-full p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-colors focus-ring text-sm text-[var(--text-primary)] flex items-center gap-2"
+                    >
+                      <Bug className="w-4 h-4 text-[var(--text-tertiary)]" />
+                      查看调试日志
+                      <span className="ml-auto text-xs text-[var(--text-tertiary)]">{debugLogger.getCount()} 条</span>
+                    </Link>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleExportLogs('txt')}
+                        className="flex-1 p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-colors focus-ring text-sm text-[var(--text-primary)] flex items-center justify-center gap-2"
+                      >
+                        <FileText className="w-4 h-4 text-[var(--text-tertiary)]" />
+                        导出 .txt
+                      </button>
+                      <button
+                        onClick={() => handleExportLogs('md')}
+                        className="flex-1 p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-colors focus-ring text-sm text-[var(--text-primary)] flex items-center justify-center gap-2"
+                      >
+                        <Download className="w-4 h-4 text-[var(--text-tertiary)]" />
+                        导出 .md
+                      </button>
+                    </div>
+                    <button
+                      onClick={handleClearLogs}
+                      className="w-full p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] hover:border-red-500/30 transition-colors focus-ring text-sm text-red-500 flex items-center justify-center gap-2"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      清空调试日志
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
-          </div>
+          </>
         )}
       </div>
     </div>

@@ -19,6 +19,7 @@ import {
 } from './mediaSession';
 import { notifyPlaybackStateChange } from './audioFocus';
 import { playHistoryService } from '@shared/services/PlayHistoryService';
+import { debugLogger } from '@shared/utils/debugLogger';
 
 export type PlayerState = 'idle' | 'loading' | 'playing' | 'paused' | 'error';
 
@@ -200,6 +201,10 @@ export class PlayerEngine {
       const filePath = track.sourceSongId;
       const localUrl = await readLocalAudioAsUrl(filePath);
       const ext = filePath.split('.').pop()?.toLowerCase() || 'mp3';
+      debugLogger.info('player', `播放本地文件: ${track.title}`, {
+        filePath,
+        format: ext,
+      });
       return {
         url: localUrl,
         isLocal: true,
@@ -223,6 +228,10 @@ export class PlayerEngine {
         try {
           const localUrl = await downloadEngine.readLocalFileAsUrl(completedTask.filePath);
           console.log('[PlayerEngine] Playing from local file:', completedTask.filePath);
+          debugLogger.info('player', `播放已下载本地文件: ${track.title}`, {
+            filePath: completedTask.filePath,
+            sourceId: track.sourceId,
+          });
           return {
             url: localUrl,
             isLocal: true,
@@ -231,6 +240,10 @@ export class PlayerEngine {
           };
         } catch (localErr) {
           console.warn('[PlayerEngine] Local file read failed, falling back to online:', localErr);
+          debugLogger.warn('player', `本地文件读取失败，回退在线取链: ${track.title}`, {
+            filePath: completedTask.filePath,
+            error: localErr instanceof Error ? localErr.message : String(localErr),
+          });
         }
       }
     }
@@ -279,7 +292,18 @@ export class PlayerEngine {
             `已切换到 ${toName} 播放`,
             `${fromName} 取链失败（${reason}），已自动降级到 ${toName}`
           );
+          debugLogger.warn('player', `取链降级: ${fromName} → ${toName}`, {
+            track: track.title,
+            from: chain[i - 1],
+            to: trySourceId,
+            reason,
+          });
         }
+        debugLogger.info('player', `在线取链成功: ${track.title}`, {
+          sourceId: trySourceId,
+          quality,
+          format: playUrl.format,
+        });
         return { url: playUrl.url, isLocal: false, result: playUrl, actualSourceId: trySourceId };
       } catch (err) {
         lastError = err;
@@ -287,6 +311,10 @@ export class PlayerEngine {
           `[PlayerEngine] getPlayUrl failed on ${trySourceId}:`,
           err instanceof Error ? err.message : err
         );
+        debugLogger.warn('player', `取链失败: ${trySourceId} · ${track.title}`, {
+          sourceId: trySourceId,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 
@@ -316,6 +344,12 @@ export class PlayerEngine {
       this.currentBlobUrl = null;
     }
 
+    debugLogger.info('player', `开始播放: ${track.title}`, {
+      artist: track.artist,
+      sourceId: track.sourceId,
+      quality,
+    });
+
     try {
       const { url, isLocal, result, actualSourceId } = await this.resolvePlayUrl(track, quality);
 
@@ -342,6 +376,11 @@ export class PlayerEngine {
       this.setState('error');
       const msg = err instanceof Error ? err.message : '播放失败';
       this.emit('error', { message: msg });
+      debugLogger.error('player', `播放失败: ${track.title}`, {
+        artist: track.artist,
+        sourceId: track.sourceId,
+        error: msg,
+      });
       throw err;
     }
   }
@@ -365,11 +404,15 @@ export class PlayerEngine {
       this.setState('idle', 'engine');
       this.stopProgressTracking();
       this.emit('ended', undefined);
+      debugLogger.info('player', `播放结束: ${track.title}`);
     });
 
     this.audio.addEventListener('error', () => {
       this.setState('error', 'system');
       this.emit('error', { message: '音频加载失败' });
+      debugLogger.error('player', `音频加载失败: ${track.title}`, {
+        src: url.slice(0, 120),
+      });
     });
 
     this.audio.addEventListener('pause', () => {
@@ -391,6 +434,10 @@ export class PlayerEngine {
       // play() 可能因自动播放策略被拒绝
       this.setState('paused', 'system');
       this.emit('error', { message: '自动播放被阻止，请点击播放' });
+      debugLogger.warn('player', '自动播放被阻止', {
+        track: track.title,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -398,10 +445,16 @@ export class PlayerEngine {
     this.audio?.pause();
     this.setState('paused', 'user');
     this.stopProgressTracking();
+    debugLogger.info('player', '用户暂停播放', {
+      track: this.currentTrack?.title,
+    });
   }
 
   resume(): void {
     this.audio?.play();
+    debugLogger.info('player', '用户恢复播放', {
+      track: this.currentTrack?.title,
+    });
   }
 
   stop(): void {
@@ -412,6 +465,9 @@ export class PlayerEngine {
     this.setState('idle', 'user');
     this.stopProgressTracking();
     void clearMediaSession();
+    debugLogger.info('player', '用户停止播放', {
+      track: this.currentTrack?.title,
+    });
   }
 
   seek(time: number): void {
@@ -485,6 +541,11 @@ export class PlayerEngine {
 
     const track = this.currentTrack;
     const resumeTime = this.audio?.currentTime ?? 0;
+
+    debugLogger.info('player', `切换音质: ${track.title} → ${quality}`, {
+      fromQuality: this.lastQuality,
+      toQuality: quality,
+    });
 
     const result = await this.playTrack(track, quality);
 

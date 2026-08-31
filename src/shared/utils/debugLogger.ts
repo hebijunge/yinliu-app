@@ -8,8 +8,10 @@
  */
 
 const STORAGE_KEY = 'yinliu.debug.logs.v1';
+/** 条数上限：超出时淘汰最旧记录 */
 const MAX_ENTRIES = 500;
-const MAX_SIZE_BYTES = 2 * 1024 * 1024; // 2MB
+/** 体积上限 1MB：超出时淘汰最旧记录 */
+const MAX_SIZE_BYTES = 1 * 1024 * 1024;
 const PERSIST_DEBOUNCE_MS = 500;
 const BATCH_FLUSH_THRESHOLD = 10;
 
@@ -29,6 +31,11 @@ const SENSITIVE_KEYS = [
   'phone',
   'email',
   'mobile',
+  'passwd',
+  'pwd',
+  'client_secret',
+  'client_id',
+  'bearer',
 ];
 
 export type DebugLogLevel = 'info' | 'warn' | 'error';
@@ -89,6 +96,7 @@ class DebugLogger {
   private persistTimer: number | null = null;
   private runningTotalSize = 0;
   private pendingCount = 0;
+  private lifecycleListenersRegistered = false;
 
   isEnabled(): boolean {
     return this.enabled;
@@ -106,6 +114,46 @@ class DebugLogger {
     if (this.initialized) return;
     this.initialized = true;
     this.load();
+    this.registerLifecycleListeners();
+  }
+
+  /** 同步 flush pending 日志（用于页面/应用生命周期结束） */
+  syncFlush(): void {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    this.enforceLimits();
+    this.persist();
+  }
+
+  private registerLifecycleListeners(): void {
+    if (this.lifecycleListenersRegistered) return;
+    this.lifecycleListenersRegistered = true;
+
+    window.addEventListener('pagehide', () => this.syncFlush());
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        this.syncFlush();
+      }
+    });
+
+    // Capacitor 环境：如适用，补充 appStateChange 监听
+    if (typeof (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform === 'function') {
+      // @ts-ignore @capacitor/app 为可选依赖，仅在 Capacitor 原生环境且插件已安装时生效
+      import('@capacitor/app')
+        .then((mod: unknown) => {
+          const { App } = mod as {
+            App: { addListener: (event: string, cb: (state: { isActive: boolean }) => void) => void };
+          };
+          App.addListener('appStateChange', ({ isActive }: { isActive: boolean }) => {
+            if (!isActive) this.syncFlush();
+          });
+        })
+        .catch(() => {
+          // @capacitor/app 未安装，跳过
+        });
+    }
   }
 
   private load(): void {
@@ -126,8 +174,9 @@ class DebugLogger {
     try {
       const data: DebugLogPersisted = { entries: this.entries };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    } catch {
-      // 存储失败时静默降级（可能超出 localStorage 配额）
+    } catch (err) {
+      // 存储失败时降级并输出警告（可能超出 localStorage 配额）
+      console.warn('[DebugLogger] persist failed:', err instanceof Error ? err.message : String(err));
     }
   }
 
