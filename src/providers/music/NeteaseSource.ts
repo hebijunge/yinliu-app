@@ -385,6 +385,53 @@ export class NeteaseSource extends BaseHttpSource {
     }
   }
 
+  // ===================== 歌单 =====================
+
+  /**
+   * 获取网易云歌单详情
+   * 公开接口：/api/v6/playlist/detail（免登录可访问公开歌单）
+   * 隐私歌单需要登录态，本实现不处理
+   */
+  async getPlaylist(playlistId: string) {
+    const id = String(playlistId).replace(/[^\d]/g, '');
+    if (!id) {
+      throw new YinliuError(ErrorCode.VALIDATION_ERROR, '无效的网易云歌单ID', 400);
+    }
+    // v6 接口返回结构更稳定；包含 playlist + privileges
+    const url = `${this.HOST}/api/v6/playlist/detail?id=${id}&n=1000&s=0`;
+    const data = await this.httpGetJson(url, { Referer: this.REF });
+    if (!data?.playlist) {
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, `网易云歌单不存在或无权限: ${id}`, 404);
+    }
+    const pl = data.playlist;
+    const tracks = pl.tracks || [];
+    return {
+      id,
+      name: pl.name || '网易云歌单',
+      description: pl.description || '',
+      coverUrl: pl.coverImgUrl || '',
+      songs: tracks.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[],
+      total: tracks.length,
+    };
+  }
+
+  /**
+   * 解析歌单URL
+   * 网易云歌单URL格式：
+   *   https://music.163.com/playlist?id=12345
+   *   https://music.163.com/#/playlist?id=12345
+   *   https://music.163.com/playlist/12345
+   *   https://163cn.tv/XXXXX (短链，目前不做解析兜底)
+   */
+  async parsePlaylistUrl(url: string) {
+    const match = url.match(/(?:music\.163\.com|163\.cn)[/#]?(?:playlist)?[/?#&]id=(\d+)/)
+      || url.match(/music\.163\.com\/playlist\/(\d+)/);
+    if (!match || !match[1]) {
+      throw new YinliuError(ErrorCode.VALIDATION_ERROR, '无法解析网易云歌单URL', 400);
+    }
+    return this.getPlaylist(match[1]);
+  }
+
   // ===================== 歌词 =====================
 
   async getLyrics(songId: string): Promise<string | null> {

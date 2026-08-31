@@ -142,7 +142,9 @@ export async function initDatabase(): Promise<typeof db> {
       source TEXT NOT NULL,
       quality TEXT NOT NULL,
       sort_index INTEGER NOT NULL,
-      added_at INTEGER
+      added_at INTEGER,
+      match_status TEXT DEFAULT 'matched',
+      failure_reason TEXT
     );
     CREATE TABLE IF NOT EXISTS downloads (
       id TEXT PRIMARY KEY,
@@ -239,6 +241,11 @@ export async function initDatabase(): Promise<typeof db> {
       created_at INTEGER
     );
   `);
+
+  // v14 兼容迁移：playlist_songs 增量列（已建过表的旧 DB 需要补列）
+  // ALTER TABLE 不支持 IF NOT EXISTS（sql.js），用 try/catch 静默吞掉"重复列"错误
+  try { sqliteDb.run(`ALTER TABLE playlist_songs ADD COLUMN match_status TEXT DEFAULT 'matched'`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
+  try { sqliteDb.run(`ALTER TABLE playlist_songs ADD COLUMN failure_reason TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
 
   // 插入默认音源配置
   const defaults = [

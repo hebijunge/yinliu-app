@@ -378,6 +378,23 @@ export class KugouSource extends BaseHttpSource {
     }
   }
 
+  /**
+   * 解析歌单URL
+   * 酷狗歌单URL格式：
+   *   https://www.kugou.com/yy/special/single/12345.html
+   *   https://m.kugou.com/yy/special/single/12345.html
+   *   https://www.kugou.com/yy/special/single/12345-zhash.html (带 hash 段，ID 是第一段)
+   */
+  async parsePlaylistUrl(url: string) {
+    // 匹配 single/{id} 或 special/{id}，取第一段数字
+    const match = url.match(/(?:special\/single|special)\/(\d+)/)
+      || url.match(/[?&]id=(\d+)/);
+    if (!match || !match[1]) {
+      throw new Error('无法解析酷狗歌单URL');
+    }
+    return this.getPlaylist(match[1]);
+  }
+
   // ===================== 健康检查 =====================
 
   async healthCheck(): Promise<HealthStatus> {

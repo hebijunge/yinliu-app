@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { playlistService, type Playlist, type PlaylistSong } from '@shared/services/PlaylistService';
+import { playlistImporter, type ImportReport, type PreviewResult } from '@modules/music/playlistImporter';
 
 interface PlaylistStore {
   playlists: Playlist[];
@@ -7,6 +8,9 @@ interface PlaylistStore {
   currentPlaylistSongs: PlaylistSong[];
   favorites: Set<string>; // songId set for quick lookup
   isLoading: boolean;
+  /** v14: 歌单导入流程状态 */
+  isImporting: boolean;
+  lastImportReport: ImportReport | null;
 
   // 初始化：从数据库加载
   loadPlaylists: () => Promise<void>;
@@ -22,6 +26,11 @@ interface PlaylistStore {
   addSongToPlaylist: (playlistId: string, song: PlaylistSongInput) => Promise<void>;
   removeSongFromPlaylist: (playlistId: string, songId: string) => Promise<void>;
   toggleFavorite: (song: PlaylistSongInput) => Promise<void>;
+
+  // v14: 多平台歌单导入
+  previewPlaylistUrl: (url: string) => Promise<PreviewResult>;
+  importPlaylistFromUrl: (url: string) => Promise<ImportReport>;
+  clearLastImportReport: () => void;
 }
 
 export interface PlaylistSongInput {
@@ -41,6 +50,8 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   currentPlaylistSongs: [],
   favorites: new Set(),
   isLoading: false,
+  isImporting: false,
+  lastImportReport: null,
 
   loadPlaylists: async () => {
     set({ isLoading: true });
@@ -129,4 +140,30 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
       await get().loadPlaylistSongs(currentPlaylistId);
     }
   },
+
+  // === v14: 多平台歌单导入 ===
+
+  /** 仅预览：解析 URL + 抓源歌单，不落库 */
+  previewPlaylistUrl: async (url: string) => {
+    return playlistImporter.preview(url);
+  },
+
+  /**
+   * 完整导入：解析 → 跨平台匹配降级 → 落库
+   * 流程较长（每首曲目需取链探活），UI 应在调用前进入 loading 态
+   */
+  importPlaylistFromUrl: async (url: string) => {
+    set({ isImporting: true });
+    try {
+      const report = await playlistImporter.importAndPersist(url);
+      set({ lastImportReport: report });
+      // 刷新歌单列表（新增了导入歌单）
+      await get().loadPlaylists();
+      return report;
+    } finally {
+      set({ isImporting: false });
+    }
+  },
+
+  clearLastImportReport: () => set({ lastImportReport: null }),
 }));

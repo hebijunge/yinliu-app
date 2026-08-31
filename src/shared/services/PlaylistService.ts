@@ -13,6 +13,10 @@ export interface PlaylistSong {
   quality: string;
   addedAt: number;
   sortOrder: number;
+  /** v14: 匹配状态：matched / fallback / failed */
+  matchStatus?: string;
+  /** v14: 失败原因（仅 failed 时有） */
+  failureReason?: string;
 }
 
 export interface Playlist {
@@ -116,6 +120,8 @@ class PlaylistService {
         quality: String(row.quality || 'standard'),
         addedAt: Number(row.added_at || 0),
         sortOrder: Number(row.sort_index || 0),
+        matchStatus: row.match_status ? String(row.match_status) : 'matched',
+        failureReason: row.failure_reason ? String(row.failure_reason) : undefined,
       });
     }
     stmt.free();
@@ -133,6 +139,8 @@ class PlaylistService {
       coverUrl?: string;
       source: string;
       quality: string;
+      matchStatus?: string;
+      failureReason?: string;
     }
   ): Promise<void> {
     const sqliteDb = getSqliteDb();
@@ -151,8 +159,8 @@ class PlaylistService {
 
     sqliteDb.run(
       `INSERT INTO playlist_songs
-       (playlist_id, song_id, title, artist, album, duration, cover_url, source, quality, sort_index, added_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (playlist_id, song_id, title, artist, album, duration, cover_url, source, quality, sort_index, added_at, match_status, failure_reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         playlistId,
         song.songId,
@@ -165,6 +173,8 @@ class PlaylistService {
         song.quality,
         maxIndex,
         now,
+        song.matchStatus || 'matched',
+        song.failureReason || null,
       ]
     );
 
