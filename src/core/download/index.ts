@@ -270,11 +270,26 @@ export class DownloadEngine {
       const abortCtrl = new AbortController();
       this.abortControllers.set(taskId, abortCtrl);
 
+      debugLogger.info('download', `开始请求下载: ${resolved.url.slice(0, 120)}`, {
+        taskId,
+        sourceId: resolved.sourceId,
+        format: resolved.format,
+        hasHeaders: !!resolved.headers,
+      });
+
       const response = await platformFetch(resolved.url, {
         method: 'GET',
         signal: abortCtrl.signal,
         headers: resolved.headers || {},
         responseType: 'arraybuffer',
+      });
+
+      debugLogger.info('download', `下载响应收到: HTTP ${response.status}`, {
+        taskId,
+        status: response.status,
+        statusText: response.statusText,
+        contentType: response.headers.get('content-type'),
+        contentLength: response.headers.get('content-length'),
       });
 
       if (!response.ok) {
@@ -284,70 +299,91 @@ export class DownloadEngine {
       const contentLength = Number(response.headers.get('content-length') || '0');
       task.totalSize = contentLength;
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Response body is not readable');
-      }
+      // 5. 读取响应体：优先流式，若 response.body 不可用则回退到 arrayBuffer()
+      let merged: Uint8Array;
 
-      // 5. 流式读取并写入文件
-      const chunks: Uint8Array[] = [];
-      let downloaded = 0;
-      let lastTime = Date.now();
-      let lastDownloaded = 0;
+      if (response.body) {
+        try {
+          const reader = response.body.getReader();
+          const chunks: Uint8Array[] = [];
+          let downloaded = 0;
+          let lastTime = Date.now();
+          let lastDownloaded = 0;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-        // 检查是否被暂停/取消
-        if (task.status !== 'downloading') {
-          reader.cancel();
-          break;
+            // 检查是否被暂停/取消
+            if (task.status !== 'downloading') {
+              reader.cancel();
+              break;
+            }
+
+            chunks.push(value);
+            downloaded += value.length;
+            task.progress = task.totalSize > 0 ? downloaded / task.totalSize : 0;
+
+            // 计算速度 (bytes/s)
+            const now = Date.now();
+            const dt = now - lastTime;
+            if (dt >= 500) {
+              const speed = Math.round(((downloaded - lastDownloaded) / dt) * 1000);
+              lastTime = now;
+              lastDownloaded = downloaded;
+              this.emit('progress', {
+                taskId,
+                progress: task.progress,
+                downloadedSize: downloaded,
+                totalSize: task.totalSize,
+                speed,
+              });
+            }
+          }
+
+          const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+          merged = new Uint8Array(totalLength);
+          let offset = 0;
+          for (const chunk of chunks) {
+            merged.set(chunk, offset);
+            offset += chunk.length;
+          }
+        } catch (streamErr) {
+          debugLogger.warn('download', `流式读取失败，回退到 arrayBuffer(): ${streamErr instanceof Error ? streamErr.message : String(streamErr)}`, { taskId });
+          const ab = await response.arrayBuffer();
+          merged = new Uint8Array(ab);
         }
-
-        chunks.push(value);
-        downloaded += value.length;
-        task.progress = task.totalSize > 0 ? downloaded / task.totalSize : 0;
-
-        // 计算速度 (bytes/s)
-        const now = Date.now();
-        const dt = now - lastTime;
-        if (dt >= 500) {
-          const speed = Math.round(((downloaded - lastDownloaded) / dt) * 1000);
-          lastTime = now;
-          lastDownloaded = downloaded;
-          this.emit('progress', {
-            taskId,
-            progress: task.progress,
-            downloadedSize: downloaded,
-            totalSize: task.totalSize,
-            speed,
-          });
-        }
+      } else {
+        debugLogger.info('download', `response.body 不可用，使用 response.arrayBuffer()`, { taskId });
+        const ab = await response.arrayBuffer();
+        merged = new Uint8Array(ab);
       }
 
-      // 6. 合并 chunks 并写入本地文件
-      const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
-      const merged = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        merged.set(chunk, offset);
-        offset += chunk.length;
-      }
+      debugLogger.info('download', `下载数据接收完成: ${title}`, {
+        taskId,
+        totalBytes: merged.length,
+        contentLength,
+      });
 
       // QMC2 解密（Kuwo 源）
       const decrypted = task.sourceId === 'kuwo' ? qmc2DecryptBytes(merged) : merged;
 
-      // 转为 base64 写入 Capacitor Filesystem（32KB 分块避免大文件栈溢出）
+      // 转为 base64 写入 Capacitor Filesystem（逐字节拼接，避免大文件栈溢出）
       function arrayBufferToBase64(buffer: Uint8Array): string {
         const chunkSize = 32768;
         let binary = '';
         for (let i = 0; i < buffer.length; i += chunkSize) {
           const chunk = buffer.subarray(i, i + chunkSize);
-          binary += String.fromCharCode(...chunk);
+          // 不用 spread 避免 Maximum call stack size exceeded
+          for (let j = 0; j < chunk.length; j++) {
+            binary += String.fromCharCode(chunk[j]);
+          }
         }
         return btoa(binary);
       }
+
+      debugLogger.info('download', `开始写入本地文件: ${filePath}`, { taskId, size: decrypted.length });
+
       const base64 = arrayBufferToBase64(decrypted);
       await Filesystem.writeFile({
         path: filePath,
@@ -355,6 +391,8 @@ export class DownloadEngine {
         directory: Directory.Data,
         recursive: true,
       });
+
+      debugLogger.info('download', `本地文件写入完成: ${filePath}`, { taskId });
 
       // 7. 标记完成
       task.status = 'completed';

@@ -7,6 +7,10 @@
  * - 敏感字段自动脱敏
  */
 
+import { Capacitor } from '@capacitor/core';
+import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
+
 const STORAGE_KEY = 'yinliu.debug.logs.v1';
 /** 条数上限：超出时淘汰最旧记录 */
 const MAX_ENTRIES = 500;
@@ -382,15 +386,68 @@ class DebugLogger {
     URL.revokeObjectURL(url);
   }
 
+  /** Capacitor 原生环境：写入文件系统后唤起分享面板 */
+  private async exportNative(content: string, fileName: string, mimeType: string): Promise<void> {
+    try {
+      const dirPath = 'yinliu/logs';
+      const filePath = `${dirPath}/${fileName}`;
+
+      // 1. 确保目录存在
+      try {
+        await Filesystem.mkdir({ path: dirPath, directory: Directory.Documents, recursive: true });
+      } catch {
+        // 目录可能已存在
+      }
+
+      // 2. 写入文件（UTF-8 BOM 避免 Windows 记事本乱码）
+      const bomContent = '\ufeff' + content;
+      await Filesystem.writeFile({
+        path: filePath,
+        data: bomContent,
+        directory: Directory.Documents,
+        encoding: 'utf8',
+      });
+
+      // 3. 获取文件 URI 用于分享
+      const stat = await Filesystem.getUri({
+        path: filePath,
+        directory: Directory.Documents,
+      });
+
+      this.log('info', 'app', `调试日志已导出到: ${stat.uri}`);
+
+      // 4. 唤起原生分享面板
+      await Share.share({
+        title: `音流调试日志 - ${fileName}`,
+        text: '音流调试日志导出文件',
+        url: stat.uri,
+        dialogTitle: '分享调试日志',
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.log('error', 'app', `日志导出失败: ${msg}`);
+      console.error('[DebugLogger] Native export failed:', err);
+      // 回退到浏览器下载方式
+      const blob = new Blob(['\ufeff', content], { type: `${mimeType};charset=utf-8` });
+      this.downloadBlob(blob, fileName);
+    }
+  }
+
   triggerExport(format: 'txt' | 'md' = 'txt'): void {
     const content = format === 'md' ? this.exportAsMarkdown() : this.exportAsText();
     const mimeType = format === 'md' ? 'text/markdown' : 'text/plain';
     const ext = format;
     const fileName = `yinliu-debug-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.${ext}`;
-    // UTF-8 BOM，避免 Windows 记事本中文乱码
+
+    // Capacitor 原生环境：走文件系统 + 原生分享面板
+    if (Capacitor.isNativePlatform()) {
+      void this.exportNative(content, fileName, mimeType);
+      return;
+    }
+
+    // 浏览器环境：Blob 下载 / Web Share API
     const blob = new Blob(['\ufeff', content], { type: `${mimeType};charset=utf-8` });
 
-    // 优先使用 Web Share API（在 Capacitor WebView 中行为更一致）
     if (typeof navigator !== 'undefined' && 'share' in navigator && 'canShare' in navigator) {
       const file = new File([blob], fileName, { type: mimeType });
       const shareData: ShareData = { files: [file] };
@@ -398,7 +455,6 @@ class DebugLogger {
         navigator
           .share(shareData)
           .catch(() => {
-            // 用户取消或分享失败，回退到传统下载
             this.downloadBlob(blob, fileName);
           });
         return;
