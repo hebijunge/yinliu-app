@@ -2,6 +2,7 @@ import { BaseHttpSource } from './BaseHttpSource';
 import { Quality } from '@core/types';
 import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
+import { platformFetch } from '@shared/utils/platformFetch';
 
 /**
  * 酷我音乐音源Provider
@@ -158,13 +159,11 @@ export class KuwoSource extends BaseHttpSource {
   async getSongDetail(songId: string): Promise<SongDetail> {
     const rid = songId.replace(/^kw_/, '');
     const cached = this.songMetaCache.get(rid);
-    if (!cached?.name) {
-      throw new Error(`酷我歌曲详情获取失败：rid=${rid} 无缓存元数据`);
-    }
+
     return {
       id: songId,
-      title: cached.name,
-      artist: cached.artist || '',
+      title: cached?.name || '未知歌曲',
+      artist: cached?.artist || '',
       album: '',
       duration: 0,
       coverUrl: '',
@@ -172,52 +171,6 @@ export class KuwoSource extends BaseHttpSource {
   }
 
   // ===================== 取链（核心）=====================
-
-  /**
-   * 覆写 getPlayUrl：优先返回 accurate 候选，无则降级首非空。
-   */
-  async getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult> {
-    const rid = songId.replace(/^kw_/, '');
-    const candidates = this.buildEndpointCandidates(songId, quality);
-    const controller = new AbortController();
-
-    const promises = candidates.map(async (c): Promise<PlayUrlResult | null> => {
-      try {
-        const response = await fetch(c.url, {
-          method: c.method,
-          headers: c.headers,
-          signal: controller.signal,
-          redirect: 'follow',
-        });
-        if (!response.ok) return null;
-        if (c.resolve) {
-          const result = await c.resolve(response);
-          if (result) return result;
-        }
-        return null;
-      } catch { return null; }
-    });
-
-    const results = await Promise.allSettled(promises);
-    const matched = results
-      .filter((r): r is PromiseFulfilledResult<PlayUrlResult | null> => r.status === 'fulfilled')
-      .map((r) => r.value)
-      .filter((r): r is PlayUrlResult => r !== null);
-
-    // 优先返回 accurate 候选（拒绝服务端降级链）
-    const accurate = matched.find((r) => r.isAccurate !== false);
-    if (accurate) {
-      controller.abort();
-      return accurate;
-    }
-
-    if (matched.length > 0) {
-      controller.abort();
-      return matched[0];
-    }
-
-    throw new Error(`酷我取链失败：所有候选均不可用 (rid=${rid})`);
-  }
 
   protected buildEndpointCandidates(songId: string, quality: Quality): ResolvedCandidate[] {
     const rid = songId.replace(/^kw_/, '');
@@ -251,12 +204,13 @@ export class KuwoSource extends BaseHttpSource {
         const text = await resp.text();
         const url = text.trim();
         if (!url.startsWith('http')) return null;
-        return { url, quality, bitrate: 128, format: 'mp3' };
+        return { url, quality, bitrate: 128, format: 'mp3', accurate: this.isBitrateAccurate(quality, 128) };
       },
     });
 
     // 海棠第三方代理
     const level = this.haitangLevel(quality);
+    const expectedBitrate = this.brToBitrate(br);
     candidates.push({
       url: `${this.HAITANG_HOST}/music/kw.php?id=${rid}&level=${level}&type=mp3`,
       method: 'GET',
@@ -266,7 +220,7 @@ export class KuwoSource extends BaseHttpSource {
         const ct = resp.headers.get('content-type') || '';
         if (!ct.includes('audio') && !ct.includes('octet-stream')) return null;
         const url = `${this.HAITANG_HOST}/music/kw.php?id=${rid}&level=${level}&type=mp3`;
-        return { url, quality, bitrate: this.brToBitrate(br), format: 'mp3' };
+        return { url, quality, bitrate: expectedBitrate, format: 'mp3', accurate: this.isBitrateAccurate(quality, expectedBitrate) };
       },
     });
 
@@ -291,41 +245,27 @@ export class KuwoSource extends BaseHttpSource {
     // 防盗链占位校验
     if (this.isAntiTheft(url)) return null;
 
-    // 音质校验：拒绝服务端降级链（请求320k但返回128k时标 inaccurate）
-    const expected = this.kuwoQualityExpectation(quality);
-    let accurate = true;
-    if (expected) {
-      const [expBr, expFmt] = expected;
-      const tol = this.kuwoBitrateTolerance(format);
-      accurate = format.toLowerCase() === expFmt.toLowerCase() &&
-        Math.abs(bitrate - expBr) <= tol;
-    }
-
-    return { url, quality, bitrate, format, isAccurate: accurate };
+    const accurate = this.isBitrateAccurate(quality, bitrate);
+    return { url, quality, bitrate, format, accurate };
   }
 
-  /**
-   * 选定音质档 → 期望的 (bitrate, format)，用于拒绝回退假链。
-   * 参照 DJMusic KuwoSource.kt qualityExpectation。
-   */
-  private kuwoQualityExpectation(quality: Quality): [number, string] | null {
+  /** 判断实际码率是否与请求音质匹配（容许 50% 误差） */
+  private isBitrateAccurate(requestedQuality: Quality, actualBitrate: number): boolean {
+    const expected = this.kuwoQualityToExpectedBitrate(requestedQuality);
+    return actualBitrate >= expected * 0.5;
+  }
+
+  private kuwoQualityToExpectedBitrate(quality: Quality): number {
     switch (quality) {
-      case Quality.LOW: return [48, 'aac'];
-      case Quality.STANDARD: return [128, 'mp3'];
-      case Quality.HIGH: return [320, 'mp3'];
-      case Quality.LOSSLESS: return [2000, 'flac'];
-      default: return null;
+      case Quality.LOW: return 48;
+      case Quality.STANDARD: return 128;
+      case Quality.HIGH: return 320;
+      case Quality.LOSSLESS:
+      case Quality.HIFI:
+      case Quality.HIRES:
+        return 2000;
+      default: return 128;
     }
-  }
-
-  /**
-   * 码率匹配容差。
-   * 参照 DJMusic KuwoSource.kt bitrateTolerance。
-   */
-  private kuwoBitrateTolerance(format: string): number {
-    const f = format.toLowerCase();
-    if (f === 'flac') return 80;
-    return 8;
   }
 
   private isAntiTheft(url: string): boolean {
@@ -407,7 +347,7 @@ export class KuwoSource extends BaseHttpSource {
 
   async healthCheck(): Promise<HealthStatus> {
     try {
-      const resp = await fetch('https://www.kuwo.cn', { method: 'HEAD', signal: AbortSignal.timeout(5000) });
+      const resp = await platformFetch('https://www.kuwo.cn', { method: 'HEAD', signal: AbortSignal.timeout(5000) });
       return { healthy: resp.ok, message: resp.ok ? '酷我音乐服务正常' : '服务异常', latency: 0 };
     } catch {
       return { healthy: false, message: '酷我音乐服务不可用' };

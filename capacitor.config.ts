@@ -14,6 +14,9 @@ const config: CapacitorConfig = {
     webContentsDebuggingEnabled: true,
   },
   plugins: {
+    CapacitorHttp: {
+      enabled: true,
+    },
     SplashScreen: {
       launchShowDuration: 2000,
       backgroundColor: '#0f172a',

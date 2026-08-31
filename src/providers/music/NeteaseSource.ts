@@ -1,7 +1,8 @@
 import { BaseHttpSource } from './BaseHttpSource';
-import { Quality } from '@core/types';
+import { Quality, YinliuError, ErrorCode } from '@core/types';
 import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
+import { platformFetch } from '@shared/utils/platformFetch';
 
 /**
  * 网易云音乐音源Provider
@@ -91,35 +92,20 @@ export class NeteaseSource extends BaseHttpSource {
 
   async getSongDetail(songId: string): Promise<SongDetail> {
     const id = songId.replace(/^ne_/, '');
-    try {
-      const url = `${this.HOST}/api/song/detail?ids=[${id}]`;
-      const data = await this.httpGetJson(url, { Cookie: this.VIP_COOKIE, Referer: this.REF });
-      const songs = data?.songs;
-      if (!songs || songs.length === 0) {
-        throw new Error(`网易云歌曲详情获取失败：id=${id} 无返回数据`);
-      }
-      const s = songs[0];
-      const name = (s.name || '').toString().trim();
-      if (!name) {
-        throw new Error(`网易云歌曲详情获取失败：id=${id} 返回空名称`);
-      }
-      const artists = s.artists || s.ar || [];
-      const artist = artists.map((a: any) => (a.name || '').toString()).filter(Boolean).join(' / ');
-      const album = s.album || s.al || {};
-      const durMs = parseInt((s.duration || s.dt || '0').toString(), 10);
-
-      return {
-        id: songId,
-        title: name,
-        artist,
-        album: (album.name || '').toString(),
-        duration: durMs > 0 ? Math.floor(durMs / 1000) : 0,
-        coverUrl: (album.picUrl || album.pic || '').toString(),
-      };
-    } catch (err) {
-      // 不再静默返回占位对象，让调用方感知失败
-      throw err instanceof Error ? err : new Error(`网易云歌曲详情获取失败：id=${id}`);
+    const url = `${this.HOST}/api/song/detail?ids=[${id}]`;
+    const data = await this.httpGetJson(url);
+    if (!data?.songs || data.songs.length === 0) {
+      throw new YinliuError(ErrorCode.SONG_NOT_FOUND, `网易云歌曲详情获取失败: ${id}`);
     }
+    const s = data.songs[0];
+    return {
+      id: songId,
+      title: s.name || '',
+      artist: (s.ar || []).map((a: any) => a.name).filter(Boolean).join(' / '),
+      album: s.al?.name || '',
+      duration: s.dt ? Math.floor(s.dt / 1000) : 0,
+      coverUrl: s.al?.picUrl || '',
+    };
   }
 
   // ===================== 取链（核心）=====================
@@ -206,12 +192,7 @@ export class NeteaseSource extends BaseHttpSource {
     return candidates;
   }
 
-  /**
-   * 覆写 getPlayUrl：
-   * 1. 官方候选增加 isPreview / isAccurate 标记
-   * 2. 优先返回 accurate 候选；无 accurate 则降级首非空
-   * 3. 保证可播（全部失败才抛错）
-   */
+  // 覆写getPlayUrl，因为海棠需要POST body
   async getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult> {
     const id = songId.replace(/^ne_/, '');
     const level = this.neteaseLevel(quality);
@@ -237,16 +218,8 @@ export class NeteaseSource extends BaseHttpSource {
       .map((r) => r.value)
       .filter((r): r is PlayUrlResult => r !== null);
 
-    // 优先返回 accurate 候选（拒绝服务端降级链）
-    const accurate = matched.find((r) => r.isAccurate !== false);
-    if (accurate) {
-      controller.abort();
-      return accurate;
-    }
-
-    // 无 accurate 则降级首非空（如官方 320k 试听片段）
     if (matched.length > 0) {
-      controller.abort();
+      controller.abort(); // 取消其他
       return matched[0];
     }
 
@@ -255,7 +228,7 @@ export class NeteaseSource extends BaseHttpSource {
 
   private async fetchOfficialV1(id: string, level: string, quality: Quality, signal: AbortSignal): Promise<PlayUrlResult | null> {
     try {
-      const resp = await fetch(`${this.HOST}/api/song/enhance/player/url/v1?ids=[${id}]&level=${level}&encodeType=flac`, {
+      const resp = await platformFetch(`${this.HOST}/api/song/enhance/player/url/v1?ids=[${id}]&level=${level}&encodeType=flac`, {
         headers: { Cookie: this.VIP_COOKIE, Referer: this.REF },
         signal,
       });
@@ -265,7 +238,7 @@ export class NeteaseSource extends BaseHttpSource {
 
   private async fetchOfficialBr(id: string, br: number, quality: Quality, signal: AbortSignal): Promise<PlayUrlResult | null> {
     try {
-      const resp = await fetch(`${this.HOST}/api/song/enhance/player/url?ids=[${id}]&br=${br}`, {
+      const resp = await platformFetch(`${this.HOST}/api/song/enhance/player/url?ids=[${id}]&br=${br}`, {
         headers: { Cookie: this.VIP_COOKIE, Referer: this.REF },
         signal,
       });
@@ -275,7 +248,7 @@ export class NeteaseSource extends BaseHttpSource {
 
   private async fetchHaitang(id: string, level: string, quality: Quality, signal: AbortSignal): Promise<PlayUrlResult | null> {
     try {
-      const resp = await fetch('https://musicserver.haitangw.cc/v1/music/resolve-url', {
+      const resp = await platformFetch('https://musicserver.haitangw.cc/v1/music/resolve-url', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -297,7 +270,7 @@ export class NeteaseSource extends BaseHttpSource {
 
   private async fetchGdstudio(id: string, br: number, quality: Quality, signal: AbortSignal): Promise<PlayUrlResult | null> {
     try {
-      const resp = await fetch(`https://music-api.gdstudio.xyz/api.php?types=url&source=netease&id=${id}&br=${br}`, {
+      const resp = await platformFetch(`https://music-api.gdstudio.xyz/api.php?types=url&source=netease&id=${id}&br=${br}`, {
         signal,
       });
       const data = await resp.json().catch(() => null);
@@ -309,7 +282,7 @@ export class NeteaseSource extends BaseHttpSource {
 
   private async fetchQijieya(id: string, br: number, quality: Quality, signal: AbortSignal): Promise<PlayUrlResult | null> {
     try {
-      const resp = await fetch(`https://api.qijieya.cn/meting/?type=url&id=${id}&server=netease&br=${br}`, {
+      const resp = await platformFetch(`https://api.qijieya.cn/meting/?type=url&id=${id}&server=netease&br=${br}`, {
         signal,
         redirect: 'follow',
       });
@@ -329,10 +302,9 @@ export class NeteaseSource extends BaseHttpSource {
     if (!url || !url.startsWith('http')) return null;
     const actualBr = o.br || 0;
     const type = o.type || 'mp3';
-    // 试听片段检测
-    const trial = o.freeTrialInfo != null;
-    const accurate = !trial && this.isAccurateNetease(quality, actualBr, type);
-    return { url, quality, bitrate: actualBr, format: type, isPreview: trial, isAccurate: accurate };
+    const isPreview = !!o.freeTrialInfo;
+    const accurate = this.isBitrateAccurate(quality, actualBr);
+    return { url, quality, bitrate: actualBr, format: type, isPreview, accurate };
   }
 
   private async resolveOfficialBr(resp: Response, quality: Quality): Promise<PlayUrlResult | null> {
@@ -345,27 +317,16 @@ export class NeteaseSource extends BaseHttpSource {
     if (!url || !url.startsWith('http')) return null;
     const actualBr = o.br || 0;
     const type = o.type || 'mp3';
-    // 试听片段检测
-    const trial = o.freeTrialInfo != null;
-    const accurate = !trial && this.isAccurateNetease(quality, actualBr, type);
-    return { url, quality, bitrate: actualBr, format: type, isPreview: trial, isAccurate: accurate };
+    const isPreview = !!o.freeTrialInfo;
+    const accurate = this.isBitrateAccurate(quality, actualBr);
+    return { url, quality, bitrate: actualBr, format: type, isPreview, accurate };
   }
 
-  /**
-   * 官方取链结果是否与请求音质精确匹配（用于竞速优先选 accurate）。
-   * 参照 DJMusic NeteaseSource.kt isAccurateNetease。
-   */
-  private isAccurateNetease(quality: Quality, br: number, type: string): boolean {
-    switch (quality) {
-      case Quality.LOSSLESS: return type.toLowerCase() === 'flac' && br >= 900000;
-      case Quality.HIFI: return br >= 900000;
-      case Quality.HIRES: return br >= 1800000;
-      case Quality.HIGH: return br >= 300000 && br <= 330000;
-      case Quality.HIGHER: return br >= 180000 && br <= 210000;
-      case Quality.LOW:
-      case Quality.STANDARD: return br >= 120000 && br <= 135000;
-      default: return true;
-    }
+  /** 判断实际码率是否与请求音质匹配（容许 10% 误差） */
+  private isBitrateAccurate(requestedQuality: Quality, actualBr: number): boolean {
+    const expectedBr = this.neteaseBr(requestedQuality);
+    // 容许 10% 下浮，上不限
+    return actualBr >= expectedBr * 0.9;
   }
 
   private neteaseBr(quality: Quality): number {
@@ -423,7 +384,7 @@ export class NeteaseSource extends BaseHttpSource {
 
   async healthCheck(): Promise<HealthStatus> {
     try {
-      const resp = await fetch(this.HOST, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
+      const resp = await platformFetch(this.HOST, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
       return { healthy: resp.ok, message: resp.ok ? '网易云音乐服务正常' : '服务异常', latency: 0 };
     } catch {
       return { healthy: false, message: '网易云音乐服务不可用' };

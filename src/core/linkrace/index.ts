@@ -1,6 +1,7 @@
 import type { EndpointCandidate } from '@providers/music/types';
 import type { PlayUrlResult } from '@core/types';
 import { Quality, qualityRank, YinliuError, ErrorCode } from '@core/types';
+import { platformFetch } from '@shared/utils/platformFetch';
 
 /**
  * LinkRace 并发竞速取链引擎
@@ -38,7 +39,7 @@ export async function linkRace(
   const promises = candidates.map(async (candidate): Promise<LinkRaceResult | null> => {
     const cStart = Date.now();
     try {
-      const response = await fetch(candidate.url, {
+      const response = await platformFetch(candidate.url, {
         method: candidate.method,
         headers: candidate.headers,
         signal: controller.signal,
@@ -49,7 +50,7 @@ export async function linkRace(
 
       // 可选：验证URL有效性（HEAD请求检查Content-Length）
       if (validateUrl && candidate.method === 'GET') {
-        const headResponse = await fetch(candidate.url, {
+        const headResponse = await platformFetch(candidate.url, {
           method: 'HEAD',
           headers: candidate.headers,
           signal: controller.signal,

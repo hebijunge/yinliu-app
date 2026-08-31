@@ -156,7 +156,8 @@ export class DownloadEngine {
       }
 
       // 开始下载
-      const response = await fetch(playUrl.url, {
+      const { platformFetch } = await import('@shared/utils/platformFetch');
+      const response = await platformFetch(playUrl.url, {
         signal: task.abortController?.signal,
         headers: playUrl.headers,
       });

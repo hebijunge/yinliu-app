@@ -2,6 +2,7 @@ import type { MusicSource, EndpointCandidate } from './types';
 import { Quality } from '@core/types';
 import type { SearchParams, SearchResult, PlayUrlResult, SongDetail, HealthStatus } from '@core/types';
 import { YinliuError, ErrorCode, qualityRank } from '@core/types';
+import { platformFetch } from '@shared/utils/platformFetch';
 
 export interface ResolvedCandidate extends EndpointCandidate {
   /** 自定义解析函数：fetch响应 → PlayUrlResult | null */
@@ -43,7 +44,7 @@ export abstract class BaseHttpSource implements MusicSource {
 
     const promises = candidates.map(async (c): Promise<PlayUrlResult | null> => {
       try {
-        const response = await fetch(c.url, {
+        const response = await platformFetch(c.url, {
           method: c.method,
           headers: c.headers,
           signal: controller.signal,
@@ -99,52 +100,30 @@ export abstract class BaseHttpSource implements MusicSource {
 
   protected validateQuality(result: PlayUrlResult, target: Quality): boolean {
     if (!result.url) return false;
-    // 基础校验：返回的音质等级不低于目标
+    // 音质等级校验
     if (qualityRank(result.quality) < qualityRank(target)) return false;
-    // 若子类已标记 isAccurate，直接信任
-    if (result.isAccurate === true) return true;
-    if (result.isAccurate === false) return false;
-    // 未标记时，做保守的码率/格式兜底校验
-    return this.validateBitrateAndFormat(result.bitrate, result.format, target);
-  }
-
-  /**
-   * 码率与格式兜底校验：请求音质 vs 实际响应。
-   * 子类可覆写以提供更精确的源级校验。
-   */
-  protected validateBitrateAndFormat(bitrate: number, format: string, target: Quality): boolean {
-    const expected = this.qualityExpectation(target);
-    if (!expected) return true; // 无期望值时不拦截
-    const [expBr, expFmt] = expected;
-    const tol = this.bitrateTolerance(format);
-    const fmtOk = format.toLowerCase() === expFmt.toLowerCase();
-    const brOk = Math.abs(bitrate - expBr) <= tol;
-    return fmtOk && brOk;
-  }
-
-  /**
-   * 请求音质 → 期望 (bitrate, format)。
-   * 子类覆写以适配各源的实际档位。
-   */
-  protected qualityExpectation(quality: Quality): [number, string] | null {
-    switch (quality) {
-      case Quality.LOW: return [48, 'aac'];
-      case Quality.STANDARD: return [128, 'mp3'];
-      case Quality.HIGH: return [320, 'mp3'];
-      case Quality.LOSSLESS: return [1000, 'flac'];
-      case Quality.HIFI:
-      case Quality.HIRES: return [2000, 'flac'];
-      default: return null;
+    // 码率校验：实际码率不得低于目标音质典型码率的 50%（允许一定降级）
+    const expectedBitrate = this.qualityToExpectedBitrate(target);
+    if (expectedBitrate > 0 && result.bitrate > 0 && result.bitrate < expectedBitrate * 0.5) {
+      return false;
     }
+    return true;
   }
 
-  /**
-   * 码率匹配容差（不同编码实测码率有小幅浮动）。
-   */
-  protected bitrateTolerance(format: string): number {
-    const f = format.toLowerCase();
-    if (f === 'flac') return 80;
-    return 8;
+  /** 音质对应的典型码率（kbps） */
+  protected qualityToExpectedBitrate(quality: Quality): number {
+    switch (quality) {
+      case Quality.LOW: return 48;
+      case Quality.STANDARD: return 128;
+      case Quality.HIGHER: return 192;
+      case Quality.HIGH: return 320;
+      case Quality.LOSSLESS: return 1000;
+      case Quality.HIFI: return 3000;
+      case Quality.HIRES: return 1800;
+      case Quality.SKY: return 1000;
+      case Quality.JYEFFECT: return 320;
+      default: return 128;
+    }
   }
 
   protected estimateBitrate(contentLength: string | null, quality: Quality): number {
@@ -170,7 +149,7 @@ export abstract class BaseHttpSource implements MusicSource {
    */
   protected async httpGet(url: string, headers?: Record<string, string>): Promise<Response | null> {
     try {
-      return await fetch(url, {
+      return await platformFetch(url, {
         method: 'GET',
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -201,7 +180,7 @@ export abstract class BaseHttpSource implements MusicSource {
    */
   protected async httpPostJson(url: string, body: object, headers?: Record<string, string>): Promise<any | null> {
     try {
-      const resp = await fetch(url, {
+      const resp = await platformFetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -223,7 +202,7 @@ export abstract class BaseHttpSource implements MusicSource {
   protected async httpPostForm(url: string, params: Record<string, string>, headers?: Record<string, string>): Promise<any | null> {
     try {
       const form = new URLSearchParams(params);
-      const resp = await fetch(url, {
+      const resp = await platformFetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
