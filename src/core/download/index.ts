@@ -414,12 +414,18 @@ export class DownloadEngine {
       task.status = 'completed';
       task.progress = 1;
       await this.persistTask(task);
-      this.emit('stateChange', { taskId, status: 'completed', task });
-      this.emit('completed', { taskId, filePath });
       debugLogger.info('download', `下载完成: ${title}`, {
         taskId,
         filePath,
         size: merged.length,
+        status: 'completed',
+      });
+      this.emit('stateChange', { taskId, status: 'completed', task });
+      this.emit('completed', { taskId, filePath });
+      debugLogger.info('download', `任务状态变更已推入列表: ${title}`, {
+        taskId,
+        status: 'completed',
+        listSize: this.tasks.size,
       });
 
       this.abortControllers.delete(taskId);
@@ -428,11 +434,17 @@ export class DownloadEngine {
       task.status = 'failed';
       task.errorMessage = msg;
       await this.persistTask(task);
-      this.emit('stateChange', { taskId, status: 'failed', task });
-      this.emit('failed', { taskId, error: msg });
       debugLogger.error('download', `下载失败: ${title}`, {
         taskId,
         error: msg,
+        status: 'failed',
+      });
+      this.emit('stateChange', { taskId, status: 'failed', task });
+      this.emit('failed', { taskId, error: msg });
+      debugLogger.info('download', `任务状态变更已推入列表: ${title}`, {
+        taskId,
+        status: 'failed',
+        listSize: this.tasks.size,
       });
       this.abortControllers.delete(taskId);
     }

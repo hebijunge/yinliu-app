@@ -10,6 +10,7 @@
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
+import { toast } from '@shared/components/Toast';
 
 const STORAGE_KEY = 'yinliu.debug.logs.v1';
 /** 条数上限：超出时淘汰最旧记录 */
@@ -387,53 +388,56 @@ class DebugLogger {
   }
 
   /** Capacitor 原生环境：写入文件系统后唤起分享面板 */
-  private async exportNative(content: string, fileName: string, mimeType: string): Promise<void> {
+  private async exportNative(content: string, fileName: string, mimeType: string): Promise<string> {
+    const dirPath = 'yinliu/logs';
+    const filePath = `${dirPath}/${fileName}`;
+
+    // 1. 确保目录存在
     try {
-      const dirPath = 'yinliu/logs';
-      const filePath = `${dirPath}/${fileName}`;
-
-      // 1. 确保目录存在
-      try {
-        await Filesystem.mkdir({ path: dirPath, directory: Directory.Documents, recursive: true });
-      } catch {
-        // 目录可能已存在
-      }
-
-      // 2. 写入文件（UTF-8 BOM 避免 Windows 记事本乱码）
-      const bomContent = '\ufeff' + content;
-      await Filesystem.writeFile({
-        path: filePath,
-        data: bomContent,
-        directory: Directory.Documents,
-        encoding: Encoding.UTF8,
-      });
-
-      // 3. 获取文件 URI 用于分享
-      const stat = await Filesystem.getUri({
-        path: filePath,
-        directory: Directory.Documents,
-      });
-
-      this.log('info', 'app', `调试日志已导出到: ${stat.uri}`);
-
-      // 4. 唤起原生分享面板
-      await Share.share({
-        title: `音流调试日志 - ${fileName}`,
-        text: '音流调试日志导出文件',
-        url: stat.uri,
-        dialogTitle: '分享调试日志',
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.log('error', 'app', `日志导出失败: ${msg}`);
-      console.error('[DebugLogger] Native export failed:', err);
-      // 回退到浏览器下载方式
-      const blob = new Blob(['\ufeff', content], { type: `${mimeType};charset=utf-8` });
-      this.downloadBlob(blob, fileName);
+      await Filesystem.mkdir({ path: dirPath, directory: Directory.Documents, recursive: true });
+    } catch {
+      // 目录可能已存在
     }
+
+    // 2. 写入文件（UTF-8 BOM 避免 Windows 记事本乱码）
+    const bomContent = '\ufeff' + content;
+    await Filesystem.writeFile({
+      path: filePath,
+      data: bomContent,
+      directory: Directory.Documents,
+      encoding: Encoding.UTF8,
+      recursive: true,
+    });
+
+    // 3. 获取文件 URI 用于分享
+    const stat = await Filesystem.getUri({
+      path: filePath,
+      directory: Directory.Documents,
+    });
+
+    this.log('info', 'app', `调试日志已导出到: ${stat.uri}`);
+
+    // 4. 唤起原生分享面板（用户取消会 reject，外层 catch 处理）
+    await Share.share({
+      title: `音流调试日志 - ${fileName}`,
+      text: '音流调试日志导出文件',
+      url: stat.uri,
+      dialogTitle: '分享调试日志',
+    });
+
+    return stat.uri;
   }
 
+  /** 导出防重入：连点时第二次直接忽略 */
+  private isExporting = false;
+
   triggerExport(format: 'txt' | 'md' = 'txt'): void {
+    if (this.isExporting) {
+      toast.info('导出中', '请等待当前导出完成');
+      return;
+    }
+    this.isExporting = true;
+
     const content = format === 'md' ? this.exportAsMarkdown() : this.exportAsText();
     const mimeType = format === 'md' ? 'text/markdown' : 'text/plain';
     const ext = format;
@@ -441,7 +445,19 @@ class DebugLogger {
 
     // Capacitor 原生环境：走文件系统 + 原生分享面板
     if (Capacitor.isNativePlatform()) {
-      void this.exportNative(content, fileName, mimeType);
+      this.exportNative(content, fileName, mimeType)
+        .then((uri) => {
+          toast.success('调试日志已导出', `已唤起系统分享面板，可保存到任意位置\n${uri}`);
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.log('error', 'app', `日志导出失败: ${msg}`);
+          console.error('[DebugLogger] Native export failed:', err);
+          toast.error('日志导出失败', `${msg}\n请尝试 .txt 格式，或反馈给开发者`);
+        })
+        .finally(() => {
+          this.isExporting = false;
+        });
       return;
     }
 
@@ -454,14 +470,21 @@ class DebugLogger {
       if (navigator.canShare?.(shareData)) {
         navigator
           .share(shareData)
-          .catch(() => {
+          .then(() => {
+            this.isExporting = false;
+          })
+          .catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            this.log('warn', 'app', `Web Share 失败，回退到下载: ${msg}`);
             this.downloadBlob(blob, fileName);
+            this.isExporting = false;
           });
         return;
       }
     }
 
     this.downloadBlob(blob, fileName);
+    this.isExporting = false;
   }
 }
 
