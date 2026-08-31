@@ -2,6 +2,54 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ===== CSS Variables ===== */
+:root {
+  /* Light theme (default) */
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8fafc;
+  --bg-tertiary: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-tertiary: #94a3b8;
+  --accent: #0ea5e9;
+  --accent-hover: #0284c7;
+  --border: #e2e8f0;
+  --sidebar-width: 220px;
+  --player-height: 72px;
+}
+
+html.dark {
+  /* Dark theme */
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-tertiary: #334155;
+  --text-primary: #f1f5f9;
+  --text-secondary: #cbd5e1;
+  --text-tertiary: #64748b;
+  --accent: #38bdf8;
+  --accent-hover: #0ea5e9;
+  --border: #334155;
+}
+
+/* Yinliu component utilities */
+@layer components {
+  .yinliu-input {
+    @apply px-4 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none focus:ring-2 focus:ring-[var(--accent)]/30 focus:border-[var(--accent)] transition-all;
+  }
+
+  .yinliu-btn {
+    @apply px-4 py-2.5 rounded-xl bg-[var(--accent)] text-white font-medium hover:bg-[var(--accent-hover)] active:scale-95 transition-all disabled:opacity-50;
+  }
+
+  .yinliu-btn-secondary {
+    @apply px-4 py-2.5 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)] active:scale-95 transition-all;
+  }
+
+  .yinliu-card {
+    @apply rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] p-4;
+  }
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
