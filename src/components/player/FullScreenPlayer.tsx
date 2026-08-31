@@ -146,34 +146,46 @@ export default function FullScreenPlayer({ onClose }: Props) {
 
       {/* Main content: Cover or Lyrics */}
       <div className="flex-1 overflow-hidden relative">
-        {showLyrics && lyrics ? (
+        {showLyrics ? (
           /* Lyrics view */
-          <div
-            ref={lyricsScrollRef}
-            className="absolute inset-0 overflow-y-auto px-8 py-6 scrollbar-hide"
-          >
-            <div className="space-y-4 text-center min-h-full flex flex-col justify-center">
-              {lyrics.lines.map((line, index) => {
-                const isActive = index === currentLineIndex;
-                const distance = Math.abs(index - currentLineIndex);
-                return (
-                  <div
-                    key={index}
-                    ref={(el) => { lineRefs.current[index] = el; }}
-                    className={`transition-all duration-500 py-1 ${
-                      isActive
-                        ? 'text-[var(--accent)] font-bold text-xl scale-105'
-                        : distance === 1
-                        ? 'text-[var(--text-secondary)] text-base opacity-70'
-                        : 'text-[var(--text-tertiary)] text-sm opacity-40'
-                    }`}
-                  >
-                    {line.text}
-                  </div>
-                );
-              })}
+          lyrics ? (
+            <div
+              ref={lyricsScrollRef}
+              className="absolute inset-0 overflow-y-auto px-8 py-6 scrollbar-hide"
+            >
+              <div className="space-y-4 text-center min-h-full flex flex-col justify-center">
+                {lyrics.lines.map((line, index) => {
+                  const isActive = index === currentLineIndex;
+                  const distance = Math.abs(index - currentLineIndex);
+                  return (
+                    <div
+                      key={index}
+                      ref={(el) => { lineRefs.current[index] = el; }}
+                      onClick={() => {
+                        playerEngine.seek(line.time);
+                      }}
+                      className={`transition-all duration-500 py-1 cursor-pointer select-none ${
+                        isActive
+                          ? 'text-[var(--accent)] font-bold text-xl scale-105'
+                          : distance === 1
+                          ? 'text-[var(--text-secondary)] text-base opacity-70'
+                          : 'text-[var(--text-tertiary)] text-sm opacity-40'
+                      }`}
+                    >
+                      {line.text}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          ) : (
+            /* No lyrics placeholder */
+            <div className="absolute inset-0 flex flex-col items-center justify-center px-8">
+              <Mic2 className="w-12 h-12 text-[var(--text-tertiary)] opacity-30 mb-4" />
+              <p className="text-[var(--text-tertiary)] text-sm">暂无歌词</p>
+              <p className="text-[var(--text-tertiary)] text-xs opacity-60 mt-1">该曲目暂未匹配到歌词</p>
+            </div>
+          )
         ) : (
           /* Cover view */
           <div className="flex-1 flex items-center justify-center px-10 h-full">

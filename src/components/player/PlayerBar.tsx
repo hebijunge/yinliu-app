@@ -98,37 +98,53 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
   return (
     <>
       {/* Lyrics Panel */}
-      {showLyrics && lyrics && (
-        <div
-          className="fixed inset-x-0 z-50 bg-[var(--bg-secondary)]/95 backdrop-blur-lg border-t border-[var(--border-subtle)] max-h-64 overflow-y-auto"
-          style={{ bottom: 'var(--player-height, 72px)' }}
-        >
-          <div className="p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-sm text-[var(--text-primary)]">歌词</h3>
-              <button
-                onClick={() => setShowLyrics(false)}
-                className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-1.5 rounded-xl hover:bg-[var(--bg-tertiary)] transition-colors"
-              >
-                关闭
-              </button>
-            </div>
-            <div className="space-y-1 text-center">
-              {lyrics.lines.map((line, index) => (
-                <div
-                  key={index}
-                  className={`py-1.5 transition-all duration-300 ${
-                    index === currentLineIndex
-                      ? 'text-[var(--accent)] font-semibold text-lg scale-[1.02]'
-                      : 'text-[var(--text-secondary)] text-sm'
-                  }`}
+      {showLyrics && (
+        lyrics ? (
+          <div
+            className="fixed inset-x-0 z-50 bg-[var(--bg-secondary)]/95 backdrop-blur-lg border-t border-[var(--border-subtle)] max-h-64 overflow-y-auto"
+            style={{ bottom: 'var(--player-height, 72px)' }}
+          >
+            <div className="p-5">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-sm text-[var(--text-primary)]">歌词</h3>
+                <button
+                  onClick={() => setShowLyrics(false)}
+                  className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-1.5 rounded-xl hover:bg-[var(--bg-tertiary)] transition-colors"
                 >
-                  {line.text}
-                </div>
-              ))}
+                  关闭
+                </button>
+              </div>
+              <div className="space-y-1 text-center">
+                {lyrics.lines.map((line, index) => (
+                  <div
+                    key={index}
+                    onClick={() => {
+                      playerEngine.seek(line.time);
+                    }}
+                    className={`py-1.5 transition-all duration-300 cursor-pointer select-none ${
+                      index === currentLineIndex
+                        ? 'text-[var(--accent)] font-semibold text-lg scale-[1.02]'
+                        : 'text-[var(--text-secondary)] text-sm'
+                    }`}
+                  >
+                    {line.text}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <div
+            className="fixed inset-x-0 z-50 bg-[var(--bg-secondary)]/95 backdrop-blur-lg border-t border-[var(--border-subtle)]"
+            style={{ bottom: 'var(--player-height, 72px)' }}
+          >
+            <div className="p-5 flex flex-col items-center justify-center py-8">
+              <Mic2 className="w-8 h-8 text-[var(--text-tertiary)] opacity-30 mb-3" />
+              <p className="text-[var(--text-tertiary)] text-sm">暂无歌词</p>
+              <p className="text-[var(--text-tertiary)] text-xs opacity-60 mt-1">该曲目暂未匹配到歌词</p>
+            </div>
+          </div>
+        )
       )}
 
       {/* Queue Panel */}

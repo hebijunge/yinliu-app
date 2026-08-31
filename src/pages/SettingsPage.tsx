@@ -33,9 +33,9 @@ export default function SettingsPage() {
   const { active: sleepTimerActive, remainingSeconds, mode: sleepTimerMode } = useSleepTimerStore();
 
   const { preferredQuality, enabledSources, downloadQuality, maxConcurrentDownloads, downloadDir,
-    autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause, debugMode,
+    autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause, debugMode, enableFloatingLyrics,
     setPreferredQuality, setSourceEnabled, setDownloadQuality, setMaxConcurrentDownloads,
-    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause, setDebugMode, clearAllSettings } =
+    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause, setDebugMode, setFloatingLyricsEnabled, clearAllSettings } =
     useSettingsStore();
 
   const sources = sourceRegistry.getAll();
@@ -259,6 +259,13 @@ export default function SettingsPage() {
                     <div className="text-xs text-[var(--text-tertiary)]">暂停播放后自动从通知栏移除媒体卡片</div>
                   </div>
                   <Toggle on={dismissNotificationOnPause} onChange={setDismissNotificationOnPause} />
+                </div>
+                <div className="flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
+                  <div>
+                    <div className="font-medium text-sm text-[var(--text-primary)]">桌面悬浮歌词</div>
+                    <div className="text-xs text-[var(--text-tertiary)]">在 Android 桌面显示可拖动的悬浮歌词窗（需授权悬浮窗权限）</div>
+                  </div>
+                  <Toggle on={enableFloatingLyrics} onChange={setFloatingLyricsEnabled} />
                 </div>
               </div>
             </div>

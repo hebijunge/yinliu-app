@@ -18,6 +18,7 @@ import { usePlaylistStore } from './shared/store/playlistStore';
 import { usePlayHistoryStore } from './shared/store/playHistoryStore';
 import { useSettingsStore } from './shared/store/settingsStore';
 import { configureAudioFocus, updateAudioFocusOptions } from './core/player/audioFocus';
+import { floatingLyricsBridge } from './core/player/floatingLyricsBridge';
 import { initDatabase } from './shared/database';
 
 function App() {
@@ -58,6 +59,9 @@ function App() {
     const unsubSettings = useSettingsStore.subscribe((state) => {
       updateAudioFocusOptions({ autoResumeOnFocusGain: state.autoResumeOnAudioFocus });
     });
+
+    // 初始化桌面悬浮歌词桥接（Android 真机生效，Web 端为 no-op）
+    floatingLyricsBridge.start();
 
     // 绑定播放器事件到 Store
     const unsub1 = playerEngine.on('stateChange', ({ state }) => {
@@ -114,6 +118,7 @@ function App() {
       unsub6();
       unsub7();
       unsubSettings();
+      floatingLyricsBridge.stop();
     };
   }, []);
 
