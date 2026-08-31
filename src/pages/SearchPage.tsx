@@ -3,6 +3,7 @@ import { Search, Loader2, Music, Filter } from 'lucide-react';
 import { useSearchStore } from '../shared/store/searchStore';
 import { searchEngine } from '../core/search';
 import { playerEngine } from '../core/player';
+import { SkeletonSearchResult } from '../components/ui/Skeleton';
 import type { AggregatedSearchResult } from '../core/search';
 import { Quality } from '../core/types';
 
@@ -17,7 +18,7 @@ export default function SearchPage() {
 
   const handleSearch = useCallback(async () => {
     if (!inputValue.trim()) return;
-    
+
     setKeyword(inputValue);
     setSearching(true);
     addToHistory(inputValue);
@@ -64,7 +65,7 @@ export default function SearchPage() {
   return (
     <div className="max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold mb-6 hidden lg:block">聚合搜索</h1>
-      
+
       {/* Search Box */}
       <div className="flex gap-2 mb-4">
         <div className="flex-1 relative">
@@ -88,7 +89,7 @@ export default function SearchPage() {
         </button>
         <button
           onClick={() => setShowFilters(!showFilters)}
-          className={`yinliu-btn-secondary ${showFilters ? 'text-[var(--accent)]' : ''}`}
+          className={`yinliu-btn-secondary ${showFilters ? 'text-[var(--accent)] ring-1 ring-[var(--accent)]/30' : ''}`}
         >
           <Filter className="w-4 h-4" />
         </button>
@@ -99,15 +100,15 @@ export default function SearchPage() {
         <div className="yinliu-card mb-4 space-y-3">
           <div>
             <label className="text-sm font-medium text-[var(--text-secondary)]">音质偏好</label>
-            <div className="flex gap-2 mt-1 flex-wrap">
+            <div className="flex gap-2 mt-2 flex-wrap">
               {([Quality.STANDARD, Quality.HIGH, Quality.LOSSLESS, Quality.HIRES] as Quality[]).map((q) => (
                 <button
                   key={q}
                   onClick={() => setQuality(q)}
-                  className={`px-3 py-1 rounded-full text-sm ${
+                  className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all ${
                     selectedQuality === q
-                      ? 'bg-[var(--accent)] text-white'
-                      : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)]'
+                      ? 'bg-[var(--accent)] text-white shadow-sm'
+                      : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]'
                   }`}
                 >
                   {q === Quality.STANDARD && '标准'}
@@ -123,9 +124,9 @@ export default function SearchPage() {
 
       {/* Source Stats */}
       {Object.keys(sourceStats).length > 0 && (
-        <div className="flex gap-3 mb-4 flex-wrap">
+        <div className="flex gap-2 mb-4 flex-wrap">
           {Object.entries(sourceStats).map(([id, stat]) => (
-            <div key={id} className="text-xs px-2 py-1 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
+            <div key={id} className="text-xs px-3 py-1.5 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border-subtle)]">
               {id}: {stat.total}条 {stat.latency}ms {stat.error && <span className="text-red-500">(错误)</span>}
             </div>
           ))}
@@ -135,13 +136,13 @@ export default function SearchPage() {
       {/* Search History */}
       {searchHistory.length > 0 && results.length === 0 && !isSearching && (
         <div className="mb-4">
-          <div className="text-sm text-[var(--text-secondary)] mb-2">搜索历史</div>
+          <div className="text-sm font-medium text-[var(--text-secondary)] mb-2">搜索历史</div>
           <div className="flex gap-2 flex-wrap">
             {searchHistory.map((h) => (
               <button
                 key={h}
                 onClick={() => { setInputValue(h); }}
-                className="px-3 py-1 rounded-full text-sm bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]"
+                className="px-3 py-1.5 rounded-full text-sm bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)] hover:text-[var(--text-primary)] transition-colors border border-[var(--border-subtle)]"
               >
                 {h}
               </button>
@@ -150,60 +151,71 @@ export default function SearchPage() {
         </div>
       )}
 
+      {/* Skeleton Loading */}
+      {isSearching && (
+        <SkeletonSearchResult count={6} />
+      )}
+
       {/* Results */}
-      <div className="space-y-2">
-        {results.map((result) => (
-          <div
-            key={result.id}
-            className="flex items-center gap-3 p-3 rounded-lg bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors group"
-          >
-            <div className="w-12 h-12 rounded-lg bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden">
-              {result.coverUrl ? (
-                <img src={result.coverUrl} alt="" className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
-                </div>
-              )}
-            </div>
-            
-            <div className="flex-1 min-w-0">
-              <div className="font-medium truncate">{result.title}</div>
-              <div className="text-sm text-[var(--text-secondary)] truncate">
-                {result.artist} {result.album && `· ${result.album}`}
-              </div>
-              <div className="flex gap-1 mt-1">
-                {result.sources.map((s) => (
-                  <span
-                    key={s.sourceId}
-                    className={`text-[10px] px-1.5 py-0.5 rounded text-white ${sourceColors[s.sourceId] || 'bg-gray-500'}`}
-                  >
-                    {s.sourceName}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="text-xs text-[var(--text-tertiary)] hidden sm:block">
-              {result.bitrate && `${result.bitrate}kbps`}
-            </div>
-
-            <button
-              onClick={() => handlePlay(result)}
-              className="p-2 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-[var(--accent-hover)]"
+      {!isSearching && (
+        <div className="space-y-2">
+          {results.map((result) => (
+            <div
+              key={result.id}
+              className="flex items-center gap-3 p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 hover:shadow-md transition-all duration-200 group"
             >
-              <svg className="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            </button>
-          </div>
-        ))}
-      </div>
+              <div className="w-12 h-12 rounded-xl bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden shadow-sm ring-1 ring-[var(--border-subtle)]">
+                {result.coverUrl ? (
+                  <img src={result.coverUrl} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex-1 min-w-0">
+                <div className="font-medium truncate">{result.title}</div>
+                <div className="text-sm text-[var(--text-secondary)] truncate">
+                  {result.artist} {result.album && `· ${result.album}`}
+                </div>
+                <div className="flex gap-1 mt-1">
+                  {result.sources.map((s) => (
+                    <span
+                      key={s.sourceId}
+                      className={`text-[10px] px-1.5 py-0.5 rounded-md text-white font-medium ${sourceColors[s.sourceId] || 'bg-gray-500'}`}
+                    >
+                      {s.sourceName}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="text-xs text-[var(--text-tertiary)] hidden sm:block tabular-nums">
+                {result.bitrate && `${result.bitrate}kbps`}
+              </div>
+
+              <button
+                onClick={() => handlePlay(result)}
+                className="p-2.5 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 shadow-sm focus-ring"
+                title="播放"
+              >
+                <svg className="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Empty state */}
       {!isSearching && results.length === 0 && keyword && (
-        <div className="text-center py-12 text-[var(--text-tertiary)]">
-          未找到相关结果，请尝试其他关键词
+        <div className="text-center py-16">
+          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center">
+            <Search className="w-8 h-8 text-[var(--text-tertiary)]" />
+          </div>
+          <p className="text-[var(--text-tertiary)]">未找到相关结果，请尝试其他关键词</p>
         </div>
       )}
     </div>

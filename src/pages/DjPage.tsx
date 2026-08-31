@@ -3,6 +3,7 @@ import { Search, Music, Radio, Loader2 } from 'lucide-react';
 import { djModule } from '../modules/dj';
 import type { DjCategory, DjSearchResult } from '../modules/dj';
 import { playerEngine } from '../core/player';
+import { SkeletonSearchResult } from '../components/ui/Skeleton';
 
 export default function DjPage() {
   const [keyword, setKeyword] = useState('');
@@ -102,10 +103,10 @@ export default function DjPage() {
             <button
               key={cat.id}
               onClick={() => handleCategoryClick(cat.id)}
-              className={`p-3 rounded-lg text-left transition-colors ${
+              className={`p-3 rounded-xl text-left transition-all focus-ring ${
                 activeCategory === cat.id
-                  ? 'bg-[var(--accent)]/10 border border-[var(--accent)]/30'
-                  : 'bg-[var(--bg-secondary)] border border-[var(--border)] hover:border-[var(--accent)]/30'
+                  ? 'bg-[var(--accent-soft)] border border-[var(--accent)]/30 shadow-sm'
+                  : 'bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/20 hover:shadow-sm'
               }`}
             >
               <div className="font-medium text-sm">{cat.name}</div>
@@ -117,43 +118,54 @@ export default function DjPage() {
         </div>
       </div>
 
+      {/* Skeleton Loading */}
+      {isSearching && (
+        <SkeletonSearchResult count={5} />
+      )}
+
       {/* Results */}
-      <div className="space-y-2">
-        {results.map((result) => (
-          <div
-            key={result.id}
-            className="flex items-center gap-3 p-3 rounded-lg bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors group"
-          >
-            <div className="w-12 h-12 rounded-lg bg-[var(--bg-tertiary)] flex-shrink-0 flex items-center justify-center">
-              <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
-            </div>
-
-            <div className="flex-1 min-w-0">
-              <div className="font-medium truncate">{result.title}</div>
-              <div className="text-sm text-[var(--text-secondary)] truncate">
-                {result.artist} {result.bpm && `· ${result.bpm} BPM`}
-              </div>
-            </div>
-
-            <div className="text-xs text-[var(--text-tertiary)] hidden sm:block">
-              {result.style}
-            </div>
-
-            <button
-              onClick={() => handlePlay(result)}
-              className="p-2 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-[var(--accent-hover)]"
+      {!isSearching && (
+        <div className="space-y-2">
+          {results.map((result) => (
+            <div
+              key={result.id}
+              className="flex items-center gap-3 p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 hover:shadow-sm transition-all duration-200 group"
             >
-              <svg className="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            </button>
-          </div>
-        ))}
-      </div>
+              <div className="w-12 h-12 rounded-xl bg-[var(--bg-tertiary)] flex-shrink-0 flex items-center justify-center shadow-sm ring-1 ring-[var(--border-subtle)]">
+                <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
+              </div>
+
+              <div className="flex-1 min-w-0">
+                <div className="font-medium truncate">{result.title}</div>
+                <div className="text-sm text-[var(--text-secondary)] truncate">
+                  {result.artist} {result.bpm && `· ${result.bpm} BPM`}
+                </div>
+              </div>
+
+              <div className="text-xs text-[var(--text-tertiary)] hidden sm:block font-medium">
+                {result.style}
+              </div>
+
+              <button
+                onClick={() => handlePlay(result)}
+                className="p-2.5 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 shadow-sm focus-ring"
+                title="播放"
+              >
+                <svg className="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {results.length === 0 && !isSearching && (
-        <div className="text-center py-12 text-[var(--text-tertiary)]">
-          选择分类或搜索DJ舞曲
+        <div className="text-center py-16">
+          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center">
+            <Radio className="w-8 h-8 text-[var(--text-tertiary)]" />
+          </div>
+          <p className="text-[var(--text-tertiary)]">选择分类或搜索DJ舞曲</p>
         </div>
       )}
     </div>

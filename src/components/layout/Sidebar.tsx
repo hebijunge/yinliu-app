@@ -9,6 +9,8 @@ import {
   Settings,
   Music2,
   X,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { useThemeStore } from '../../shared/store/themeStore';
 
@@ -34,19 +36,27 @@ export default function Sidebar({ onClose }: SidebarProps) {
     <div className="h-full flex flex-col bg-[var(--bg-secondary)]">
       {/* Logo */}
       <div className="flex items-center justify-between px-4 py-4 border-b border-[var(--border)]">
-        <div className="flex items-center gap-2">
-          <Music2 className="w-6 h-6 text-[var(--accent)]" />
-          <span className="text-lg font-bold">音流</span>
-        </div>
+        <Link to="/" className="flex items-center gap-3 group" onClick={onClose}>
+          <div className="w-9 h-9 rounded-xl bg-[var(--accent)]/10 flex items-center justify-center group-hover:bg-[var(--accent)]/20 transition-colors">
+            <Music2 className="w-5 h-5 text-[var(--accent)]" />
+          </div>
+          <div className="flex flex-col">
+            <span className="text-lg font-bold leading-tight">音流</span>
+            <span className="text-[10px] text-[var(--text-tertiary)] leading-tight -mt-0.5">多音源聚合播放器</span>
+          </div>
+        </Link>
         {onClose && (
-          <button onClick={onClose} className="lg:hidden p-1 rounded hover:bg-[var(--bg-tertiary)]">
+          <button
+            onClick={onClose}
+            className="lg:hidden p-2 rounded-xl hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
+          >
             <X className="w-5 h-5" />
           </button>
         )}
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 py-3 px-2 space-y-1 overflow-y-auto">
+      <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto">
         {navItems.map((item) => {
           const isActive = location.pathname === item.path;
           return (
@@ -54,14 +64,17 @@ export default function Sidebar({ onClose }: SidebarProps) {
               key={item.path}
               to={item.path}
               onClick={onClose}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 focus-ring ${
                 isActive
-                  ? 'bg-[var(--accent)]/10 text-[var(--accent)] font-medium'
+                  ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold shadow-sm'
                   : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
               }`}
             >
-              <item.icon className="w-5 h-5" />
-              <span>{item.label}</span>
+              <item.icon className={`w-5 h-5 ${isActive ? 'stroke-[2.5]' : ''}`} />
+              <span className="text-sm">{item.label}</span>
+              {isActive && (
+                <div className="ml-auto w-1.5 h-1.5 rounded-full bg-[var(--accent)]" />
+              )}
             </Link>
           );
         })}
@@ -71,18 +84,14 @@ export default function Sidebar({ onClose }: SidebarProps) {
       <div className="p-3 border-t border-[var(--border)]">
         <button
           onClick={toggleTheme}
-          className="flex items-center gap-3 px-3 py-2.5 w-full rounded-lg text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+          className="flex items-center gap-3 px-3 py-2.5 w-full rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors focus-ring"
         >
           {isDark ? (
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-            </svg>
+            <Sun className="w-5 h-5" />
           ) : (
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-            </svg>
+            <Moon className="w-5 h-5" />
           )}
-          <span>{isDark ? '浅色模式' : '深色模式'}</span>
+          <span className="text-sm">{isDark ? '浅色模式' : '深色模式'}</span>
         </button>
       </div>
     </div>

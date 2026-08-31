@@ -34,17 +34,24 @@ class ErrorBoundary extends React.Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: 24, color: '#ef4444', fontFamily: 'system-ui' }}>
-          <h2>应用加载出错</h2>
-          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>
-            {this.state.error?.message || 'Unknown error'}
-          </pre>
-          <button
-            onClick={() => window.location.reload()}
-            style={{ marginTop: 16, padding: '8px 16px' }}
-          >
-            重试
-          </button>
+        <div className="min-h-screen flex items-center justify-center p-6 bg-[var(--bg-primary)]">
+          <div className="yinliu-card max-w-md w-full text-center">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-red-500/10 flex items-center justify-center">
+              <svg className="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+            </div>
+            <h2 className="text-xl font-bold mb-2 text-[var(--text-primary)]">应用加载出错</h2>
+            <pre className="text-xs text-left text-red-400 bg-red-500/5 rounded-lg p-3 mb-4 whitespace-pre-wrap">
+              {this.state.error?.message || 'Unknown error'}
+            </pre>
+            <button
+              onClick={() => window.location.reload()}
+              className="yinliu-btn"
+            >
+              重试
+            </button>
+          </div>
         </div>
       );
     }
@@ -52,22 +59,71 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-/** 加载中占位 */
-function LoadingScreen() {
+/** 品牌 Logo SVG */
+function LogoIcon({ className = '' }: { className?: string }) {
   return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      height: '100vh',
-      background: '#0f172a',
-      color: '#e2e8f0',
-      fontFamily: 'system-ui',
-      flexDirection: 'column',
-      gap: 16,
-    }}>
-      <div style={{ fontSize: 24, fontWeight: 600 }}>音流</div>
-      <div style={{ fontSize: 14, opacity: 0.6 }}>正在加载...</div>
+    <svg className={className} viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#38bdf8" />
+          <stop offset="100%" stopColor="#0ea5e9" />
+        </linearGradient>
+      </defs>
+      <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#logoGrad)" opacity="0.15" />
+      <rect x="4" y="4" width="56" height="56" rx="16" stroke="url(#logoGrad)" strokeWidth="2" opacity="0.5" />
+      <path
+        d="M22 48V20l24-4v24"
+        stroke="url(#logoGrad)"
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+      <circle cx="18" cy="48" r="6" stroke="url(#logoGrad)" strokeWidth="2.5" fill="none" />
+      <circle cx="42" cy="44" r="6" stroke="url(#logoGrad)" strokeWidth="2.5" fill="none" />
+    </svg>
+  );
+}
+
+/** 品牌加载页 — Logo + 动效 + 平滑过渡 */
+function LoadingScreen() {
+  const [fadeOut, setFadeOut] = React.useState(false);
+
+  React.useEffect(() => {
+    // 至少展示 1.2s，让品牌感足够
+    const timer = setTimeout(() => {
+      setFadeOut(true);
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, []);
+
+  return (
+    <div
+      className={`fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[var(--bg-primary)] transition-opacity duration-700 ${
+        fadeOut ? 'opacity-0 pointer-events-none' : 'opacity-100'
+      }`}
+    >
+      {/* Logo with pulse + spin ring */}
+      <div className="relative w-24 h-24 mb-6">
+        <div className="absolute inset-0 rounded-3xl bg-[var(--accent)]/10 animate-pulse-slow" />
+        <div className="absolute -inset-2 rounded-[2rem] border-2 border-[var(--accent)]/20 animate-spin-slow" />
+        <div className="absolute inset-0 flex items-center justify-center">
+          <LogoIcon className="w-16 h-16" />
+        </div>
+      </div>
+
+      {/* App name */}
+      <h1 className="text-2xl font-bold tracking-wide mb-2 text-[var(--text-primary)]">
+        音流
+      </h1>
+      <p className="text-sm text-[var(--text-tertiary)] tracking-wider">
+        多音源聚合音乐播放器
+      </p>
+
+      {/* Progress bar */}
+      <div className="mt-8 w-48 h-1 rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
+        <div className="h-full rounded-full bg-[var(--accent)] animate-loading-bar" />
+      </div>
     </div>
   );
 }

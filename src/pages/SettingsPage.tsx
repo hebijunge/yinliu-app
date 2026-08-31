@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Settings, Music, BookOpen, Radio, HardDrive, Info } from 'lucide-react';
+import { Settings, Music, BookOpen, Radio, Info } from 'lucide-react';
 import { useThemeStore } from '../shared/store/themeStore';
 import { sourceRegistry } from '../providers/music/registry';
 
@@ -27,13 +27,13 @@ export default function SettingsPage() {
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm whitespace-nowrap transition-colors ${
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm whitespace-nowrap transition-all focus-ring ${
               activeTab === tab.id
-                ? 'bg-[var(--accent)]/10 text-[var(--accent)] font-medium'
+                ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold shadow-sm'
                 : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
             }`}
           >
-            <tab.icon className="w-4 h-4" />
+            <tab.icon className={`w-4 h-4 ${activeTab === tab.id ? 'stroke-[2.5]' : ''}`} />
             {tab.label}
           </button>
         ))}
@@ -44,16 +44,16 @@ export default function SettingsPage() {
         {activeTab === 'general' && (
           <>
             <div className="yinliu-card">
-              <h3 className="font-medium mb-4">主题设置</h3>
+              <h3 className="font-semibold mb-4">主题设置</h3>
               <div className="flex gap-2">
                 {(['light', 'dark', 'system'] as const).map((m) => (
                   <button
                     key={m}
                     onClick={() => setMode(m)}
-                    className={`px-4 py-2 rounded-lg text-sm ${
+                    className={`px-4 py-2.5 rounded-xl text-sm font-medium transition-all focus-ring ${
                       mode === m
-                        ? 'bg-[var(--accent)] text-white'
-                        : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)]'
+                        ? 'bg-[var(--accent)] text-white shadow-sm'
+                        : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]'
                     }`}
                   >
                     {m === 'light' && '浅色'}
@@ -69,12 +69,12 @@ export default function SettingsPage() {
         {activeTab === 'music' && (
           <>
             <div className="yinliu-card">
-              <h3 className="font-medium mb-4">音源管理</h3>
+              <h3 className="font-semibold mb-4">音源管理</h3>
               <div className="space-y-2">
                 {sources.map((source) => (
                   <div
                     key={source.id}
-                    className="flex items-center justify-between p-3 rounded-lg bg-[var(--bg-tertiary)]"
+                    className="flex items-center justify-between p-3 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]"
                   >
                     <div>
                       <div className="font-medium">{source.name}</div>
@@ -94,7 +94,7 @@ export default function SettingsPage() {
             </div>
 
             <div className="yinliu-card">
-              <h3 className="font-medium mb-4">下载设置</h3>
+              <h3 className="font-semibold mb-4">下载设置</h3>
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm">默认下载音质</span>
@@ -120,7 +120,7 @@ export default function SettingsPage() {
 
         {activeTab === 'reading' && (
           <div className="yinliu-card">
-            <h3 className="font-medium mb-4">阅读设置</h3>
+            <h3 className="font-semibold mb-4">阅读设置</h3>
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm">字体大小</span>
@@ -154,7 +154,7 @@ export default function SettingsPage() {
 
         {activeTab === 'dj' && (
           <div className="yinliu-card">
-            <h3 className="font-medium mb-4">DJ设置</h3>
+            <h3 className="font-semibold mb-4">DJ设置</h3>
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm">Crossfade过渡</span>
@@ -167,17 +167,24 @@ export default function SettingsPage() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm">BPM显示</span>
-                <input type="checkbox" defaultChecked className="w-4 h-4" />
+                <input type="checkbox" defaultChecked className="w-4 h-4 accent-[var(--accent)]" />
               </div>
             </div>
           </div>
         )}
 
         {activeTab === 'about' && (
-          <div className="yinliu-card text-center py-8">
-            <div className="text-3xl font-bold mb-2">音流</div>
-            <div className="text-sm text-[var(--text-secondary)] mb-4">Audio Stream</div>
-            <div className="text-xs text-[var(--text-tertiary)] space-y-1">
+          <div className="yinliu-card text-center py-10">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[var(--accent)]/10 flex items-center justify-center">
+              <svg className="w-10 h-10 text-[var(--accent)]" viewBox="0 0 64 64" fill="none">
+                <path d="M22 48V20l24-4v24" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                <circle cx="18" cy="48" r="6" stroke="currentColor" strokeWidth="2.5" />
+                <circle cx="42" cy="44" r="6" stroke="currentColor" strokeWidth="2.5" />
+              </svg>
+            </div>
+            <div className="text-2xl font-bold mb-1">音流</div>
+            <div className="text-sm text-[var(--text-secondary)] mb-6">Audio Stream</div>
+            <div className="text-xs text-[var(--text-tertiary)] space-y-1.5">
               <p>版本: v0.1.0 MVP</p>
               <p>多音源聚合音乐播放器</p>
               <p>支持平台: 网易云 / QQ音乐 / 酷我 / 酷狗 / 咪咕</p>

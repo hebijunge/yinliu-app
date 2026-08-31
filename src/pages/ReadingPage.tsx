@@ -1,7 +1,8 @@
 import { useState, useCallback } from 'react';
-import { Search, BookOpen, ChevronLeft, ChevronRight, Bookmark, Loader2 } from 'lucide-react';
+import { Search, BookOpen, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { FanqieSource } from '../providers/reading/FanqieSource';
 import type { BookSearchResult, ChapterInfo, ChapterContent } from '../providers/reading/types';
+import { SkeletonPlaylistGrid } from '../components/ui/Skeleton';
 
 const fanqieSource = new FanqieSource();
 
@@ -76,7 +77,7 @@ export default function ReadingPage() {
               setCurrentChapter(null);
               setChapters([]);
             }}
-            className="flex items-center gap-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            className="flex items-center gap-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors focus-ring rounded-lg px-2 py-1"
           >
             <ChevronLeft className="w-4 h-4" />
             返回
@@ -84,7 +85,7 @@ export default function ReadingPage() {
           <h2 className="font-medium truncate flex-1 mx-4 text-center">{selectedBook.title}</h2>
           <button
             onClick={() => setShowCatalog(!showCatalog)}
-            className="text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors focus-ring rounded-lg px-2 py-1"
           >
             目录
           </button>
@@ -93,15 +94,15 @@ export default function ReadingPage() {
         {/* Catalog Drawer */}
         {showCatalog && (
           <div className="yinliu-card mb-4 max-h-64 overflow-y-auto">
-            <div className="text-sm font-medium mb-2">章节目录</div>
-            <div className="space-y-1">
+            <div className="text-sm font-semibold mb-2">章节目录</div>
+            <div className="space-y-0.5">
               {chapters.map((ch, idx) => (
                 <button
                   key={ch.id}
                   onClick={() => loadChapter(idx)}
-                  className={`w-full text-left px-2 py-1.5 rounded text-sm ${
+                  className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors focus-ring ${
                     idx === currentChapterIndex
-                      ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
+                      ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-medium'
                       : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]'
                   }`}
                 >
@@ -136,7 +137,7 @@ export default function ReadingPage() {
             <ChevronLeft className="w-4 h-4" />
             上一章
           </button>
-          <span className="text-sm text-[var(--text-secondary)]">
+          <span className="text-sm text-[var(--text-secondary)] font-medium">
             {currentChapterIndex + 1} / {chapters.length}
           </span>
           <button
@@ -183,37 +184,47 @@ export default function ReadingPage() {
         </button>
       </div>
 
+      {/* Skeleton Loading */}
+      {isSearching && (
+        <SkeletonPlaylistGrid count={4} />
+      )}
+
       {/* Books Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-        {books.map((book) => (
-          <button
-            key={book.id}
-            onClick={() => loadBook(book)}
-            className="text-left group"
-          >
-            <div className="aspect-[3/4] rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] overflow-hidden mb-2 group-hover:border-[var(--accent)]/30 transition-colors">
-              {book.coverUrl ? (
-                <img src={book.coverUrl} alt={book.title} className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <BookOpen className="w-8 h-8 text-[var(--text-tertiary)]" />
+      {!isSearching && (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {books.map((book) => (
+            <button
+              key={book.id}
+              onClick={() => loadBook(book)}
+              className="text-left group"
+            >
+              <div className="aspect-[3/4] rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] overflow-hidden mb-2 group-hover:border-[var(--accent)]/30 group-hover:shadow-md transition-all duration-200">
+                {book.coverUrl ? (
+                  <img src={book.coverUrl} alt={book.title} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center">
+                    <BookOpen className="w-8 h-8 text-[var(--text-tertiary)]" />
+                  </div>
+                )}
+              </div>
+              <div className="font-medium text-sm truncate">{book.title}</div>
+              <div className="text-xs text-[var(--text-secondary)]">{book.author}</div>
+              {book.wordCount && (
+                <div className="text-xs text-[var(--text-tertiary)]">
+                  {(book.wordCount / 10000).toFixed(1)}万字
                 </div>
               )}
-            </div>
-            <div className="font-medium text-sm truncate">{book.title}</div>
-            <div className="text-xs text-[var(--text-secondary)]">{book.author}</div>
-            {book.wordCount && (
-              <div className="text-xs text-[var(--text-tertiary)]">
-                {(book.wordCount / 10000).toFixed(1)}万字
-              </div>
-            )}
-          </button>
-        ))}
-      </div>
+            </button>
+          ))}
+        </div>
+      )}
 
       {books.length === 0 && !isSearching && (
-        <div className="text-center py-12 text-[var(--text-tertiary)]">
-          搜索你想看的书籍
+        <div className="text-center py-16">
+          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center">
+            <BookOpen className="w-8 h-8 text-[var(--text-tertiary)]" />
+          </div>
+          <p className="text-[var(--text-tertiary)]">搜索你想看的书籍</p>
         </div>
       )}
     </div>

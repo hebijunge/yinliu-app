@@ -1,8 +1,9 @@
 import { useState, useCallback } from 'react';
 import { HardDrive, RefreshCw, Music, Play, FolderOpen } from 'lucide-react';
-import { scanLocalMusic, localSongToSearchResult } from '../modules/music/localScanner';
+import { scanLocalMusic } from '../modules/music/localScanner';
 import type { ScannedSong } from '../modules/music/localScanner';
 import { playerEngine } from '../core/player';
+import { SkeletonList } from '../components/ui/Skeleton';
 
 export default function LocalMusicPage() {
   const [songs, setSongs] = useState<ScannedSong[]>([]);
@@ -85,54 +86,65 @@ export default function LocalMusicPage() {
 
       {/* Stats */}
       {songs.length > 0 && (
-        <div className="text-sm text-[var(--text-secondary)] mb-4">
+        <div className="text-sm font-medium text-[var(--text-secondary)] mb-4">
           共找到 {songs.length} 首本地歌曲
         </div>
       )}
 
+      {/* Skeleton Loading */}
+      {isScanning && (
+        <SkeletonList count={5} />
+      )}
+
       {/* Song List */}
-      <div className="space-y-2">
-        {songs.map((song) => (
-          <div
-            key={song.id}
-            className="flex items-center gap-3 p-3 rounded-lg bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors group"
-          >
-            <div className="w-12 h-12 rounded-lg bg-[var(--bg-tertiary)] flex-shrink-0 flex items-center justify-center overflow-hidden">
-              {song.coverUrl ? (
-                <img src={song.coverUrl} alt="" className="w-full h-full object-cover" />
-              ) : (
-                <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
-              )}
-            </div>
-
-            <div className="flex-1 min-w-0">
-              <div className="font-medium truncate">{song.title}</div>
-              <div className="text-sm text-[var(--text-secondary)] truncate">
-                {song.artist} {song.album && `· ${song.album}`}
-              </div>
-            </div>
-
-            <div className="text-xs text-[var(--text-tertiary)] hidden sm:block">
-              {song.format.toUpperCase()}
-            </div>
-
-            <div className="text-xs text-[var(--text-tertiary)] tabular-nums hidden md:block">
-              {formatDuration(song.duration)}
-            </div>
-
-            <button
-              onClick={() => handlePlay(song)}
-              className="p-2 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-[var(--accent-hover)]"
+      {!isScanning && (
+        <div className="space-y-2">
+          {songs.map((song) => (
+            <div
+              key={song.id}
+              className="flex items-center gap-3 p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 hover:shadow-sm transition-all duration-200 group"
             >
-              <Play className="w-4 h-4 ml-0.5" />
-            </button>
-          </div>
-        ))}
-      </div>
+              <div className="w-12 h-12 rounded-xl bg-[var(--bg-tertiary)] flex-shrink-0 flex items-center justify-center overflow-hidden shadow-sm ring-1 ring-[var(--border-subtle)]">
+                {song.coverUrl ? (
+                  <img src={song.coverUrl} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
+                )}
+              </div>
+
+              <div className="flex-1 min-w-0">
+                <div className="font-medium truncate">{song.title}</div>
+                <div className="text-sm text-[var(--text-secondary)] truncate">
+                  {song.artist} {song.album && `· ${song.album}`}
+                </div>
+              </div>
+
+              <div className="text-xs text-[var(--text-tertiary)] hidden sm:block font-medium">
+                {song.format.toUpperCase()}
+              </div>
+
+              <div className="text-xs text-[var(--text-tertiary)] tabular-nums hidden md:block">
+                {formatDuration(song.duration)}
+              </div>
+
+              <button
+                onClick={() => handlePlay(song)}
+                className="p-2 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 shadow-sm focus-ring"
+                title="播放"
+              >
+                <Play className="w-4 h-4 ml-0.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {songs.length === 0 && !isScanning && (
-        <div className="text-center py-12 text-[var(--text-tertiary)]">
-          点击「扫描」按钮发现本地音乐文件
+        <div className="text-center py-16">
+          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center">
+            <FolderOpen className="w-8 h-8 text-[var(--text-tertiary)]" />
+          </div>
+          <p className="text-[var(--text-tertiary)]">点击「扫描」按钮发现本地音乐文件</p>
         </div>
       )}
     </div>
