@@ -1,6 +1,7 @@
 /**
  * 流式音频播放器
- * v14.4: 边下边播核心实现
+ * v14.5: 边下边播核心实现
+ * 修复：首块播放竞态（文件完整性校验 + 本地文件URI优先 + audio就绪等待）
  *
  * 支持两种播放模式（按可用性自动选择）：
  * A. MSE 模式（优先）：MediaSource + SourceBuffer 真流式
@@ -304,9 +305,23 @@ class StreamingAudioPlayer {
    * 从完整缓存直接播放
    */
   private async playFromCache(): Promise<void> {
-    const blobUrl = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
-    this.blobUrl = blobUrl;
-    this.setupAudio(blobUrl);
+    let url: string;
+    try {
+      // 优先使用本地文件 URI（更稳定，绕过 Blob 竞态）
+      url = await streamCacheEngine.readAsFileUrl(this.cacheKey);
+      debugLogger.info('streaming', 'Playing from complete cache (file URL)', {
+        cacheKey: this.cacheKey,
+      });
+    } catch {
+      // 回退到 Blob URL
+      url = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
+      debugLogger.info('streaming', 'Playing from complete cache (blob URL fallback)', {
+        cacheKey: this.cacheKey,
+      });
+    }
+
+    this.blobUrl = url;
+    await this.setupAudioWithReadyWait(url);
     this.setState('ready');
     await this.play();
   }
@@ -328,18 +343,51 @@ class StreamingAudioPlayer {
 
   /**
    * Blob 刷新模式：创建/刷新 audio.src
+   * v14.5 修复：增加就绪等待 + 本地文件 URI 优先，解决首块竞态问题
    */
   private async setupBlobPlayback(): Promise<void> {
     // 合并所有 chunks
     const allData = this.mergeChunks();
-    if (allData.length === 0) return;
+    if (allData.length === 0) {
+      debugLogger.warn('streaming', 'setupBlobPlayback: merged data is empty');
+      return;
+    }
+
+    // 文件完整性校验
+    if (this.totalSize > 0 && allData.length !== this.totalSize) {
+      debugLogger.warn('streaming', 'setupBlobPlayback: size mismatch', {
+        mergedSize: allData.length,
+        expectedSize: this.totalSize,
+      });
+    }
 
     // 写入缓存
     await streamCacheEngine.writeData(this.cacheKey, allData);
 
-    // 创建 blob URL
-    const blob = new Blob([allData as unknown as BlobPart], { type: this.mimeType });
-    const newUrl = URL.createObjectURL(blob);
+    // 验证缓存写入成功
+    const entry = streamCacheEngine.getEntry(this.cacheKey);
+    if (!entry || entry.totalSize !== allData.length) {
+      debugLogger.error('streaming', 'setupBlobPlayback: cache write verification failed', {
+        cacheTotalSize: entry?.totalSize,
+        mergedSize: allData.length,
+      });
+    }
+
+    // 获取播放URL：优先使用本地文件URI（更稳定），回退到Blob URL
+    let newUrl: string;
+    try {
+      newUrl = await streamCacheEngine.readAsFileUrl(this.cacheKey);
+      debugLogger.info('streaming', 'Using file URL for playback', {
+        cacheKey: this.cacheKey,
+      });
+    } catch {
+      // 回退到 Blob URL
+      const blob = new Blob([allData as unknown as BlobPart], { type: this.mimeType });
+      newUrl = URL.createObjectURL(blob);
+      debugLogger.info('streaming', 'Using blob URL for playback (file URL unavailable)', {
+        cacheKey: this.cacheKey,
+      });
+    }
 
     // 记录当前播放时间
     const currentTime = this.audio?.currentTime ?? 0;
@@ -352,7 +400,10 @@ class StreamingAudioPlayer {
 
     // 设置/刷新 audio
     if (!this.audio) {
-      this.setupAudio(newUrl);
+      // 首块播放：等待audio就绪，避免竞态
+      debugLogger.info('streaming', 'First chunk: waiting for audio ready');
+      await this.setupAudioWithReadyWait(newUrl);
+      debugLogger.info('streaming', 'First chunk: audio ready');
     } else {
       this.audio.src = newUrl;
       // 恢复播放位置
@@ -451,7 +502,90 @@ class StreamingAudioPlayer {
   }
 
   /**
-   * 设置 HTMLAudioElement
+   * 设置 HTMLAudioElement（带就绪等待）
+   * v14.5 修复：首块播放时等待 canplay/loadedmetadata 事件，避免 Blob/文件竞态
+   */
+  private setupAudioWithReadyWait(url: string): Promise<void> {
+    return new Promise((resolve) => {
+      if (this.audio) {
+        this.audio.pause();
+        this.audio.src = '';
+      }
+
+      this.audio = new Audio(url);
+      this.audio.crossOrigin = 'anonymous';
+
+      let resolved = false;
+      const doResolve = () => {
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
+      };
+
+      // 就绪等待：canplay 或 loadedmetadata 触发即认为audio已准备好
+      const onReady = () => {
+        debugLogger.info('streaming', 'Audio ready event fired', {
+          event: 'canplay/loadedmetadata',
+          src: url.slice(0, 80),
+        });
+        doResolve();
+      };
+      this.audio.addEventListener('canplay', onReady, { once: true });
+      this.audio.addEventListener('loadedmetadata', onReady, { once: true });
+
+      // 超时兜底（3秒），避免无限卡住
+      setTimeout(() => {
+        if (!resolved) {
+          debugLogger.warn('streaming', 'Audio ready wait timeout (3s), proceeding anyway', {
+            src: url.slice(0, 80),
+          });
+          doResolve();
+        }
+      }, 3000);
+
+      // 持久状态监听器
+      this.audio.addEventListener('canplay', () => {
+        if (this.state === 'loading' || this.state === 'buffering') {
+          this.setState('playing');
+        }
+      });
+
+      this.audio.addEventListener('ended', () => {
+        this.setState('completed');
+        this.callbacks.onEnded?.();
+      });
+
+      this.audio.addEventListener('error', (e) => {
+        const errCode = this.audio?.error?.code;
+        const errMsg = this.audio?.error?.message || String(e);
+        debugLogger.error('streaming', 'Audio element error', {
+          code: errCode,
+          message: errMsg,
+          src: url.slice(0, 80),
+          state: this.state,
+        });
+        this.setState('error');
+        this.callbacks.onError?.('音频播放失败');
+        doResolve(); // 错误时也resolve，避免卡住
+      });
+
+      this.audio.addEventListener('waiting', () => {
+        if (this.state === 'playing') {
+          this.setState('buffering');
+        }
+      });
+
+      this.audio.addEventListener('playing', () => {
+        if (this.state === 'buffering' || this.state === 'loading') {
+          this.setState('playing');
+        }
+      });
+    });
+  }
+
+  /**
+   * 设置 HTMLAudioElement（不带就绪等待，用于刷新src时）
    */
   private setupAudio(url: string): void {
     if (this.audio) {
@@ -473,7 +607,14 @@ class StreamingAudioPlayer {
       this.callbacks.onEnded?.();
     });
 
-    this.audio.addEventListener('error', () => {
+    this.audio.addEventListener('error', (e) => {
+      const errCode = this.audio?.error?.code;
+      const errMsg = this.audio?.error?.message || String(e);
+      debugLogger.error('streaming', 'Audio element error (refresh path)', {
+        code: errCode,
+        message: errMsg,
+        src: url.slice(0, 80),
+      });
       this.setState('error');
       this.callbacks.onError?.('音频播放失败');
     });

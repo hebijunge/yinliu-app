@@ -203,6 +203,23 @@ class StreamCacheEngine {
   }
 
   /**
+   * 获取缓存文件的本地持久路径 URI（用于直接给 <audio> 播放）
+   * 比 Blob URL 更稳定，绕过内存中的竞态问题
+   */
+  async readAsFileUrl(key: string): Promise<string> {
+    const entry = this.entries.get(key);
+    if (!entry) throw new Error(`Cache entry not found: ${key}`);
+
+    const stat = await Filesystem.getUri({
+      path: entry.filePath,
+      directory: Directory.Data,
+    });
+
+    entry.lastAccessedAt = Date.now();
+    return stat.uri;
+  }
+
+  /**
    * 检查指定字节区间是否已完全下载
    */
   isRangeDownloaded(key: string, start: number, end: number): boolean {
