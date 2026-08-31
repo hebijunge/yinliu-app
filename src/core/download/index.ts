@@ -31,7 +31,7 @@ export class DownloadEngine {
     callbacks.forEach((cb) => cb(data));
   }
 
-  on(event: string, callback: (data: unknown) => void): () => void {
+  on(event: string, callback: (data: any) => void): () => void {
     if (!this.listeners[event]) this.listeners[event] = [];
     this.listeners[event].push(callback);
     return () => {
@@ -303,6 +303,23 @@ export class DownloadEngine {
     }
 
     this.emit('stateChange', { taskId, status: 'failed', task: { ...task, status: 'failed' } });
+  }
+
+  // === 便捷方法（兼容 v10 调用方）===
+  async addDownload(songId: string, sourceId: string, quality: Quality): Promise<string> {
+    const task = await this.createTask({ songId, sourceId, quality, title: '' });
+    await this.startDownload(task.id);
+    return task.id;
+  }
+
+  setMaxConcurrent(max: number): void {
+    // TODO: 实现最大并发下载控制
+    console.log('[DownloadEngine] setMaxConcurrent:', max);
+  }
+
+  setDefaultQuality(quality: Quality): void {
+    // TODO: 实现默认音质设置
+    console.log('[DownloadEngine] setDefaultQuality:', quality);
   }
 
   // === 检查本地文件是否存在 ===

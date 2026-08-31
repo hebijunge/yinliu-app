@@ -68,6 +68,12 @@ export interface PlayUrlResult {
   headers?: Record<string, string>;
   expiresAt?: number;
   isEncrypted?: boolean;
+  /** 是否为试听片段（VIP歌曲非会员只能试听30秒等） */
+  isPreview?: boolean;
+  /** 实际音质是否与请求音质一致 */
+  accurate?: boolean;
+  /** 加密文件的 ekey（酷我 mflac/mgg 需要） */
+  ekey?: string;
 }
 
 export interface SongDetail {

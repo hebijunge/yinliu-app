@@ -3,7 +3,7 @@ import initSqlJs from 'sql.js';
 import * as schema from './schema';
 
 let db: ReturnType<typeof drizzle<typeof schema>> | null = null;
-let sqliteDb: InstanceType<ReturnType<typeof initSqlJs>['Database']> | null = null;
+let sqliteDb: any | null = null;
 let sqlJsModule: Awaited<ReturnType<typeof initSqlJs>> | null = null;
 
 const DB_NAME = 'yinliu_music_db';

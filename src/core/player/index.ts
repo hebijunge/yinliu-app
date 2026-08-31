@@ -22,6 +22,8 @@ interface PlayerEventMap {
   progress: { currentTime: number; duration: number; progress: number };
   error: { message: string };
   ended: void;
+  /** 取链完成（含实际音质/试听标记），UI 据此回写 actualQuality */
+  trackLoaded: { track: PlayerTrack; result: PlayUrlResult };
 }
 
 export class PlayerEngine {
@@ -31,6 +33,11 @@ export class PlayerEngine {
   private listeners: Record<string, Array<(data: unknown) => void>> = {};
   private progressInterval: number | null = null;
   private currentBlobUrl: string | null = null;
+
+  // Queue state (兼容 v10 调用方)
+  queue: PlayerTrack[] = [];
+  currentIndex: number = -1;
+  lastQuality: Quality = Quality.STANDARD;
 
   private emit<K extends keyof PlayerEventMap>(event: K, data: PlayerEventMap[K]) {
     const callbacks = this.listeners[event] || [];
@@ -59,7 +66,7 @@ export class PlayerEngine {
   }
 
   // === 统一 URL 解析器：本地文件优先，否则在线取链 ===
-  private async resolvePlayUrl(track: PlayerTrack, quality: Quality): Promise<{ url: string; isLocal: boolean }> {
+  private async resolvePlayUrl(track: PlayerTrack, quality: Quality): Promise<{ url: string; isLocal: boolean; result: PlayUrlResult }> {
     // 1. 先检查是否有已下载的本地文件
     const tasks = downloadEngine.getTasks();
     const completedTask = tasks.find(
@@ -74,7 +81,11 @@ export class PlayerEngine {
       if (exists) {
         const localUrl = await downloadEngine.readLocalFileAsUrl(completedTask.filePath);
         console.log('[PlayerEngine] Playing from local file:', completedTask.filePath);
-        return { url: localUrl, isLocal: true };
+        return {
+          url: localUrl,
+          isLocal: true,
+          result: { url: localUrl, quality, bitrate: 0, format: 'mp3' },
+        };
       }
     }
 
@@ -97,10 +108,11 @@ export class PlayerEngine {
       }
     }
 
-    return { url: playUrl.url, isLocal: false };
+    return { url: playUrl.url, isLocal: false, result: playUrl };
   }
 
-  async playTrack(track: PlayerTrack, quality: Quality = Quality.STANDARD): Promise<void> {
+  async playTrack(track: PlayerTrack, quality: Quality = Quality.STANDARD): Promise<PlayUrlResult> {
+    this.lastQuality = quality;
     this.setState('loading');
     this.currentTrack = track;
 
@@ -111,16 +123,19 @@ export class PlayerEngine {
     }
 
     try {
-      const { url, isLocal } = await this.resolvePlayUrl(track, quality);
+      const { url, isLocal, result } = await this.resolvePlayUrl(track, quality);
 
       if (isLocal) {
         this.currentBlobUrl = url;
       }
 
       await this.loadAndPlay(url, track);
+      this.emit('trackLoaded', { track, result });
+      return result;
     } catch (err) {
       this.setState('error');
       this.emit('error', { message: err instanceof Error ? err.message : '播放失败' });
+      throw err;
     }
   }
 
@@ -205,6 +220,61 @@ export class PlayerEngine {
 
   getDuration(): number {
     return this.audio?.duration ?? 0;
+  }
+
+  // === 队列控制（兼容 v10 调用方）===
+  setQueue(queue: PlayerTrack[], index: number = -1): void {
+    this.queue = queue;
+    this.currentIndex = index;
+  }
+
+  async playNext(): Promise<void> {
+    const nextIndex = this.currentIndex + 1;
+    if (nextIndex >= 0 && nextIndex < this.queue.length) {
+      this.currentIndex = nextIndex;
+      try {
+        await this.playTrack(this.queue[nextIndex], this.lastQuality);
+      } catch {
+        // 错误已由 error 事件上报
+      }
+    } else {
+      this.stop();
+    }
+  }
+
+  async playPrevious(): Promise<void> {
+    if (this.audio && this.audio.currentTime > 3) {
+      this.seek(0);
+      return;
+    }
+    const prevIndex = this.currentIndex - 1;
+    if (prevIndex >= 0 && prevIndex < this.queue.length) {
+      this.currentIndex = prevIndex;
+      try {
+        await this.playTrack(this.queue[prevIndex], this.lastQuality);
+      } catch {
+        // 错误已由 error 事件上报
+      }
+    }
+  }
+
+  /** 切换音质：对当前曲目重新取链并接续播放进度 */
+  async switchQuality(quality: Quality): Promise<PlayUrlResult | null> {
+    if (!this.currentTrack) return null;
+    const track = this.currentTrack;
+    const resumeTime = this.audio?.currentTime ?? 0;
+
+    const result = await this.playTrack(track, quality);
+
+    if (resumeTime > 0 && this.audio) {
+      try {
+        this.audio.currentTime = Math.min(resumeTime, this.audio.duration || resumeTime);
+      } catch {
+        // seek 失败不影响播放
+      }
+    }
+
+    return result;
   }
 
   private startProgressTracking() {
