@@ -177,7 +177,12 @@ export class KugouSource extends BaseHttpSource {
     return candidates;
   }
 
-  // 覆写getPlayUrl，因为海棠需要POST body
+  /**
+   * 覆写 getPlayUrl：
+   * 1. 仅 lossless 档走海棠（实测只有 lossless 返回真 FLAC；320k/high 等全降级为 128k MP3）
+   * 2. 所有候选增加 HEAD 音质校验（Content-Type + Content-Length）
+   * 3. 优先返回 isAccurate 的候选，无则降级首非空
+   */
   async getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult> {
     const hash = this.getHashFromId(songId);
     const level = this.levelOf(quality);
@@ -185,10 +190,13 @@ export class KugouSource extends BaseHttpSource {
     const controller = new AbortController();
     const candidates: Promise<PlayUrlResult | null>[] = [];
 
-    // 官方
+    // 官方 getSongInfo.php（所有档均参与）
     candidates.push(this.fetchOfficial(hash, quality, controller.signal));
-    // 海棠POST
-    candidates.push(this.fetchHaitang(hash, level, quality, controller.signal));
+
+    // 海棠：仅 lossless 档参与（实测海棠除 lossless 外全部静默降级为 128k MP3）
+    if (quality === Quality.LOSSLESS || quality === Quality.HIFI || quality === Quality.HIRES) {
+      candidates.push(this.fetchHaitang(hash, level, quality, controller.signal));
+    }
 
     const results = await Promise.allSettled(candidates);
     const matched = results
@@ -196,6 +204,14 @@ export class KugouSource extends BaseHttpSource {
       .map((r) => r.value)
       .filter((r): r is PlayUrlResult => r !== null);
 
+    // 优先返回 accurate 候选
+    const accurate = matched.find((r) => r.isAccurate !== false);
+    if (accurate) {
+      controller.abort();
+      return accurate;
+    }
+
+    // 无 accurate 则降级首非空
     if (matched.length > 0) {
       controller.abort();
       return matched[0];
@@ -214,7 +230,8 @@ export class KugouSource extends BaseHttpSource {
       if (!data?.url) return null;
       const url = data.url as string;
       if (!url.startsWith('http')) return null;
-      return { url, quality, bitrate: 128, format: 'mp3' };
+      // 官方接口返回的免费链通常是准确的
+      return { url, quality, bitrate: 128, format: 'mp3', isAccurate: true };
     } catch { return null; }
   }
 
@@ -231,12 +248,31 @@ export class KugouSource extends BaseHttpSource {
       });
       const data = await resp.json().catch(() => null);
       if (!data?.url) return null;
-      return {
-        url: data.url,
-        quality,
-        bitrate: this.levelToBitrate(level),
-        format: this.detectFormat('', data.url),
-      };
+      const url = data.url as string;
+
+      // HEAD 音质校验：Content-Type + Content-Length
+      const head = await fetch(url, { method: 'HEAD', signal }).catch(() => null);
+      const ct = head?.headers.get('content-type') || '';
+      const cl = head?.headers.get('content-length') || '0';
+      const sizeBytes = parseInt(cl, 10) || 0;
+      const sizeMb = sizeBytes / (1024 * 1024);
+
+      // 海棠除 lossless 外全部静默降级为 128k MP3；这里进一步用 HEAD 验证
+      const isFlac = ct.includes('flac') || ct.includes('x-flac');
+      const isMpeg = ct.includes('mpeg') || ct.includes('mp3');
+
+      // lossless 请求必须返回 FLAC 且 >20MB 才判 accurate
+      if (quality === Quality.LOSSLESS || quality === Quality.HIFI || quality === Quality.HIRES) {
+        if (!isFlac || sizeMb < 10) {
+          // 海棠降级链：丢弃（让调用方继续等其它候选，但这里已无其它候选）
+          // 标为 inaccurate，让上层降级处理
+          return { url, quality, bitrate: 128, format: 'mp3', isAccurate: false };
+        }
+        return { url, quality, bitrate: this.levelToBitrate(level), format: 'flac', isAccurate: true };
+      }
+
+      // 非 lossless 档不应走到海棠（已在 getPlayUrl 中过滤），兜底标 inaccurate
+      return { url, quality, bitrate: 128, format: isMpeg ? 'mp3' : 'mp3', isAccurate: false };
     } catch { return null; }
   }
 

@@ -158,11 +158,13 @@ export class KuwoSource extends BaseHttpSource {
   async getSongDetail(songId: string): Promise<SongDetail> {
     const rid = songId.replace(/^kw_/, '');
     const cached = this.songMetaCache.get(rid);
-
+    if (!cached?.name) {
+      throw new Error(`酷我歌曲详情获取失败：rid=${rid} 无缓存元数据`);
+    }
     return {
       id: songId,
-      title: cached?.name || '未知歌曲',
-      artist: cached?.artist || '',
+      title: cached.name,
+      artist: cached.artist || '',
       album: '',
       duration: 0,
       coverUrl: '',
@@ -170,6 +172,52 @@ export class KuwoSource extends BaseHttpSource {
   }
 
   // ===================== 取链（核心）=====================
+
+  /**
+   * 覆写 getPlayUrl：优先返回 accurate 候选，无则降级首非空。
+   */
+  async getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult> {
+    const rid = songId.replace(/^kw_/, '');
+    const candidates = this.buildEndpointCandidates(songId, quality);
+    const controller = new AbortController();
+
+    const promises = candidates.map(async (c): Promise<PlayUrlResult | null> => {
+      try {
+        const response = await fetch(c.url, {
+          method: c.method,
+          headers: c.headers,
+          signal: controller.signal,
+          redirect: 'follow',
+        });
+        if (!response.ok) return null;
+        if (c.resolve) {
+          const result = await c.resolve(response);
+          if (result) return result;
+        }
+        return null;
+      } catch { return null; }
+    });
+
+    const results = await Promise.allSettled(promises);
+    const matched = results
+      .filter((r): r is PromiseFulfilledResult<PlayUrlResult | null> => r.status === 'fulfilled')
+      .map((r) => r.value)
+      .filter((r): r is PlayUrlResult => r !== null);
+
+    // 优先返回 accurate 候选（拒绝服务端降级链）
+    const accurate = matched.find((r) => r.isAccurate !== false);
+    if (accurate) {
+      controller.abort();
+      return accurate;
+    }
+
+    if (matched.length > 0) {
+      controller.abort();
+      return matched[0];
+    }
+
+    throw new Error(`酷我取链失败：所有候选均不可用 (rid=${rid})`);
+  }
 
   protected buildEndpointCandidates(songId: string, quality: Quality): ResolvedCandidate[] {
     const rid = songId.replace(/^kw_/, '');
@@ -243,7 +291,41 @@ export class KuwoSource extends BaseHttpSource {
     // 防盗链占位校验
     if (this.isAntiTheft(url)) return null;
 
-    return { url, quality, bitrate, format };
+    // 音质校验：拒绝服务端降级链（请求320k但返回128k时标 inaccurate）
+    const expected = this.kuwoQualityExpectation(quality);
+    let accurate = true;
+    if (expected) {
+      const [expBr, expFmt] = expected;
+      const tol = this.kuwoBitrateTolerance(format);
+      accurate = format.toLowerCase() === expFmt.toLowerCase() &&
+        Math.abs(bitrate - expBr) <= tol;
+    }
+
+    return { url, quality, bitrate, format, isAccurate: accurate };
+  }
+
+  /**
+   * 选定音质档 → 期望的 (bitrate, format)，用于拒绝回退假链。
+   * 参照 DJMusic KuwoSource.kt qualityExpectation。
+   */
+  private kuwoQualityExpectation(quality: Quality): [number, string] | null {
+    switch (quality) {
+      case Quality.LOW: return [48, 'aac'];
+      case Quality.STANDARD: return [128, 'mp3'];
+      case Quality.HIGH: return [320, 'mp3'];
+      case Quality.LOSSLESS: return [2000, 'flac'];
+      default: return null;
+    }
+  }
+
+  /**
+   * 码率匹配容差。
+   * 参照 DJMusic KuwoSource.kt bitrateTolerance。
+   */
+  private kuwoBitrateTolerance(format: string): number {
+    const f = format.toLowerCase();
+    if (f === 'flac') return 80;
+    return 8;
   }
 
   private isAntiTheft(url: string): boolean {

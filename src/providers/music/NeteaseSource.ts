@@ -91,15 +91,35 @@ export class NeteaseSource extends BaseHttpSource {
 
   async getSongDetail(songId: string): Promise<SongDetail> {
     const id = songId.replace(/^ne_/, '');
-    // 简化为搜索缓存或占位
-    return {
-      id: songId,
-      title: '网易云歌曲',
-      artist: '',
-      album: '',
-      duration: 0,
-      coverUrl: '',
-    };
+    try {
+      const url = `${this.HOST}/api/song/detail?ids=[${id}]`;
+      const data = await this.httpGetJson(url, { Cookie: this.VIP_COOKIE, Referer: this.REF });
+      const songs = data?.songs;
+      if (!songs || songs.length === 0) {
+        throw new Error(`网易云歌曲详情获取失败：id=${id} 无返回数据`);
+      }
+      const s = songs[0];
+      const name = (s.name || '').toString().trim();
+      if (!name) {
+        throw new Error(`网易云歌曲详情获取失败：id=${id} 返回空名称`);
+      }
+      const artists = s.artists || s.ar || [];
+      const artist = artists.map((a: any) => (a.name || '').toString()).filter(Boolean).join(' / ');
+      const album = s.album || s.al || {};
+      const durMs = parseInt((s.duration || s.dt || '0').toString(), 10);
+
+      return {
+        id: songId,
+        title: name,
+        artist,
+        album: (album.name || '').toString(),
+        duration: durMs > 0 ? Math.floor(durMs / 1000) : 0,
+        coverUrl: (album.picUrl || album.pic || '').toString(),
+      };
+    } catch (err) {
+      // 不再静默返回占位对象，让调用方感知失败
+      throw err instanceof Error ? err : new Error(`网易云歌曲详情获取失败：id=${id}`);
+    }
   }
 
   // ===================== 取链（核心）=====================
@@ -186,7 +206,12 @@ export class NeteaseSource extends BaseHttpSource {
     return candidates;
   }
 
-  // 覆写getPlayUrl，因为海棠需要POST body
+  /**
+   * 覆写 getPlayUrl：
+   * 1. 官方候选增加 isPreview / isAccurate 标记
+   * 2. 优先返回 accurate 候选；无 accurate 则降级首非空
+   * 3. 保证可播（全部失败才抛错）
+   */
   async getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult> {
     const id = songId.replace(/^ne_/, '');
     const level = this.neteaseLevel(quality);
@@ -212,8 +237,16 @@ export class NeteaseSource extends BaseHttpSource {
       .map((r) => r.value)
       .filter((r): r is PlayUrlResult => r !== null);
 
+    // 优先返回 accurate 候选（拒绝服务端降级链）
+    const accurate = matched.find((r) => r.isAccurate !== false);
+    if (accurate) {
+      controller.abort();
+      return accurate;
+    }
+
+    // 无 accurate 则降级首非空（如官方 320k 试听片段）
     if (matched.length > 0) {
-      controller.abort(); // 取消其他
+      controller.abort();
       return matched[0];
     }
 
@@ -296,7 +329,10 @@ export class NeteaseSource extends BaseHttpSource {
     if (!url || !url.startsWith('http')) return null;
     const actualBr = o.br || 0;
     const type = o.type || 'mp3';
-    return { url, quality, bitrate: actualBr, format: type };
+    // 试听片段检测
+    const trial = o.freeTrialInfo != null;
+    const accurate = !trial && this.isAccurateNetease(quality, actualBr, type);
+    return { url, quality, bitrate: actualBr, format: type, isPreview: trial, isAccurate: accurate };
   }
 
   private async resolveOfficialBr(resp: Response, quality: Quality): Promise<PlayUrlResult | null> {
@@ -309,7 +345,27 @@ export class NeteaseSource extends BaseHttpSource {
     if (!url || !url.startsWith('http')) return null;
     const actualBr = o.br || 0;
     const type = o.type || 'mp3';
-    return { url, quality, bitrate: actualBr, format: type };
+    // 试听片段检测
+    const trial = o.freeTrialInfo != null;
+    const accurate = !trial && this.isAccurateNetease(quality, actualBr, type);
+    return { url, quality, bitrate: actualBr, format: type, isPreview: trial, isAccurate: accurate };
+  }
+
+  /**
+   * 官方取链结果是否与请求音质精确匹配（用于竞速优先选 accurate）。
+   * 参照 DJMusic NeteaseSource.kt isAccurateNetease。
+   */
+  private isAccurateNetease(quality: Quality, br: number, type: string): boolean {
+    switch (quality) {
+      case Quality.LOSSLESS: return type.toLowerCase() === 'flac' && br >= 900000;
+      case Quality.HIFI: return br >= 900000;
+      case Quality.HIRES: return br >= 1800000;
+      case Quality.HIGH: return br >= 300000 && br <= 330000;
+      case Quality.HIGHER: return br >= 180000 && br <= 210000;
+      case Quality.LOW:
+      case Quality.STANDARD: return br >= 120000 && br <= 135000;
+      default: return true;
+    }
   }
 
   private neteaseBr(quality: Quality): number {

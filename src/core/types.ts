@@ -68,6 +68,10 @@ export interface PlayUrlResult {
   headers?: Record<string, string>;
   expiresAt?: number;
   isEncrypted?: boolean;
+  /** 是否为试听片段（VIP歌曲无完整权限时返回的短预览） */
+  isPreview?: boolean;
+  /** 实际音质是否与请求音质精确匹配（用于拒绝服务端降级链） */
+  isAccurate?: boolean;
 }
 
 export interface SongDetail {

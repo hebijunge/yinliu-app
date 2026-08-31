@@ -99,7 +99,52 @@ export abstract class BaseHttpSource implements MusicSource {
 
   protected validateQuality(result: PlayUrlResult, target: Quality): boolean {
     if (!result.url) return false;
-    return qualityRank(result.quality) >= qualityRank(target);
+    // 基础校验：返回的音质等级不低于目标
+    if (qualityRank(result.quality) < qualityRank(target)) return false;
+    // 若子类已标记 isAccurate，直接信任
+    if (result.isAccurate === true) return true;
+    if (result.isAccurate === false) return false;
+    // 未标记时，做保守的码率/格式兜底校验
+    return this.validateBitrateAndFormat(result.bitrate, result.format, target);
+  }
+
+  /**
+   * 码率与格式兜底校验：请求音质 vs 实际响应。
+   * 子类可覆写以提供更精确的源级校验。
+   */
+  protected validateBitrateAndFormat(bitrate: number, format: string, target: Quality): boolean {
+    const expected = this.qualityExpectation(target);
+    if (!expected) return true; // 无期望值时不拦截
+    const [expBr, expFmt] = expected;
+    const tol = this.bitrateTolerance(format);
+    const fmtOk = format.toLowerCase() === expFmt.toLowerCase();
+    const brOk = Math.abs(bitrate - expBr) <= tol;
+    return fmtOk && brOk;
+  }
+
+  /**
+   * 请求音质 → 期望 (bitrate, format)。
+   * 子类覆写以适配各源的实际档位。
+   */
+  protected qualityExpectation(quality: Quality): [number, string] | null {
+    switch (quality) {
+      case Quality.LOW: return [48, 'aac'];
+      case Quality.STANDARD: return [128, 'mp3'];
+      case Quality.HIGH: return [320, 'mp3'];
+      case Quality.LOSSLESS: return [1000, 'flac'];
+      case Quality.HIFI:
+      case Quality.HIRES: return [2000, 'flac'];
+      default: return null;
+    }
+  }
+
+  /**
+   * 码率匹配容差（不同编码实测码率有小幅浮动）。
+   */
+  protected bitrateTolerance(format: string): number {
+    const f = format.toLowerCase();
+    if (f === 'flac') return 80;
+    return 8;
   }
 
   protected estimateBitrate(contentLength: string | null, quality: Quality): number {
