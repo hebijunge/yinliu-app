@@ -187,17 +187,33 @@ export class DownloadEngine {
 
       const chain = buildFallbackChain(task.sourceId, availableIds);
 
+      debugLogger.info('download', `下载取链降级链: ${chain.join(' → ')}`, {
+        taskId,
+        chain,
+        availableSources: meta?.availableSources?.map((s) => s.sourceId),
+      });
+
       let resolved: ResolvedSourceUrl | null = null;
       let lastError: unknown = null;
 
       for (let i = 0; i < chain.length; i++) {
         const trySourceId = chain[i];
         const source = sourceRegistry.get(trySourceId);
-        if (!source || !source.enabled) continue;
+        if (!source || !source.enabled) {
+          debugLogger.info('download', `取链跳过: ${trySourceId} 未启用`, { taskId, sourceId: trySourceId });
+          continue;
+        }
         const trySongId = songIdMap.get(trySourceId) || task.songId;
 
         try {
           const playUrl = await source.getPlayUrl(trySongId, task.quality);
+          debugLogger.info('download', `取链成功: ${trySourceId}`, {
+            taskId,
+            sourceId: trySourceId,
+            url: playUrl.url.slice(0, 120),
+            format: playUrl.format,
+            quality: task.quality,
+          });
           if (i > 0) {
             // 有降级：提示用户
             const fromName = PLATFORM_DISPLAY_NAMES[chain[i - 1]] || chain[i - 1];
