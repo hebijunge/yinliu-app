@@ -157,7 +157,7 @@ export default function PlaylistPage() {
           <div className="space-y-3">
             <div>
               <label className="text-xs text-[var(--text-tertiary)] block mb-1.5">
-                歌单链接（支持 QQ 音乐 / 网易云 / 酷狗 / 酷我 / 咪咕 / Spotify）
+                歌单链接（支持 QQ 音乐 / 网易云 / 酷狗 / 酷我 / 咪咕）
               </label>
               <div className="flex gap-2">
                 <input

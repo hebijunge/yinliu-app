@@ -55,7 +55,7 @@ export class PlaylistImporter {
       patterns: [
         /y\.qq\.com.*playlist[\/](\d+)/,
         /y\.qq\.com.*n\/ryqq\/playlist\/(\d+)/,
-        /i\.y\.qq\.com.*id=(\d+)/,
+        /i2?\.y\.qq\.com.*id=(\d+)/,
       ],
     },
     {
@@ -71,6 +71,7 @@ export class PlaylistImporter {
       patterns: [
         /kugou\.com.*special[\/]single[\/](\d+)/,
         /kugou\.com.*yy\/special\/single\/(\d+)/,
+        /kugou\.com.*songlist[\/]gcid[_]?(\w+)/,
       ],
     },
     {
@@ -78,6 +79,7 @@ export class PlaylistImporter {
       patterns: [
         /kuwo\.cn.*playlist_detail\/(\d+)/,
         /kuwo\.cn.*playlists\/(\d+)/,
+        /kuwo\.cn.*newh5app\/playlist_detail\/(\d+)/,
       ],
     },
     {
@@ -96,7 +98,34 @@ export class PlaylistImporter {
     },
   ];
 
+  /**
+   * 从整段分享文本中提取 URL（含前缀、标题、@后缀等噪音）
+   */
+  extractUrl(raw: string): string {
+    // 先检测汽水音乐并保留原样，让上层抛明确提示
+    if (/qishui\.douyin\.com/i.test(raw)) return raw;
+    // 匹配 http/https URL
+    const urlMatch = raw.match(/(https?:\/\/[^\s]+)/);
+    if (urlMatch) return urlMatch[1];
+    // 纯数字歌单码（酷狗）
+    if (/^\d{6,10}$/.test(raw.trim())) return raw.trim();
+    return raw;
+  }
+
   parseUrl(url: string): ParsedPlaylistInfo | null {
+    // 汽水音乐：明确提示不支持
+    if (/qishui\.douyin\.com/i.test(url)) {
+      throw new YinliuError(
+        ErrorCode.VALIDATION_ERROR,
+        '暂不支持汽水音乐歌单导入',
+        400
+      );
+    }
+    // 酷狗纯数字歌单码（6-10位）
+    const numericCode = url.trim().match(/^(\d{6,10})$/);
+    if (numericCode) {
+      return { platform: 'kugou', playlistId: numericCode[1], url };
+    }
     for (const { platform, patterns } of this.urlPatterns) {
       for (const pattern of patterns) {
         const match = url.match(pattern);
@@ -111,7 +140,8 @@ export class PlaylistImporter {
   /**
    * 仅解析歌单并返回元信息（不落库）—— 用于导入前预览
    */
-  async preview(url: string): Promise<PreviewResult> {
+  async preview(raw: string): Promise<PreviewResult> {
+    const url = this.extractUrl(raw);
     const parsed = this.parseUrl(url);
     if (!parsed) {
       throw new YinliuError(
@@ -163,7 +193,8 @@ export class PlaylistImporter {
    * - 失败曲目不写入；UI 通过 match.tracks[].status 展示
    * - 全部失败也不回滚已写入的曲目（用户至少能拿到部分）
    */
-  async importAndPersist(url: string): Promise<ImportReport> {
+  async importAndPersist(raw: string): Promise<ImportReport> {
+    const url = this.extractUrl(raw);
     const parsed = this.parseUrl(url);
     if (!parsed) {
       throw new YinliuError(
@@ -276,8 +307,14 @@ export class PlaylistImporter {
     };
   }
 
-  isSupported(url: string): boolean {
-    return this.parseUrl(url) !== null;
+  isSupported(raw: string): boolean {
+    try {
+      const url = this.extractUrl(raw);
+      return this.parseUrl(url) !== null;
+    } catch {
+      // 汽水音乐等明确抛错也算“识别到”
+      return true;
+    }
   }
 
   getSupportedPlatforms(): Array<{ id: SupportedPlatform; name: string }> {
