@@ -5,7 +5,6 @@ import { getSqliteDb, flushDatabase } from '@shared/database';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { buildFallbackChain, PLATFORM_DISPLAY_NAMES } from '@core/platformPriority';
 import { toast } from '@shared/components/Toast';
-import { debugLogger } from '@shared/utils/debugLogger';
 
 function qmc2DecryptBytes(data: Uint8Array): Uint8Array {
   // Kuwo QMC2 格式解密；若全局未注册解密器则透传
@@ -129,11 +128,6 @@ export class DownloadEngine {
         meta.artist = params.artist || meta.artist;
         this.taskMeta.set(existing.id, meta);
       }
-      debugLogger.info('download', `下载任务已存在: ${params.title}`, {
-        taskId: existing.id,
-        sourceId: params.sourceId,
-        quality: params.quality,
-      });
       return existing;
     }
 
@@ -146,11 +140,6 @@ export class DownloadEngine {
       });
     }
     await this.persistTask(task);
-    debugLogger.info('download', `创建下载任务: ${params.title}`, {
-      taskId: id,
-      sourceId: params.sourceId,
-      quality: params.quality,
-    });
     return task;
   }
 
@@ -166,17 +155,9 @@ export class DownloadEngine {
     await this.persistTask(task);
     this.emit('stateChange', { taskId, status: 'downloading', task });
 
-    const meta = this.taskMeta.get(taskId);
-    const title = meta?.title || task.songId;
-
-    debugLogger.info('download', `开始下载: ${title}`, {
-      taskId,
-      sourceId: task.sourceId,
-      quality: task.quality,
-    });
-
     try {
       // 1. 取链（v13: 多平台降级链）
+      const meta = this.taskMeta.get(taskId);
       const availableIds = (meta?.availableSources || []).map((s) => s.sourceId);
       const songIdMap = new Map<string, string>();
       for (const s of meta?.availableSources || []) {
@@ -187,33 +168,17 @@ export class DownloadEngine {
 
       const chain = buildFallbackChain(task.sourceId, availableIds);
 
-      debugLogger.info('download', `下载取链降级链: ${chain.join(' → ')}`, {
-        taskId,
-        chain,
-        availableSources: meta?.availableSources?.map((s) => s.sourceId),
-      });
-
       let resolved: ResolvedSourceUrl | null = null;
       let lastError: unknown = null;
 
       for (let i = 0; i < chain.length; i++) {
         const trySourceId = chain[i];
         const source = sourceRegistry.get(trySourceId);
-        if (!source || !source.enabled) {
-          debugLogger.info('download', `取链跳过: ${trySourceId} 未启用`, { taskId, sourceId: trySourceId });
-          continue;
-        }
+        if (!source || !source.enabled) continue;
         const trySongId = songIdMap.get(trySourceId) || task.songId;
 
         try {
           const playUrl = await source.getPlayUrl(trySongId, task.quality);
-          debugLogger.info('download', `取链成功: ${trySourceId}`, {
-            taskId,
-            sourceId: trySourceId,
-            url: playUrl.url.slice(0, 120),
-            format: playUrl.format,
-            quality: task.quality,
-          });
           if (i > 0) {
             // 有降级：提示用户
             const fromName = PLATFORM_DISPLAY_NAMES[chain[i - 1]] || chain[i - 1];
@@ -226,12 +191,6 @@ export class DownloadEngine {
               `下载已切换到 ${toName}`,
               `${fromName} 取链失败（${reason}），已自动降级到 ${toName}`
             );
-            debugLogger.warn('download', `下载取链降级: ${fromName} → ${toName}`, {
-              taskId,
-              from: chain[i - 1],
-              to: trySourceId,
-              reason,
-            });
           }
           resolved = {
             sourceId: trySourceId,
@@ -251,10 +210,6 @@ export class DownloadEngine {
             `[DownloadEngine] getPlayUrl failed on ${trySourceId}:`,
             err instanceof Error ? err.message : err
           );
-          debugLogger.warn('download', `下载取链失败: ${trySourceId}`, {
-            taskId,
-            error: err instanceof Error ? err.message : String(err),
-          });
           // 继续降级
         }
       }
@@ -265,7 +220,6 @@ export class DownloadEngine {
             lastError instanceof Error ? lastError.message : 'unknown'
           }`
         );
-
       }
 
       // 2. 确保下载目录存在
@@ -286,26 +240,11 @@ export class DownloadEngine {
       const abortCtrl = new AbortController();
       this.abortControllers.set(taskId, abortCtrl);
 
-      debugLogger.info('download', `开始请求下载: ${resolved.url.slice(0, 120)}`, {
-        taskId,
-        sourceId: resolved.sourceId,
-        format: resolved.format,
-        hasHeaders: !!resolved.headers,
-      });
-
       const response = await platformFetch(resolved.url, {
         method: 'GET',
         signal: abortCtrl.signal,
         headers: resolved.headers || {},
         responseType: 'arraybuffer',
-      });
-
-      debugLogger.info('download', `下载响应收到: HTTP ${response.status}`, {
-        taskId,
-        status: response.status,
-        statusText: response.statusText,
-        contentType: response.headers.get('content-type'),
-        contentLength: response.headers.get('content-length'),
       });
 
       if (!response.ok) {
@@ -315,91 +254,90 @@ export class DownloadEngine {
       const contentLength = Number(response.headers.get('content-length') || '0');
       task.totalSize = contentLength;
 
-      // 5. 读取响应体：优先流式，若 response.body 不可用则回退到 arrayBuffer()
-      let merged: Uint8Array;
-
-      if (response.body) {
-        try {
-          const reader = response.body.getReader();
-          const chunks: Uint8Array[] = [];
-          let downloaded = 0;
-          let lastTime = Date.now();
-          let lastDownloaded = 0;
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            // 检查是否被暂停/取消
-            if (task.status !== 'downloading') {
-              reader.cancel();
-              break;
-            }
-
-            chunks.push(value);
-            downloaded += value.length;
-            task.progress = task.totalSize > 0 ? downloaded / task.totalSize : 0;
-
-            // 计算速度 (bytes/s)
-            const now = Date.now();
-            const dt = now - lastTime;
-            if (dt >= 500) {
-              const speed = Math.round(((downloaded - lastDownloaded) / dt) * 1000);
-              lastTime = now;
-              lastDownloaded = downloaded;
-              this.emit('progress', {
-                taskId,
-                progress: task.progress,
-                downloadedSize: downloaded,
-                totalSize: task.totalSize,
-                speed,
-              });
-            }
-          }
-
-          const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
-          merged = new Uint8Array(totalLength);
-          let offset = 0;
-          for (const chunk of chunks) {
-            merged.set(chunk, offset);
-            offset += chunk.length;
-          }
-        } catch (streamErr) {
-          debugLogger.warn('download', `流式读取失败，回退到 arrayBuffer(): ${streamErr instanceof Error ? streamErr.message : String(streamErr)}`, { taskId });
-          const ab = await response.arrayBuffer();
-          merged = new Uint8Array(ab);
-        }
-      } else {
-        debugLogger.info('download', `response.body 不可用，使用 response.arrayBuffer()`, { taskId });
-        const ab = await response.arrayBuffer();
-        merged = new Uint8Array(ab);
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('Response body is not readable');
       }
 
-      debugLogger.info('download', `下载数据接收完成: ${title}`, {
-        taskId,
-        totalBytes: merged.length,
-        contentLength,
-      });
+      // 5. 流式读取并写入文件
+      const chunks: Uint8Array[] = [];
+      let downloaded = 0;
+      let lastTime = Date.now();
+      let lastDownloaded = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        // 检查是否被暂停/取消
+        if (task.status !== 'downloading') {
+          reader.cancel();
+          break;
+        }
+
+        chunks.push(value);
+        downloaded += value.length;
+        // 用真实下载字节 / 已知总字节算百分比；当 totalSize 未知（content-length 缺失或
+        // 与 QMC2 解密后不一致）时按 indeterminate 处理；clamp 到 [0,1] 防止进度条溢出
+        const ratio = task.totalSize > 0 ? downloaded / task.totalSize : 0;
+        task.progress = Math.max(0, Math.min(1, ratio));
+
+        // 计算速度 (bytes/s)
+        const now = Date.now();
+        const dt = now - lastTime;
+        if (dt >= 500) {
+          const speed = Math.round(((downloaded - lastDownloaded) / dt) * 1000);
+          lastTime = now;
+          lastDownloaded = downloaded;
+          this.emit('progress', {
+            taskId,
+            progress: task.progress,
+            downloadedSize: downloaded,
+            totalSize: task.totalSize,
+            speed,
+          });
+        }
+      }
+
+      // 6. 合并 chunks 并写入本地文件
+      const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+      const merged = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
 
       // QMC2 解密（Kuwo 源）
       const decrypted = task.sourceId === 'kuwo' ? qmc2DecryptBytes(merged) : merged;
 
-      // 转为 base64 写入 Capacitor Filesystem（逐字节拼接，避免大文件栈溢出）
+      // 校正 totalSize：很多源（Kuwo/CDN 加速/分块传输）不返回或返回错的 content-length，
+      // 这里以「实际写入到磁盘的字节」为准。Kuwo 的 QMC2 解密可能改变长度，统一用 decrypted.length。
+      const actualSize = decrypted.length;
+      if (task.totalSize !== actualSize) {
+        task.totalSize = actualSize;
+        // 写库之前先纠正持久化字段，避免「下载管理」页面与 DB 都拿到旧的 0/错误值
+        // 注意：稍后会调 persistTask 把 totalSize 写进 downloads.file_size
+        // 这里先补一次 progress 事件，让 UI 在 stateChange(completed) 之前就能拿到正确 totalSize
+        this.emit('progress', {
+          taskId,
+          progress: task.progress,
+          downloadedSize: actualSize,
+          totalSize: actualSize,
+          speed: 0,
+        });
+      }
+
+      // 转为 base64 写入 Capacitor Filesystem（32KB 分块避免大文件栈溢出）
       function arrayBufferToBase64(buffer: Uint8Array): string {
         const chunkSize = 32768;
         let binary = '';
         for (let i = 0; i < buffer.length; i += chunkSize) {
           const chunk = buffer.subarray(i, i + chunkSize);
-          // 不用 spread 避免 Maximum call stack size exceeded
-          for (let j = 0; j < chunk.length; j++) {
-            binary += String.fromCharCode(chunk[j]);
-          }
+          binary += String.fromCharCode(...chunk);
         }
         return btoa(binary);
       }
-
-      debugLogger.info('download', `开始写入本地文件: ${filePath}`, { taskId, size: decrypted.length });
-
       const base64 = arrayBufferToBase64(decrypted);
       await Filesystem.writeFile({
         path: filePath,
@@ -408,25 +346,12 @@ export class DownloadEngine {
         recursive: true,
       });
 
-      debugLogger.info('download', `本地文件写入完成: ${filePath}`, { taskId });
-
       // 7. 标记完成
       task.status = 'completed';
       task.progress = 1;
       await this.persistTask(task);
-      debugLogger.info('download', `下载完成: ${title}`, {
-        taskId,
-        filePath,
-        size: merged.length,
-        status: 'completed',
-      });
       this.emit('stateChange', { taskId, status: 'completed', task });
       this.emit('completed', { taskId, filePath });
-      debugLogger.info('download', `任务状态变更已推入列表: ${title}`, {
-        taskId,
-        status: 'completed',
-        listSize: this.tasks.size,
-      });
 
       this.abortControllers.delete(taskId);
     } catch (err) {
@@ -434,18 +359,8 @@ export class DownloadEngine {
       task.status = 'failed';
       task.errorMessage = msg;
       await this.persistTask(task);
-      debugLogger.error('download', `下载失败: ${title}`, {
-        taskId,
-        error: msg,
-        status: 'failed',
-      });
       this.emit('stateChange', { taskId, status: 'failed', task });
       this.emit('failed', { taskId, error: msg });
-      debugLogger.info('download', `任务状态变更已推入列表: ${title}`, {
-        taskId,
-        status: 'failed',
-        listSize: this.tasks.size,
-      });
       this.abortControllers.delete(taskId);
     }
   }
@@ -464,18 +379,12 @@ export class DownloadEngine {
     task.status = 'paused';
     await this.persistTask(task);
     this.emit('stateChange', { taskId, status: 'paused', task });
-    debugLogger.info('download', `下载暂停: ${this.taskMeta.get(taskId)?.title || taskId}`, {
-      taskId,
-    });
   }
 
   // === 继续下载（paused → downloading）===
   async resumeDownload(taskId: string): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task || task.status !== 'paused') return;
-    debugLogger.info('download', `下载恢复: ${this.taskMeta.get(taskId)?.title || taskId}`, {
-      taskId,
-    });
     await this.startDownload(taskId);
   }
 
@@ -515,10 +424,6 @@ export class DownloadEngine {
     }
 
     this.emit('stateChange', { taskId, status: 'failed', task: { ...task, status: 'failed' } });
-    debugLogger.info('download', `下载任务取消/删除: ${taskId}`, {
-      taskId,
-      wasCompleted: task.status === 'completed',
-    });
   }
 
   // === 便捷方法（兼容 v10 调用方）===
