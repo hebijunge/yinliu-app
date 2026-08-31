@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Trash2, Download, RefreshCw, ChevronDown, Filter } from 'lucide-react';
+import { ArrowLeft, Trash2, Download, RefreshCw, ChevronDown, Filter, FileText, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { debugLogger, type DebugLogEntry, type DebugLogCategory, type DebugLogLevel } from '@shared/utils/debugLogger';
 
@@ -36,6 +36,8 @@ export default function DebugLogPage() {
   const [filterLevel, setFilterLevel] = useState<DebugLogLevel | 'all'>('all');
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [showFilters, setShowFilters] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'txt' | 'md'>('txt');
+  const [showDeleteMenu, setShowDeleteMenu] = useState(false);
   const intervalRef = useRef<number | null>(null);
 
   const refresh = () => {
@@ -67,8 +69,23 @@ export default function DebugLogPage() {
     }
   };
 
+  const handleDeleteEntry = (id: string) => {
+    if (window.confirm('确定删除这条日志吗？')) {
+      debugLogger.deleteEntry(id);
+      refresh();
+    }
+  };
+
+  const handleDeleteByCategory = (category: DebugLogCategory) => {
+    if (window.confirm(`确定删除「${CATEGORY_LABELS[category]}」类别的所有日志吗？`)) {
+      const count = debugLogger.deleteByCategory(category);
+      refresh();
+      alert(`已删除 ${count} 条日志`);
+    }
+  };
+
   const handleExport = () => {
-    debugLogger.triggerExport();
+    debugLogger.triggerExport(exportFormat);
   };
 
   const filteredEntries = entries.filter((entry) => {
@@ -82,8 +99,9 @@ export default function DebugLogPage() {
     return `${d.getMonth() + 1}-${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}.${d.getMilliseconds().toString().padStart(3, '0')}`;
   };
 
-  const categories: Array<DebugLogCategory | 'all'> = ['all', 'app', 'navigate', 'network', 'player', 'download', 'init'];
+  const categories: Array<DebugLogCategory | 'all'> = ['all', 'app', 'navigate', 'network', 'player', 'download', 'click', 'init'];
   const levels: Array<DebugLogLevel | 'all'> = ['all', 'info', 'warn', 'error'];
+  const categoryList: DebugLogCategory[] = ['app', 'navigate', 'network', 'player', 'download', 'click', 'init'];
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -118,27 +136,83 @@ export default function DebugLogPage() {
           </button>
           <button
             onClick={() => setShowFilters(!showFilters)}
-            className="p-2 rounded-2xl hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors focus-ring"
+            className={`p-2 rounded-2xl transition-colors focus-ring ${
+              showFilters ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]'
+            }`}
             title="筛选"
             aria-label="切换筛选"
           >
             <Filter className="w-4 h-4" />
           </button>
+          <div className="relative">
+            <button
+              onClick={() => setShowDeleteMenu(!showDeleteMenu)}
+              className="p-2 rounded-2xl hover:bg-red-500/10 text-red-500 transition-colors focus-ring"
+              title="删除"
+              aria-label="删除菜单"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+            {showDeleteMenu && (
+              <div className="absolute right-0 top-full mt-2 w-48 bg-[var(--bg-primary)] border border-[var(--border-subtle)] rounded-2xl shadow-lg z-50 py-1">
+                <div className="px-3 py-2 text-xs text-[var(--text-tertiary)] border-b border-[var(--border-subtle)]">
+                  按类别批量删除
+                </div>
+                {categoryList.map((cat) => (
+                  <button
+                    key={cat}
+                    onClick={() => {
+                      handleDeleteByCategory(cat);
+                      setShowDeleteMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-2 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+                  >
+                    {CATEGORY_LABELS[cat]}
+                  </button>
+                ))}
+                <div className="border-t border-[var(--border-subtle)] mt-1 pt-1">
+                  <button
+                    onClick={() => {
+                      handleClear();
+                      setShowDeleteMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-2 text-sm text-red-500 hover:bg-red-500/5 transition-colors"
+                  >
+                    清空全部日志
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-1 bg-[var(--bg-tertiary)] rounded-2xl p-0.5">
+            <button
+              onClick={() => setExportFormat('txt')}
+              className={`px-2 py-1.5 rounded-xl text-xs font-medium transition-all ${
+                exportFormat === 'txt'
+                  ? 'bg-[var(--accent)] text-white'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              .txt
+            </button>
+            <button
+              onClick={() => setExportFormat('md')}
+              className={`px-2 py-1.5 rounded-xl text-xs font-medium transition-all ${
+                exportFormat === 'md'
+                  ? 'bg-[var(--accent)] text-white'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              .md
+            </button>
+          </div>
           <button
             onClick={handleExport}
             className="p-2 rounded-2xl hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors focus-ring"
-            title="导出为文本"
+            title={`导出为 ${exportFormat}`}
             aria-label="导出"
           >
             <Download className="w-4 h-4" />
-          </button>
-          <button
-            onClick={handleClear}
-            className="p-2 rounded-2xl hover:bg-red-500/10 text-red-500 transition-colors focus-ring"
-            title="清空日志"
-            aria-label="清空"
-          >
-            <Trash2 className="w-4 h-4" />
           </button>
         </div>
       </div>
@@ -198,7 +272,7 @@ export default function DebugLogPage() {
           {filteredEntries.map((entry) => (
             <div
               key={entry.id}
-              className="p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-colors"
+              className="p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-colors group"
             >
               <div className="flex items-center gap-2 mb-1 flex-wrap">
                 <span className="text-[10px] font-mono text-[var(--text-tertiary)]">
@@ -210,6 +284,14 @@ export default function DebugLogPage() {
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${CATEGORY_COLORS[entry.category]}`}>
                   {CATEGORY_LABELS[entry.category]}
                 </span>
+                <button
+                  onClick={() => handleDeleteEntry(entry.id)}
+                  className="ml-auto p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-500/10 text-red-500 transition-all"
+                  title="删除本条"
+                  aria-label="删除本条日志"
+                >
+                  <X className="w-3 h-3" />
+                </button>
               </div>
               <div className="text-sm text-[var(--text-primary)] break-words">
                 {entry.message}

@@ -6,6 +6,7 @@
 
 import { Capacitor } from '@capacitor/core';
 import { CapacitorHttp, type HttpOptions, type HttpResponse } from '@capacitor/core';
+import { debugLogger } from './debugLogger';
 
 export interface PlatformFetchOptions {
   method?: string;
@@ -23,12 +24,37 @@ export interface PlatformFetchOptions {
  */
 export async function platformFetch(url: string, options: PlatformFetchOptions = {}): Promise<Response> {
   const isCapacitor = Capacitor.isNativePlatform();
+  const startTime = performance.now();
 
-  if (isCapacitor) {
-    return capacitorFetch(url, options);
+  try {
+    const response = isCapacitor
+      ? await capacitorFetch(url, options)
+      : await browserFetch(url, options);
+
+    const duration = Math.round(performance.now() - startTime);
+    debugLogger.info('network', `请求完成 ${options.method || 'GET'} ${response.status}`, {
+      url: truncateUrl(url),
+      method: options.method || 'GET',
+      status: response.status,
+      duration: `${duration}ms`,
+      capacitor: isCapacitor,
+    });
+
+    return response;
+  } catch (err) {
+    const duration = Math.round(performance.now() - startTime);
+    debugLogger.error('network', `请求失败 ${options.method || 'GET'}`, {
+      url: truncateUrl(url),
+      method: options.method || 'GET',
+      duration: `${duration}ms`,
+      error: err instanceof Error ? err.message : String(err),
+      capacitor: isCapacitor,
+    });
+    throw err;
   }
+}
 
-  // 浏览器 / Tauri 环境：标准 fetch
+function browserFetch(url: string, options: PlatformFetchOptions): Promise<Response> {
   return fetch(url, {
     method: options.method || 'GET',
     headers: options.headers,
@@ -157,4 +183,10 @@ export async function platformPostJson<T = any>(
   } catch {
     return null;
   }
+}
+
+/** 截断 URL，避免日志过长 */
+function truncateUrl(url: string, maxLen = 120): string {
+  if (url.length <= maxLen) return url;
+  return url.slice(0, maxLen) + '...';
 }

@@ -1,5 +1,5 @@
-import { Routes, Route } from 'react-router-dom';
-import { useEffect } from 'react';
+import { Routes, Route, useLocation } from 'react-router-dom';
+import { useEffect, useCallback, useRef } from 'react';
 import Layout from './components/layout/Layout';
 import SearchPage from './pages/SearchPage';
 import PlaylistPage from './pages/PlaylistPage';
@@ -17,27 +17,74 @@ import { usePlayHistoryStore } from './shared/store/playHistoryStore';
 import { useSettingsStore } from './shared/store/settingsStore';
 import { configureAudioFocus, updateAudioFocusOptions } from './core/player/audioFocus';
 import { initDatabase } from './shared/database';
+import { debugLogger } from './shared/utils/debugLogger';
 
 function App() {
-  // 启动时同步车机模式到 body class
-  useEffect(() => {
-    if (typeof document === 'undefined') return;
-    if (useSettingsStore.getState().carMode) {
-      document.body.classList.add('car-mode');
-    } else {
-      document.body.classList.remove('car-mode');
-    }
-  }, []);
+  const location = useLocation();
+  const prevPathRef = useRef(location.pathname);
+
+  // 全局点击埋点（事件委托，capture 阶段统一拦截，覆盖所有可点击组件）
+  const handleGlobalClick = useCallback((e: MouseEvent) => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+
+    // 寻找最近的可交互元素
+    const el = target.closest('button, a, [role="button"], input, select, textarea, [data-debug-click], label, [tabindex]:not([tabindex="-1"])');
+    if (!el) return;
+
+    const tag = el.tagName.toLowerCase();
+    const text = (el.textContent || '').trim().slice(0, 40);
+    const ariaLabel = el.getAttribute('aria-label') || '';
+    const className = (el.className || '').toString().slice(0, 60);
+    // 组件名优先取 data-debug-click，其次 aria-label，再其次 tag+text
+    const componentName = el.getAttribute('data-debug-click')
+      || ariaLabel
+      || (text ? `${tag}:${text}` : tag);
+    const route = location.pathname;
+
+    debugLogger.info('click', `[${route}] 点击 ${componentName}`, {
+      route,
+      tag,
+      componentName,
+      text: text || undefined,
+      ariaLabel: ariaLabel || undefined,
+      className: className || undefined,
+    });
+  }, [location.pathname]);
 
   useEffect(() => {
+    document.addEventListener('click', handleGlobalClick, true);
+    return () => {
+      document.removeEventListener('click', handleGlobalClick, true);
+    };
+  }, [handleGlobalClick]);
+
+  // 路由跳转埋点
+  useEffect(() => {
+    const prev = prevPathRef.current;
+    const curr = location.pathname;
+    if (prev !== curr) {
+      debugLogger.info('navigate', `路由跳转: ${prev} → ${curr}`, {
+        from: prev,
+        to: curr,
+        search: location.search || undefined,
+      });
+      prevPathRef.current = curr;
+    }
+  }, [location]);
+
+  useEffect(() => {
+    debugLogger.info('init', '应用启动初始化');
+
     // 初始化数据库（支持从 IndexedDB 恢复）
     initDatabase().then(async () => {
-      console.log('[App] Database initialized');
+      debugLogger.info('init', '数据库初始化完成');
 
       // 恢复下载任务列表
       await downloadEngine.restoreTasks();
       const tasks = downloadEngine.getTasks();
       useDownloadStore.getState().setTasks(tasks);
+      debugLogger.info('init', `恢复 ${tasks.length} 条下载任务`);
 
       // 从数据库加载歌单
       await usePlaylistStore.getState().loadPlaylists();
@@ -67,11 +114,26 @@ function App() {
     const unsub3 = playerEngine.on('ended', () => {
       // Auto-play next logic would go here
     });
-    const unsub3b = playerEngine.on('trackLoaded', ({ actualSourceId }) => {
+    const unsub3b = playerEngine.on('trackLoaded', ({ track, actualSourceId }) => {
       usePlayerStore.getState().setActualSourceId(actualSourceId || null);
+      debugLogger.info('player', `播放取链成功: ${track.title}`, {
+        title: track.title,
+        artist: track.artist,
+        sourceId: actualSourceId,
+      });
     });
     const unsub3c = playerEngine.on('mediaAction', ({ action }) => {
-      console.log('[App] media action from system control:', action);
+      debugLogger.info('player', `系统媒体控制: ${action}`);
+    });
+    const unsub3d = playerEngine.on('linkFallback', ({ fromSourceId, toSourceId, reason }) => {
+      debugLogger.warn('player', `取链降级: ${fromSourceId} → ${toSourceId}`, {
+        fromSourceId,
+        toSourceId,
+        reason,
+      });
+    });
+    const unsub3e = playerEngine.on('error', ({ message }) => {
+      debugLogger.error('player', `播放错误: ${message}`);
     });
 
     // 绑定下载事件到 Store
@@ -99,6 +161,8 @@ function App() {
       unsub3();
       unsub3b();
       unsub3c();
+      unsub3d();
+      unsub3e();
       unsub4();
       unsub5();
       unsub6();
@@ -117,7 +181,7 @@ function App() {
         <Route path="/downloads" element={<DownloadPage />} />
         <Route path="/reading" element={<ReadingPage />} />
         <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/debug" element={<DebugLogPage />} />
+        <Route path="/debug-log" element={<DebugLogPage />} />
       </Routes>
     </Layout>
   );
