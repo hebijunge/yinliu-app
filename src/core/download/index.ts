@@ -170,11 +170,12 @@ export class DownloadEngine {
         throw new Error('下载链接为空');
       }
 
-      // 开始下载
+      // 开始下载（二进制响应，避免 CapacitorHttp UTF-8 解码损坏音频数据）
       const { platformFetch } = await import('@shared/utils/platformFetch');
       const response = await platformFetch(playUrl.url, {
         signal: task.abortController?.signal,
         headers: playUrl.headers,
+        responseType: 'arraybuffer',
       });
 
       if (!response.ok) {
@@ -352,14 +353,15 @@ export class DownloadEngine {
   }
 
   /**
-   * ArrayBuffer 转 Base64
+   * ArrayBuffer 转 Base64（分块编码，避免大文件 InvalidCharacterError）
    */
   private arrayBufferToBase64(buffer: ArrayBuffer): string {
     const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000; // 32KB 分块，绕过 btoa 单字符串长度限制
     let binary = '';
-    const len = bytes.byteLength;
-    for (let i = 0; i < len; i++) {
-      binary += String.fromCharCode(bytes[i]);
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
     }
     return btoa(binary);
   }

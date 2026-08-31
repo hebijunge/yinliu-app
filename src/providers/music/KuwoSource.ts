@@ -45,14 +45,11 @@ export class KuwoSource extends BaseHttpSource {
 
   async search(params: SearchParams): Promise<SearchResult[]> {
     // 优先V2免登录标准JSON，失败回退r.s
-    try {
-      const v2Results = await this.searchV2(params.keyword, params.page || 0);
-      if (v2Results.length > 0) return v2Results;
-    } catch {
-      // V2失败，继续尝试r.s
-    }
+    const v2Results = await this.searchV2(params.keyword, params.page || 0);
+    if (v2Results.length > 0) return v2Results;
 
-    return await this.searchRs(params.keyword, params.page || 0);
+    const rsResults = await this.searchRs(params.keyword, params.page || 0);
+    return rsResults;
   }
 
   /**
@@ -64,13 +61,8 @@ export class KuwoSource extends BaseHttpSource {
     const pn = page;
     const url = `${this.SEARCH_V2_HOST}/search/searchMusicBykeyWord?all=${q}&pn=${pn}&rn=30&ft=music&client=kt&encoding=utf8&rformat=json&mobi=1&vipver=1&cluster=0&strategy=2012&issubtitle=1&show_copyright_off=1`;
 
-    const { data, ok, error } = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
-    if (!ok) {
-      throw new Error(error || `酷我V2搜索请求失败`);
-    }
-    if (!data) {
-      throw new Error(`酷我V2搜索返回空数据`);
-    }
+    const data = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
+    if (!data) return [];
 
     const abslist = data.abslist || [];
     return abslist.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[];
@@ -85,19 +77,11 @@ export class KuwoSource extends BaseHttpSource {
     const pn = page;
     const url = `${this.SEARCH_HOST}/r.s?all=${q}&ft=music&itemset=web_2013&client=kt&pn=${pn}&rn=30&rformat=json&encoding=utf8`;
 
-    let resp: Response;
-    try {
-      resp = await this.httpGet(url, { Referer: 'http://m.kuwo.cn/' });
-    } catch (err: any) {
-      throw new Error(`酷我r.s搜索请求失败: ${err?.message || err}`);
-    }
-
-    if (!resp.ok) {
-      throw new Error(`酷我r.s搜索 HTTP ${resp.status} ${resp.statusText}`);
-    }
+    const resp = await this.httpGet(url, { Referer: 'http://m.kuwo.cn/' });
+    if (!resp || !resp.ok) return [];
 
     let text: string;
-    try { text = await resp.text(); } catch { throw new Error(`酷我r.s搜索响应读取失败`); }
+    try { text = await resp.text(); } catch { return []; }
 
     let data: any;
     try {
@@ -114,7 +98,7 @@ export class KuwoSource extends BaseHttpSource {
           .replace(/;\s*$/, '');
         data = JSON.parse(normalized);
       } catch {
-        throw new Error(`酷我r.s搜索响应解析失败`);
+        return [];
       }
     }
 
@@ -181,10 +165,14 @@ export class KuwoSource extends BaseHttpSource {
     const rid = songId.replace(/^kw_/, '');
     const cached = this.songMetaCache.get(rid);
 
+    if (!cached?.name) {
+      throw new Error(`酷我歌曲详情获取失败：rid=${rid} 无缓存元数据`);
+    }
+
     return {
       id: songId,
-      title: cached?.name || '未知歌曲',
-      artist: cached?.artist || '',
+      title: cached.name,
+      artist: cached.artist || '',
       album: '',
       duration: 0,
       coverUrl: '',
@@ -192,6 +180,52 @@ export class KuwoSource extends BaseHttpSource {
   }
 
   // ===================== 取链（核心）=====================
+
+  /**
+   * 覆写 getPlayUrl：优先返回 accurate 候选，无则降级首非空。
+   */
+  async getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult> {
+    const rid = songId.replace(/^kw_/, '');
+    const candidates = this.buildEndpointCandidates(songId, quality);
+    const controller = new AbortController();
+
+    const promises = candidates.map(async (c): Promise<PlayUrlResult | null> => {
+      try {
+        const response = await platformFetch(c.url, {
+          method: c.method,
+          headers: c.headers,
+          signal: controller.signal,
+          redirect: 'follow',
+        });
+        if (!response.ok) return null;
+        if (c.resolve) {
+          const result = await c.resolve(response);
+          if (result) return result;
+        }
+        return null;
+      } catch { return null; }
+    });
+
+    const results = await Promise.allSettled(promises);
+    const matched = results
+      .filter((r): r is PromiseFulfilledResult<PlayUrlResult | null> => r.status === 'fulfilled')
+      .map((r) => r.value)
+      .filter((r): r is PlayUrlResult => r !== null);
+
+    // 优先返回 accurate 候选（拒绝服务端降级链）
+    const accurate = matched.find((r) => r.accurate !== false);
+    if (accurate) {
+      controller.abort();
+      return accurate;
+    }
+
+    if (matched.length > 0) {
+      controller.abort();
+      return matched[0];
+    }
+
+    throw new Error(`酷我取链失败：所有候选均不可用 (rid=${rid})`);
+  }
 
   protected buildEndpointCandidates(songId: string, quality: Quality): ResolvedCandidate[] {
     const rid = songId.replace(/^kw_/, '');
@@ -250,7 +284,7 @@ export class KuwoSource extends BaseHttpSource {
   }
 
   /** nmobi JSON解析，带精确音质校验 */
-  private async resolveNmobi(resp: Response, quality: Quality, expected: { bitrate: number; format: string } | null): Promise<PlayUrlResult | null> {
+  private async resolveNmobi(resp: Response, quality: Quality, expected: [number, string] | null): Promise<PlayUrlResult | null> {
     let data: any;
     try {
       data = await resp.json();
@@ -287,12 +321,12 @@ export class KuwoSource extends BaseHttpSource {
    * 酷我按歌曲策略：免费档无某高品时，请求 320kmp3 会返回 128k 直链，
    * 这种「降级链」大小/码率与所选音质不符，必须丢弃。
    */
-  private qualityExpectation(quality: Quality): { bitrate: number; format: string } | null {
+  protected qualityExpectation(quality: Quality): [number, string] | null {
     switch (quality) {
-      case Quality.LOW: return { bitrate: 48, format: 'aac' };
-      case Quality.STANDARD: return { bitrate: 128, format: 'mp3' };
-      case Quality.HIGH: return { bitrate: 320, format: 'mp3' };
-      case Quality.LOSSLESS: return { bitrate: 2000, format: 'flac' };
+      case Quality.LOW: return [48, 'aac'];
+      case Quality.STANDARD: return [128, 'mp3'];
+      case Quality.HIGH: return [320, 'mp3'];
+      case Quality.LOSSLESS: return [2000, 'flac'];
       default: return null;
     }
   }
@@ -301,7 +335,7 @@ export class KuwoSource extends BaseHttpSource {
    * bitrate 匹配容差（不同编码实测码率有小幅浮动）
    * 参照 DJMusic：flac 80kbps / mp3,aac 8kbps
    */
-  private bitrateTolerance(format: string): number {
+  protected bitrateTolerance(format: string): number {
     const f = format.toLowerCase();
     if (f === 'flac') return 80;
     return 8;
@@ -311,9 +345,10 @@ export class KuwoSource extends BaseHttpSource {
   private isBitrateAccurate(requestedQuality: Quality, actualBitrate: number, actualFormat?: string): boolean {
     const expected = this.qualityExpectation(requestedQuality);
     if (!expected) return true;
-    const tol = this.bitrateTolerance(actualFormat || expected.format);
-    const formatMatch = !actualFormat || actualFormat === expected.format;
-    return formatMatch && Math.abs(actualBitrate - expected.bitrate) <= tol;
+    const [expBr, expFmt] = expected;
+    const tol = this.bitrateTolerance(actualFormat || expFmt);
+    const formatMatch = !actualFormat || actualFormat === expFmt;
+    return formatMatch && Math.abs(actualBitrate - expBr) <= tol;
   }
 
   private isAntiTheft(url: string): boolean {
@@ -363,20 +398,17 @@ export class KuwoSource extends BaseHttpSource {
 
     // 优先免Cookie openapi
     const url = `${this.SEARCH_V2_HOST}/openapi/v1/www/lyric/getlyric?musicId=${rid}&httpsStatus=1&plat=web_www&from=`;
-    const { data, ok } = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
+    const data = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
 
-    if (ok && data?.code === 200) {
+    if (data?.code === 200) {
       const lrc = this.buildLrc(data.data?.lrclist);
       if (lrc) return lrc;
     }
 
     // 回退m.kuwo.cn
     const fallbackUrl = `http://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=${rid}`;
-    const { data: fbData, ok: fbOk } = await this.httpGetJson(fallbackUrl, { Referer: 'http://m.kuwo.cn/' });
-    if (fbOk && fbData) {
-      return this.buildLrc(fbData.data?.lrclist);
-    }
-    return null;
+    const fbData = await this.httpGetJson(fallbackUrl, { Referer: 'http://m.kuwo.cn/' });
+    return this.buildLrc(fbData?.data?.lrclist);
   }
 
   private buildLrc(lrclist: any[] | null): string | null {

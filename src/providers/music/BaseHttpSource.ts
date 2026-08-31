@@ -2,7 +2,7 @@ import type { MusicSource, EndpointCandidate } from './types';
 import { Quality } from '@core/types';
 import type { SearchParams, SearchResult, PlayUrlResult, SongDetail, HealthStatus } from '@core/types';
 import { YinliuError, ErrorCode, qualityRank } from '@core/types';
-import { platformFetch, platformPostJson, platformPostForm, type PlatformFetchError } from '@shared/utils/platformFetch';
+import { platformFetch } from '@shared/utils/platformFetch';
 
 export interface ResolvedCandidate extends EndpointCandidate {
   /** 自定义解析函数：fetch响应 → PlayUrlResult | null */
@@ -102,12 +102,50 @@ export abstract class BaseHttpSource implements MusicSource {
     if (!result.url) return false;
     // 音质等级校验
     if (qualityRank(result.quality) < qualityRank(target)) return false;
-    // 码率校验：实际码率不得低于目标音质典型码率的 50%（允许一定降级）
-    const expectedBitrate = this.qualityToExpectedBitrate(target);
-    if (expectedBitrate > 0 && result.bitrate > 0 && result.bitrate < expectedBitrate * 0.5) {
-      return false;
+    // 若子类已标记 accurate，直接信任
+    if (result.accurate === true) return true;
+    if (result.accurate === false) return false;
+    // 未标记时，做保守的码率/格式兜底校验
+    return this.validateBitrateAndFormat(result.bitrate, result.format, target);
+  }
+
+  /**
+   * 码率与格式兜底校验：请求音质 vs 实际响应。
+   * 子类可覆写以提供更精确的源级校验。
+   */
+  protected validateBitrateAndFormat(bitrate: number, format: string, target: Quality): boolean {
+    const expected = this.qualityExpectation(target);
+    if (!expected) return true; // 无期望值时不拦截
+    const [expBr, expFmt] = expected;
+    const tol = this.bitrateTolerance(format);
+    const fmtOk = format.toLowerCase() === expFmt.toLowerCase();
+    const brOk = Math.abs(bitrate - expBr) <= tol;
+    return fmtOk && brOk;
+  }
+
+  /**
+   * 请求音质 → 期望 (bitrate, format)。
+   * 子类覆写以适配各源的实际档位。
+   */
+  protected qualityExpectation(quality: Quality): [number, string] | null {
+    switch (quality) {
+      case Quality.LOW: return [48, 'aac'];
+      case Quality.STANDARD: return [128, 'mp3'];
+      case Quality.HIGH: return [320, 'mp3'];
+      case Quality.LOSSLESS: return [1000, 'flac'];
+      case Quality.HIFI:
+      case Quality.HIRES: return [2000, 'flac'];
+      default: return null;
     }
-    return true;
+  }
+
+  /**
+   * 码率匹配容差（不同编码实测码率有小幅浮动）。
+   */
+  protected bitrateTolerance(format: string): number {
+    const f = format.toLowerCase();
+    if (f === 'flac') return 80;
+    return 8;
   }
 
   /** 音质对应的典型码率（kbps） */
@@ -146,122 +184,75 @@ export abstract class BaseHttpSource implements MusicSource {
 
   /**
    * 通用 GET 请求辅助
-   * 失败时抛出 PlatformFetchError，包含具体错误类型、状态码和 URL
    */
-  protected async httpGet(url: string, headers?: Record<string, string>): Promise<Response> {
-    return platformFetch(url, {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        ...headers,
-      },
-    });
+  protected async httpGet(url: string, headers?: Record<string, string>): Promise<Response | null> {
+    try {
+      return await platformFetch(url, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'application/json, text/plain, */*',
+          ...headers,
+        },
+      });
+    } catch {
+      return null;
+    }
   }
 
   /**
    * 通用 GET 请求并解析JSON
-   * 返回 { data, ok, status, statusText }，HTTP 非 2xx 或网络失败均保留错误信息
    */
-  protected async httpGetJson(url: string, headers?: Record<string, string>): Promise<{ data: any | null; ok: boolean; status: number; statusText: string; error?: string }> {
+  protected async httpGetJson(url: string, headers?: Record<string, string>): Promise<any | null> {
+    const resp = await this.httpGet(url, headers);
+    if (!resp || !resp.ok) return null;
     try {
-      const resp = await this.httpGet(url, headers);
-      if (!resp.ok) {
-        return {
-          data: null,
-          ok: false,
-          status: resp.status,
-          statusText: resp.statusText,
-          error: `HTTP ${resp.status} ${resp.statusText}`,
-        };
-      }
-      try {
-        const data = await resp.json();
-        return { data, ok: true, status: resp.status, statusText: resp.statusText };
-      } catch {
-        return { data: null, ok: false, status: resp.status, statusText: 'JSON解析失败', error: 'JSON解析失败' };
-      }
-    } catch (err) {
-      const pfe = err as PlatformFetchError;
-      return {
-        data: null,
-        ok: false,
-        status: pfe.status || 0,
-        statusText: pfe.type,
-        error: pfe.message,
-      };
+      return await resp.json();
+    } catch {
+      return null;
     }
   }
 
   /**
    * 通用 POST JSON 请求
    */
-  protected async httpPostJson(url: string, body: object, headers?: Record<string, string>): Promise<{ data: any | null; ok: boolean; status: number; statusText: string; error?: string }> {
+  protected async httpPostJson(url: string, body: object, headers?: Record<string, string>): Promise<any | null> {
     try {
-      const resp = await platformPostJson(url, body, {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        ...headers,
+      const resp = await platformFetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          ...headers,
+        },
+        body: JSON.stringify(body),
       });
-      if (!resp.ok) {
-        return {
-          data: null,
-          ok: false,
-          status: resp.status,
-          statusText: resp.statusText,
-          error: `HTTP ${resp.status} ${resp.statusText}`,
-        };
-      }
-      try {
-        const data = await resp.json();
-        return { data, ok: true, status: resp.status, statusText: resp.statusText };
-      } catch {
-        return { data: null, ok: false, status: resp.status, statusText: 'JSON解析失败', error: 'JSON解析失败' };
-      }
-    } catch (err) {
-      const pfe = err as PlatformFetchError;
-      return {
-        data: null,
-        ok: false,
-        status: pfe.status || 0,
-        statusText: pfe.type,
-        error: pfe.message,
-      };
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch {
+      return null;
     }
   }
 
   /**
    * 通用 POST Form 请求
    */
-  protected async httpPostForm(url: string, params: Record<string, string>, headers?: Record<string, string>): Promise<{ data: any | null; ok: boolean; status: number; statusText: string; error?: string }> {
+  protected async httpPostForm(url: string, params: Record<string, string>, headers?: Record<string, string>): Promise<any | null> {
     try {
-      const resp = await platformPostForm(url, params, {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        ...headers,
+      const form = new URLSearchParams(params);
+      const resp = await platformFetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          ...headers,
+        },
+        body: form.toString(),
       });
-      if (!resp.ok) {
-        return {
-          data: null,
-          ok: false,
-          status: resp.status,
-          statusText: resp.statusText,
-          error: `HTTP ${resp.status} ${resp.statusText}`,
-        };
-      }
-      try {
-        const data = await resp.json();
-        return { data, ok: true, status: resp.status, statusText: resp.statusText };
-      } catch {
-        return { data: null, ok: false, status: resp.status, statusText: 'JSON解析失败', error: 'JSON解析失败' };
-      }
-    } catch (err) {
-      const pfe = err as PlatformFetchError;
-      return {
-        data: null,
-        ok: false,
-        status: pfe.status || 0,
-        statusText: pfe.type,
-        error: pfe.message,
-      };
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch {
+      return null;
     }
   }
 }

@@ -36,13 +36,8 @@ export class KugouSource extends BaseHttpSource {
     const kw = encodeURIComponent(params.keyword);
     const url = `${this.SEARCH_HOST}/search/song?format=json&keyword=${kw}&page=${page}&pagesize=30`;
 
-    const { data, ok, error } = await this.httpGetJson(url, { Referer: this.M_REF });
-    if (!ok) {
-      throw new Error(error || `酷狗搜索请求失败`);
-    }
-    if (!data) {
-      throw new Error(`酷狗搜索返回空数据`);
-    }
+    const data = await this.httpGetJson(url, { Referer: this.M_REF });
+    if (!data) return [];
 
     const info = data?.data?.info || [];
     return info.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[];
@@ -119,20 +114,26 @@ export class KugouSource extends BaseHttpSource {
 
     try {
       const url = `${this.GET_SONG_INFO}?cmd=playInfo&hash=${hash}`;
-      const { data, ok } = await this.httpGetJson(url, { Referer: this.M_REF });
-      if (ok && data) {
+      const data = await this.httpGetJson(url, { Referer: this.M_REF });
+      if (data) {
+        const title = (data.songName || '').toString().trim();
+        if (!title) {
+          throw new Error(`酷狗歌曲详情获取失败：hash=${hash} 返回空名称`);
+        }
         return {
           id: songId,
-          title: data.songName || '未知歌曲',
+          title,
           artist: data.singerName || '',
           album: data.albumName || '',
           duration: data.timeLength ? parseInt(data.timeLength, 10) : 0,
           coverUrl: data.cover || data.imgUrl || '',
         };
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      throw err instanceof Error ? err : new Error(`酷狗歌曲详情获取失败：hash=${hash}`);
+    }
 
-    return { id: songId, title: '未知歌曲', artist: '', album: '', duration: 0, coverUrl: '' };
+    throw new Error(`酷狗歌曲详情获取失败：hash=${hash} 无返回数据`);
   }
 
   // ===================== 取链（核心）=====================
@@ -186,7 +187,11 @@ export class KugouSource extends BaseHttpSource {
     return candidates;
   }
 
-  // 覆写getPlayUrl，因为海棠需要POST body
+  /**
+   * 覆写 getPlayUrl：
+   * 1. 仅 lossless 档走海棠
+   * 2. 优先返回 accurate 候选，无则降级首非空
+   */
   async getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult> {
     const hash = this.getHashFromId(songId);
     const level = this.levelOf(quality);
@@ -194,9 +199,10 @@ export class KugouSource extends BaseHttpSource {
     const controller = new AbortController();
     const candidates: Promise<PlayUrlResult | null>[] = [];
 
-    // 官方
+    // 官方 getSongInfo.php（所有档均参与）
     candidates.push(this.fetchOfficial(hash, quality, controller.signal));
-    // 海棠POST —— 仅用于 lossless 档
+
+    // 海棠：仅 lossless 档参与
     if (quality === Quality.LOSSLESS || quality === Quality.HIFI || quality === Quality.HIRES) {
       candidates.push(this.fetchHaitang(hash, level, quality, controller.signal));
     }
@@ -207,6 +213,14 @@ export class KugouSource extends BaseHttpSource {
       .map((r) => r.value)
       .filter((r): r is PlayUrlResult => r !== null);
 
+    // 优先返回 accurate 候选
+    const accurate = matched.find((r) => r.accurate !== false);
+    if (accurate) {
+      controller.abort();
+      return accurate;
+    }
+
+    // 无 accurate 则降级首非空
     if (matched.length > 0) {
       controller.abort();
       return matched[0];
@@ -225,7 +239,7 @@ export class KugouSource extends BaseHttpSource {
       if (!data?.url) return null;
       const url = data.url as string;
       if (!url.startsWith('http')) return null;
-      return { url, quality, bitrate: 128, format: 'mp3' };
+      return { url, quality, bitrate: 128, format: 'mp3', accurate: true };
     } catch { return null; }
   }
 
@@ -242,12 +256,28 @@ export class KugouSource extends BaseHttpSource {
       });
       const data = await resp.json().catch(() => null);
       if (!data?.url) return null;
-      return {
-        url: data.url,
-        quality,
-        bitrate: this.levelToBitrate(level),
-        format: this.detectFormat('', data.url),
-      };
+      const url = data.url as string;
+
+      // HEAD 音质校验：Content-Type + Content-Length
+      const head = await platformFetch(url, { method: 'HEAD', signal }).catch(() => null);
+      const ct = head?.headers.get('content-type') || '';
+      const cl = head?.headers.get('content-length') || '0';
+      const sizeBytes = parseInt(cl, 10) || 0;
+      const sizeMb = sizeBytes / (1024 * 1024);
+
+      const isFlac = ct.includes('flac') || ct.includes('x-flac');
+      const isMpeg = ct.includes('mpeg') || ct.includes('mp3');
+
+      // lossless 请求必须返回 FLAC 且 >10MB 才判 accurate
+      if (quality === Quality.LOSSLESS || quality === Quality.HIFI || quality === Quality.HIRES) {
+        if (!isFlac || sizeMb < 10) {
+          return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
+        }
+        return { url, quality, bitrate: this.levelToBitrate(level), format: 'flac', accurate: true };
+      }
+
+      // 非 lossless 档不应走到海棠（已在 getPlayUrl 中过滤），兜底标 inaccurate
+      return { url, quality, bitrate: 128, format: isMpeg ? 'mp3' : 'mp3', accurate: false };
     } catch { return null; }
   }
 
@@ -298,9 +328,8 @@ export class KugouSource extends BaseHttpSource {
     try {
       // 第一步：搜索krcs
       const searchUrl = `${this.KRC_SEARCH}?ver=1&man=yes&client=mobi&hash=${hash}&album_audio_id=`;
-      const { data: searchData, ok: searchOk } = await this.httpGetJson(searchUrl, { Referer: this.M_REF });
-      if (!searchOk || !searchData) return null;
-      const cands = searchData.candidates || [];
+      const searchData = await this.httpGetJson(searchUrl, { Referer: this.M_REF });
+      const cands = searchData?.candidates || [];
       if (cands.length === 0) return null;
 
       const best = cands[0];
@@ -310,9 +339,8 @@ export class KugouSource extends BaseHttpSource {
 
       // 第二步：下载歌词
       const downloadUrl = `${this.LYRICS_DOWNLOAD}?ver=1&client=pc&id=${id}&accesskey=${akey}&fmt=lrc&charset=utf8`;
-      const { data: lyricData, ok: lyricOk } = await this.httpGetJson(downloadUrl, { Referer: this.M_REF });
-      if (!lyricOk || !lyricData) return null;
-      const content = lyricData.content;
+      const lyricData = await this.httpGetJson(downloadUrl, { Referer: this.M_REF });
+      const content = lyricData?.content;
       if (!content) return null;
 
       // Base64解码
@@ -331,8 +359,8 @@ export class KugouSource extends BaseHttpSource {
   async getPlaylist(playlistId: string) {
     try {
       const url = `${this.M_HOST}/plist/list/${playlistId}?json=true`;
-      const { data, ok, error } = await this.httpGetJson(url, { Referer: this.M_REF });
-      if (!ok || !data) throw new Error(error || 'Empty response');
+      const data = await this.httpGetJson(url, { Referer: this.M_REF });
+      if (!data) throw new Error('Empty response');
 
       const info = data.info?.list || {};
       const songs = data.list?.list?.info || [];

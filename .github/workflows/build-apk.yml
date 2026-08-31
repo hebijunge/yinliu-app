@@ -9,6 +9,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Regression Check
+        run: |
+          echo "=== CI Regression Check ==="
+          grep -q "responseType?: 'text' | 'arraybuffer'" src/shared/utils/platformFetch.ts || { echo "FAIL: platformFetch missing responseType"; exit 1; }
+          grep -q "responseType: 'arraybuffer'" src/core/download/index.ts || { echo "FAIL: download missing arraybuffer"; exit 1; }
+          grep -q "qmc2DecryptBytes" src/core/download/index.ts || { echo "FAIL: kuwo decrypt missing"; exit 1; }
+          grep -q "HEAD" src/providers/music/KugouSource.ts || { echo "FAIL: Kugou HEAD check missing"; exit 1; }
+          acc=0; grep -q "accurate !== false" src/providers/music/KugouSource.ts && acc=$((acc+1)); grep -q "accurate !== false" src/providers/music/KuwoSource.ts && acc=$((acc+1)); grep -q "accurate !== false" src/providers/music/NeteaseSource.ts && acc=$((acc+1)); [ "$acc" -ge 3 ] || { echo "FAIL: accurate priority missing ($acc/3)"; exit 1; }
+          grep -q "throw new Error" src/providers/music/KuwoSource.ts || { echo "FAIL: Kuwo getSongDetail no throw"; exit 1; }
+          grep -q "catch { /\* ignore \*/ }" src/providers/music/KugouSource.ts && { echo "FAIL: Kugou getSongDetail silent catch"; exit 1; } || true
+          grep -q "isAccurateNetease" src/providers/music/NeteaseSource.ts || { echo "FAIL: Netease format check missing"; exit 1; }
+          grep -q "result.accurate === true" src/providers/music/BaseHttpSource.ts || { echo "FAIL: BaseHttpSource accurate check missing"; exit 1; }
+          echo "=== All regression checks passed ==="
       - uses: actions/setup-node@v4
         with:
           node-version: '20'

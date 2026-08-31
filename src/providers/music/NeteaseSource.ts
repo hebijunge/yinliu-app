@@ -37,19 +37,11 @@ export class NeteaseSource extends BaseHttpSource {
     const offset = (params.page || 0) * 30;
     const url = `${this.HOST}/api/search/get?s=${q}&type=1&limit=30&offset=${offset}`;
 
-    const { data, ok, error } = await this.httpGetJson(url);
-    if (!ok) {
-      throw new Error(error || `网易云搜索请求失败`);
-    }
-    if (!data) {
-      throw new Error(`网易云搜索返回空数据`);
-    }
+    const data = await this.httpGetJson(url);
+    if (!data) return [];
 
     const result = data.result;
-    if (!result) {
-      // result为空可能是接口返回了空结果（非错误），返回空数组
-      return [];
-    }
+    if (!result) return [];
 
     const songs = result.songs || [];
     return songs.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[];
@@ -101,9 +93,9 @@ export class NeteaseSource extends BaseHttpSource {
   async getSongDetail(songId: string): Promise<SongDetail> {
     const id = songId.replace(/^ne_/, '');
     const url = `${this.HOST}/api/song/detail?ids=[${id}]`;
-    const { data, ok, error } = await this.httpGetJson(url);
-    if (!ok || !data?.songs || data.songs.length === 0) {
-      throw new YinliuError(ErrorCode.SONG_NOT_FOUND, error || `网易云歌曲详情获取失败: ${id}`);
+    const data = await this.httpGetJson(url);
+    if (!data?.songs || data.songs.length === 0) {
+      throw new YinliuError(ErrorCode.SONG_NOT_FOUND, `网易云歌曲详情获取失败: ${id}`);
     }
     const s = data.songs[0];
     return {
@@ -226,8 +218,16 @@ export class NeteaseSource extends BaseHttpSource {
       .map((r) => r.value)
       .filter((r): r is PlayUrlResult => r !== null);
 
+    // 优先返回 accurate 候选（拒绝服务端降级链）
+    const accurate = matched.find((r) => r.accurate !== false);
+    if (accurate) {
+      controller.abort();
+      return accurate;
+    }
+
+    // 无 accurate 则降级首非空
     if (matched.length > 0) {
-      controller.abort(); // 取消其他
+      controller.abort();
       return matched[0];
     }
 
@@ -311,7 +311,7 @@ export class NeteaseSource extends BaseHttpSource {
     const actualBr = o.br || 0;
     const type = o.type || 'mp3';
     const isPreview = !!o.freeTrialInfo;
-    const accurate = this.isBitrateAccurate(quality, actualBr);
+    const accurate = !isPreview && this.isAccurateNetease(quality, actualBr, type);
     return { url, quality, bitrate: actualBr, format: type, isPreview, accurate };
   }
 
@@ -326,15 +326,25 @@ export class NeteaseSource extends BaseHttpSource {
     const actualBr = o.br || 0;
     const type = o.type || 'mp3';
     const isPreview = !!o.freeTrialInfo;
-    const accurate = this.isBitrateAccurate(quality, actualBr);
+    const accurate = !isPreview && this.isAccurateNetease(quality, actualBr, type);
     return { url, quality, bitrate: actualBr, format: type, isPreview, accurate };
   }
 
-  /** 判断实际码率是否与请求音质匹配（容许 10% 误差） */
-  private isBitrateAccurate(requestedQuality: Quality, actualBr: number): boolean {
-    const expectedBr = this.neteaseBr(requestedQuality);
-    // 容许 10% 下浮，上不限
-    return actualBr >= expectedBr * 0.9;
+  /**
+   * 官方取链结果是否与请求音质精确匹配（用于竞速优先选 accurate）。
+   * 参照 DJMusic NeteaseSource.kt isAccurateNetease。
+   */
+  private isAccurateNetease(quality: Quality, br: number, type: string): boolean {
+    switch (quality) {
+      case Quality.LOSSLESS: return type.toLowerCase() === 'flac' && br >= 900000;
+      case Quality.HIFI: return br >= 900000;
+      case Quality.HIRES: return br >= 1800000;
+      case Quality.HIGH: return br >= 300000 && br <= 330000;
+      case Quality.HIGHER: return br >= 180000 && br <= 210000;
+      case Quality.LOW:
+      case Quality.STANDARD: return br >= 120000 && br <= 135000;
+      default: return true;
+    }
   }
 
   private neteaseBr(quality: Quality): number {
@@ -380,8 +390,8 @@ export class NeteaseSource extends BaseHttpSource {
   async getLyrics(songId: string): Promise<string | null> {
     const id = songId.replace(/^ne_/, '');
     const url = `${this.HOST}/api/song/lyric?id=${id}&lv=1&kv=1&tv=-1`;
-    const { data, ok } = await this.httpGetJson(url);
-    if (!ok || !data) return null;
+    const data = await this.httpGetJson(url);
+    if (!data) return null;
 
     // 优先原词，无则译词
     const lrc = data.lrc?.lyric || data.tlyric?.lyric || data.klyric?.lyric;
