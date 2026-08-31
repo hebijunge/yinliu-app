@@ -4,6 +4,15 @@ import { platformFetch } from '@shared/utils/platformFetch';
 import { getSqliteDb, flushDatabase } from '@shared/database';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 
+function qmc2DecryptBytes(data: Uint8Array): Uint8Array {
+  // Kuwo QMC2 格式解密；若全局未注册解密器则透传
+  const gw = globalThis as unknown as Record<string, unknown>;
+  if (typeof gw.qmc2DecryptBytes === 'function') {
+    return (gw.qmc2DecryptBytes as (d: Uint8Array) => Uint8Array)(data);
+  }
+  return data;
+}
+
 export interface DownloadProgressEvent {
   taskId: string;
   progress: number;
@@ -144,6 +153,7 @@ export class DownloadEngine {
         method: 'GET',
         signal: abortCtrl.signal,
         headers: playUrl.headers || {},
+        responseType: 'arraybuffer',
       });
 
       if (!response.ok) {
@@ -204,8 +214,11 @@ export class DownloadEngine {
         offset += chunk.length;
       }
 
+      // QMC2 解密（Kuwo 源）
+      const decrypted = task.sourceId === 'kuwo' ? qmc2DecryptBytes(merged) : merged;
+
       // 转为 base64 写入 Capacitor Filesystem
-      const base64 = btoa(String.fromCharCode(...merged));
+      const base64 = btoa(String.fromCharCode(...decrypted));
       await Filesystem.writeFile({
         path: filePath,
         data: base64,
