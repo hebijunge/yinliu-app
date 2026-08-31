@@ -419,7 +419,7 @@ export class DownloadEngine {
       debugLogger.info('download', `下载完成: ${title}`, {
         taskId,
         filePath,
-        size: totalLength,
+        size: merged.length,
       });
 
       this.abortControllers.delete(taskId);

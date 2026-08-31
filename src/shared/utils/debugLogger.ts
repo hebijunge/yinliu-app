@@ -8,7 +8,7 @@
  */
 
 import { Capacitor } from '@capacitor/core';
-import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 
 const STORAGE_KEY = 'yinliu.debug.logs.v1';
@@ -405,7 +405,7 @@ class DebugLogger {
         path: filePath,
         data: bomContent,
         directory: Directory.Documents,
-        encoding: 'utf8',
+        encoding: Encoding.UTF8,
       });
 
       // 3. 获取文件 URI 用于分享
