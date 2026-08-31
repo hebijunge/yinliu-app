@@ -7,6 +7,7 @@ import DownloadPage from './pages/DownloadPage';
 import ReadingPage from './pages/ReadingPage';
 import SettingsPage from './pages/SettingsPage';
 import HistoryPage from './pages/HistoryPage';
+import DebugLogPage from './pages/DebugLogPage';
 import { playerEngine } from './core/player';
 import { downloadEngine } from './core/download';
 import { usePlayerStore } from './shared/store/playerStore';
@@ -106,6 +107,7 @@ function App() {
         <Route path="/downloads" element={<DownloadPage />} />
         <Route path="/reading" element={<ReadingPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/debug" element={<DebugLogPage />} />
       </Routes>
     </Layout>
   );

@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Settings, Music, Info, Trash2, Check, ListOrdered } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Settings, Music, Info, Trash2, Check, ListOrdered, Bug } from 'lucide-react';
 import { useThemeStore } from '../shared/store/themeStore';
 import { useSettingsStore } from '../shared/store/settingsStore';
 import { useSearchStore } from '../shared/store/searchStore';
@@ -27,9 +28,9 @@ export default function SettingsPage() {
   const [cleanDone, setCleanDone] = useState<string | null>(null);
 
   const { preferredQuality, enabledSources, downloadQuality, maxConcurrentDownloads, downloadDir,
-    autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause,
+    autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause, debugMode,
     setPreferredQuality, setSourceEnabled, setDownloadQuality, setMaxConcurrentDownloads,
-    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause, clearAllSettings } =
+    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause, setDebugMode, clearAllSettings } =
     useSettingsStore();
 
   const sources = sourceRegistry.getAll();
@@ -279,6 +280,35 @@ export default function SettingsPage() {
                     {downloadDir}
                   </span>
                 </div>
+              </div>
+            </div>
+
+            {/* 调试模式 */}
+            <div className="yinliu-card">
+              <h3 className="font-semibold mb-1 text-[var(--text-primary)] flex items-center gap-2">
+                <Bug className="w-4 h-4" />
+                调试模式
+              </h3>
+              <p className="text-xs text-[var(--text-tertiary)] mb-4">
+                开启后记录点击、导航、网络、播放、下载等事件日志，仅本地存储，不上传
+              </p>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
+                  <div>
+                    <div className="font-medium text-sm text-[var(--text-primary)]">启用调试日志</div>
+                    <div className="text-xs text-[var(--text-tertiary)]">记录所有操作和事件到本地日志</div>
+                  </div>
+                  <Toggle on={debugMode} onChange={setDebugMode} />
+                </div>
+                {debugMode && (
+                  <Link
+                    to="/debug"
+                    className="block w-full p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-colors focus-ring text-sm text-[var(--text-primary)] flex items-center gap-2"
+                  >
+                    <Bug className="w-4 h-4 text-[var(--text-tertiary)]" />
+                    查看调试日志（{'> '})
+                  </Link>
+                )}
               </div>
             </div>
 

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { Quality } from '@core/types';
 import { downloadEngine } from '@core/download';
+import { debugLogger } from '@shared/utils/debugLogger';
 
 const STORAGE_KEY = 'yinliu.settings.v1';
 
@@ -21,6 +22,8 @@ export interface SettingsPersisted {
   enableNotificationControls?: boolean;
   /** 播放结束后自动从通知栏移除（默认 false，避免频繁出现/消失） */
   dismissNotificationOnPause?: boolean;
+  /** 调试模式：开启后记录所有操作和事件日志 */
+  debugMode?: boolean;
 }
 
 function loadPersisted(): SettingsPersisted {
@@ -43,6 +46,7 @@ function persist(state: SettingsState): void {
       autoResumeOnAudioFocus: state.autoResumeOnAudioFocus,
       enableNotificationControls: state.enableNotificationControls,
       dismissNotificationOnPause: state.dismissNotificationOnPause,
+      debugMode: state.debugMode,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch {
@@ -67,6 +71,8 @@ interface SettingsState {
   enableNotificationControls: boolean;
   /** 暂停后是否让通知栏卡片自动消失（默认 false，避免频繁变化） */
   dismissNotificationOnPause: boolean;
+  /** 调试模式：开启后记录所有操作和事件日志 */
+  debugMode: boolean;
 
   setPreferredQuality: (quality: Quality) => void;
   setSourceEnabled: (sourceId: string, enabled: boolean) => void;
@@ -75,6 +81,7 @@ interface SettingsState {
   setAutoResumeOnAudioFocus: (v: boolean) => void;
   setEnableNotificationControls: (v: boolean) => void;
   setDismissNotificationOnPause: (v: boolean) => void;
+  setDebugMode: (enabled: boolean) => void;
   clearAllSettings: () => void;
 }
 
@@ -89,6 +96,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   autoResumeOnAudioFocus: persisted.autoResumeOnAudioFocus ?? true,
   enableNotificationControls: persisted.enableNotificationControls ?? true,
   dismissNotificationOnPause: persisted.dismissNotificationOnPause ?? false,
+  debugMode: persisted.debugMode ?? false,
 
   setPreferredQuality: (preferredQuality) => {
     set({ preferredQuality });
@@ -127,6 +135,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     persist(get());
   },
 
+  setDebugMode: (debugMode) => {
+    set({ debugMode });
+    debugLogger.setEnabled(debugMode);
+    persist(get());
+  },
+
   clearAllSettings: () => {
     try {
       localStorage.removeItem(STORAGE_KEY);
@@ -141,7 +155,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       autoResumeOnAudioFocus: true,
       enableNotificationControls: true,
       dismissNotificationOnPause: false,
+      debugMode: false,
     });
+    debugLogger.setEnabled(false);
   },
 }));
 
