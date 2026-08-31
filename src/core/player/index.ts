@@ -68,45 +68,47 @@ export class PlayerEngine {
   // === 统一 URL 解析器：本地文件优先，否则在线取链 ===
   private async resolvePlayUrl(track: PlayerTrack, quality: Quality): Promise<{ url: string; isLocal: boolean; result: PlayUrlResult }> {
     // 1. 先检查是否有已下载的本地文件
-    const tasks = downloadEngine.getTasks();
-    const completedTask = tasks.find(
-      (t) => t.songId === track.sourceSongId
-        && t.sourceId === track.sourceId
-        && t.status === 'completed'
-        && t.filePath
-    );
+    try {
+      const tasks = downloadEngine.getTasks();
+      const completedTask = tasks.find(
+        (t) => t.songId === track.sourceSongId
+          && t.sourceId === track.sourceId
+          && t.status === 'completed'
+          && t.filePath
+      );
 
-    if (completedTask?.filePath) {
-      const exists = await downloadEngine.checkLocalFile(completedTask.filePath);
-      if (exists) {
-        const localUrl = await downloadEngine.readLocalFileAsUrl(completedTask.filePath);
-        console.log('[PlayerEngine] Playing from local file:', completedTask.filePath);
-        return {
-          url: localUrl,
-          isLocal: true,
-          result: { url: localUrl, quality, bitrate: 0, format: 'mp3' },
-        };
+      if (completedTask?.filePath) {
+        const exists = await downloadEngine.checkLocalFile(completedTask.filePath);
+        if (exists) {
+          // readLocalFileAsUrl 失败时降级到在线取链（不阻断在线分支）
+          try {
+            const localUrl = await downloadEngine.readLocalFileAsUrl(completedTask.filePath);
+            console.log('[PlayerEngine] Playing from local file:', completedTask.filePath);
+            return {
+              url: localUrl,
+              isLocal: true,
+              result: { url: localUrl, quality, bitrate: 0, format: 'mp3' },
+            };
+          } catch (localErr) {
+            console.warn('[PlayerEngine] Local file read failed, falling back to online:', localErr);
+            // 降级到在线取链
+          }
+        }
       }
+    } catch (err) {
+      // 本地检查任意异常不应阻断在线播放
+      console.warn('[PlayerEngine] Local file check failed, falling back to online:', err);
     }
 
-    // 2. 本地不存在，走在线取链
+    // 2. 本地不存在或读取失败，走在线取链
     const source = sourceRegistry.get(track.sourceId);
     if (!source) {
       throw new Error(`Source ${track.sourceId} not found`);
     }
 
-    let playUrl: PlayUrlResult;
-    try {
-      playUrl = await source.getPlayUrl(track.sourceSongId, quality);
-    } catch {
-      // Fallback to Kuwo
-      const kuwo = sourceRegistry.get('kuwo');
-      if (kuwo && source.id !== 'kuwo') {
-        playUrl = await kuwo.getPlayUrl(track.sourceSongId, quality);
-      } else {
-        throw new Error('Failed to get play URL');
-      }
-    }
+    // v11 修复：移除跨源 fallback（不同源 songId 不通用，跨源取链必然失败）
+    // 仅当原 source 取链失败时向上抛错，让 UI 提示用户，避免错误信息被吞掉
+    const playUrl = await source.getPlayUrl(track.sourceSongId, quality);
 
     return { url: playUrl.url, isLocal: false, result: playUrl };
   }

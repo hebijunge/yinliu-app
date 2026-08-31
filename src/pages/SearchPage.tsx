@@ -1,10 +1,13 @@
 import { useState, useCallback } from 'react';
-import { Search, Loader2, Music, Filter } from 'lucide-react';
+import { Search, Loader2, Music, Filter, AlertCircle } from 'lucide-react';
 import { useSearchStore } from '../shared/store/searchStore';
 import { searchEngine } from '../core/search';
 import { playerEngine } from '../core/player';
 import { downloadEngine } from '../core/download';
+import { usePlayerStore } from '../shared/store/playerStore';
+import { useDownloadStore } from '../shared/store/downloadStore';
 import type { AggregatedSearchResult } from '../core/search';
+import type { PlayerTrack } from '../core/player';
 import { Quality } from '../core/types';
 
 export default function SearchPage() {
@@ -15,12 +18,15 @@ export default function SearchPage() {
 
   const [inputValue, setInputValue] = useState(keyword);
   const [showFilters, setShowFilters] = useState(false);
+  const [playError, setPlayError] = useState<string | null>(null);
+  const [downloadBusyId, setDownloadBusyId] = useState<string | null>(null);
 
   const handleSearch = useCallback(async () => {
     if (!inputValue.trim()) return;
-    
+
     setKeyword(inputValue);
     setSearching(true);
+    setPlayError(null);
     addToHistory(inputValue);
 
     try {
@@ -41,7 +47,10 @@ export default function SearchPage() {
     const bestSource = result.sources[0];
     if (!bestSource) return;
 
-    await playerEngine.playTrack({
+    setPlayError(null);
+
+    // v11 修复：立即把当前曲目同步到 playerStore，避免 UI 长时间不显示曲目信息
+    const track: PlayerTrack = {
       id: result.id,
       title: result.title,
       artist: result.artist,
@@ -51,23 +60,44 @@ export default function SearchPage() {
       sourceId: bestSource.sourceId,
       sourceSongId: result.sourceSongId,
       uri: `stream://${bestSource.sourceId}/${result.sourceSongId}`,
-    }, selectedQuality);
+    };
+    usePlayerStore.getState().setTrack(track);
+
+    // v11 修复：playTrack 现在在失败时 re-throw，必须 try/catch 防止 unhandled rejection
+    try {
+      await playerEngine.playTrack(track, selectedQuality);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '播放失败';
+      console.error('[SearchPage] playTrack failed:', err);
+      setPlayError(`${result.title} - ${msg}`);
+      usePlayerStore.getState().setState('error');
+    }
   };
 
   const handleDownload = async (result: AggregatedSearchResult) => {
     const bestSource = result.sources[0];
     if (!bestSource) return;
 
-    const task = await downloadEngine.createTask({
-      songId: result.sourceSongId,
-      sourceId: bestSource.sourceId,
-      quality: selectedQuality,
-      title: result.title,
-      artist: result.artist,
-    });
-
-    // 自动开始下载
-    downloadEngine.startDownload(task.id);
+    // v11 修复：使用 addDownload 一站式方法（自动 createTask + startDownload）
+    // 避免 createTask 之后忘记 await startDownload 导致任务停留在 pending
+    setDownloadBusyId(result.id);
+    try {
+      const taskId = await downloadEngine.addDownload(
+        result.sourceSongId,
+        bestSource.sourceId,
+        selectedQuality,
+        { title: result.title, artist: result.artist, album: result.album }
+      );
+      // 实时把任务推到下载页 store，让用户能立即看到下载进度
+      const task = downloadEngine.getTask(taskId);
+      if (task) {
+        useDownloadStore.getState().upsertTask(task);
+      }
+    } catch (err) {
+      console.error('[SearchPage] download failed:', err);
+    } finally {
+      setDownloadBusyId(null);
+    }
   };
 
   const sourceColors: Record<string, string> = {
@@ -81,7 +111,22 @@ export default function SearchPage() {
   return (
     <div className="max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold mb-6 hidden lg:block">聚合搜索</h1>
-      
+
+      {/* Play error banner */}
+      {playError && (
+        <div className="mb-3 p-3 rounded-lg bg-red-500/10 text-red-600 text-sm flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          <span className="flex-1">{playError}</span>
+          <button
+            onClick={() => setPlayError(null)}
+            className="text-red-600/60 hover:text-red-600"
+            aria-label="关闭"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {/* Search Box */}
       <div className="flex gap-2 mb-4">
         <div className="flex-1 relative">
@@ -183,7 +228,7 @@ export default function SearchPage() {
                 </div>
               )}
             </div>
-            
+
             <div className="flex-1 min-w-0">
               <div className="font-medium truncate">{result.title}</div>
               <div className="text-sm text-[var(--text-secondary)] truncate">
@@ -217,12 +262,17 @@ export default function SearchPage() {
               </button>
               <button
                 onClick={() => handleDownload(result)}
-                className="p-2 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]"
+                disabled={downloadBusyId === result.id}
+                className="p-2 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)] disabled:opacity-50"
                 title="下载"
               >
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
-                </svg>
+                {downloadBusyId === result.id ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+                  </svg>
+                )}
               </button>
             </div>
           </div>
