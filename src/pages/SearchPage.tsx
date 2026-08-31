@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play } from 'lucide-react';
+import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play, MoreVertical, Download } from 'lucide-react';
+import { toast } from '../shared/components/Toast';
 import { useSearchStore } from '../shared/store/searchStore';
 import { searchEngine } from '../core/search';
 import { playerEngine } from '../core/player';
@@ -41,10 +42,20 @@ export default function SearchPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
+  // 当前打开「更多」菜单的行 id（v13.1：去掉行内下载/播放按钮，下载入口改由更多菜单承载）
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // 搜索后自动滚动到结果
   const resultSectionRef = useRef<HTMLDivElement>(null);
+
+  // 点击「更多」菜单以外的区域时，关闭当前打开的菜单
+  useEffect(() => {
+    if (!activeMenuId) return;
+    const handleClickOutside = () => setActiveMenuId(null);
+    document.addEventListener('click', handleClickOutside);
+    return () => document.removeEventListener('click', handleClickOutside);
+  }, [activeMenuId]);
 
   const handleSearch = useCallback(async () => {
     if (!inputValue.trim()) return;
@@ -70,43 +81,56 @@ export default function SearchPage() {
   }, [inputValue, selectedSources, setKeyword, setSearching, addToHistory, setResults, setSourceStats]);
 
   const handlePlay = async (result: AggregatedSearchResult) => {
-    if (!result.sources || result.sources.length === 0) return;
-    // v13: result.sourceId / sourceSongId 已由 SearchEngine 同步为最高优先级平台
-    // 同时把完整 availableSources 透传给 playerEngine，供 resolvePlayUrl 失败降级用
-    const bestSource = result.sources[0];
-    await playerEngine.playTrack({
-      id: result.id,
-      title: result.title,
-      artist: result.artist,
-      album: result.album,
-      coverUrl: result.coverUrl,
-      duration: result.duration,
-      sourceId: result.sourceId,
-      sourceSongId: result.sourceSongId,
-      uri: `stream://${result.sourceId}/${result.sourceSongId}`,
-      availableSources: result.sources.map((s) => ({
-        sourceId: s.sourceId,
-        sourceSongId: s.sourceSongId,
-      })),
-    }, selectedQuality);
-    void bestSource; // result.sourceId 已替代 result.sources[0]
+    if (!result.sources || result.sources.length === 0) {
+      toast.error('暂无可用音源', '该歌曲在所有平台均无播放链接');
+      return;
+    }
+    try {
+      await playerEngine.playTrack({
+        id: result.id,
+        title: result.title,
+        artist: result.artist,
+        album: result.album,
+        coverUrl: result.coverUrl,
+        duration: result.duration,
+        sourceId: result.sourceId,
+        sourceSongId: result.sourceSongId,
+        uri: `stream://${result.sourceId}/${result.sourceSongId}`,
+        availableSources: result.sources.map((s) => ({
+          sourceId: s.sourceId,
+          sourceSongId: s.sourceSongId,
+        })),
+      }, selectedQuality);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '播放失败';
+      toast.error('播放失败', msg);
+    }
   };
 
   const handleDownload = async (result: AggregatedSearchResult) => {
-    if (!result.sources || result.sources.length === 0) return;
-    // v13: 与播放一致，下载也走优先级最高平台，失败后按 availableSources 降级
-    const task = await downloadEngine.createTask({
-      songId: result.sourceSongId,
-      sourceId: result.sourceId,
-      quality: selectedQuality,
-      title: result.title,
-      artist: result.artist,
-      availableSources: result.sources.map((s) => ({
-        sourceId: s.sourceId,
-        sourceSongId: s.sourceSongId,
-      })),
-    });
-    downloadEngine.startDownload(task.id);
+    if (!result.sources || result.sources.length === 0) {
+      toast.error('暂无可用音源', '该歌曲在所有平台均无下载链接');
+      return;
+    }
+    try {
+      // v13: 与播放一致，下载也走优先级最高平台，失败后按 availableSources 降级
+      const task = await downloadEngine.createTask({
+        songId: result.sourceSongId,
+        sourceId: result.sourceId,
+        quality: selectedQuality,
+        title: result.title,
+        artist: result.artist,
+        availableSources: result.sources.map((s) => ({
+          sourceId: s.sourceId,
+          sourceSongId: s.sourceSongId,
+        })),
+      });
+      downloadEngine.startDownload(task.id);
+      toast.success('已加入下载队列', `${result.title}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '下载失败';
+      toast.error('下载失败', msg);
+    }
   };
 
   const handlePlayHistory = useCallback(
@@ -426,7 +450,16 @@ export default function SearchPage() {
         {results.map((result) => (
           <div
             key={result.id}
-            className="flex items-center gap-3 p-3 rounded-lg bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors group"
+            role="button"
+            tabIndex={0}
+            onClick={() => handlePlay(result)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handlePlay(result);
+              }
+            }}
+            className="relative flex items-center gap-3 p-3 rounded-lg bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors cursor-pointer active:scale-[0.99]"
           >
             <div className="w-12 h-12 rounded-lg bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden">
               {result.coverUrl ? (
@@ -459,23 +492,37 @@ export default function SearchPage() {
               {result.bitrate && `${result.bitrate}kbps`}
             </div>
 
-            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            {/* 「更多」菜单：下载等次级操作入口（v13.1：整行点击播放，次级操作由更多菜单承载） */}
+            <div className="relative flex-shrink-0">
               <button
-                onClick={() => handlePlay(result)}
-                className="p-2 rounded-full bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]"
-                title="播放"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveMenuId(activeMenuId === result.id ? null : result.id);
+                }}
+                className="p-2 rounded-full text-[var(--text-tertiary)] hover:bg-[var(--border)] hover:text-[var(--text-primary)]"
+                title="更多"
+                aria-label="更多操作"
               >
-                <Play className="w-4 h-4" />
+                <MoreVertical className="w-4 h-4" />
               </button>
-              <button
-                onClick={() => handleDownload(result)}
-                className="p-2 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]"
-                title="下载"
-              >
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
-                </svg>
-              </button>
+              {activeMenuId === result.id && (
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute right-0 top-full mt-1 z-20 min-w-[140px] rounded-xl border border-[var(--border)] bg-[var(--bg-elevated,var(--bg-secondary))] shadow-lg overflow-hidden"
+                >
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveMenuId(null);
+                      handleDownload(result);
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
+                  >
+                    <Download className="w-4 h-4" />
+                    下载歌曲
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         ))}
