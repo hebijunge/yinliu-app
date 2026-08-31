@@ -84,6 +84,9 @@ export class PlayerEngine {
   private streamingHeaders: Record<string, string> = {};
   private prefetchTriggered = false;
 
+  // v16: 预加载缓存（url + blobUrl + actualSourceId）
+  private prefetchCache = new Map<string, { url: string; result: PlayUrlResult; actualSourceId: string }>();
+
   private emit<K extends keyof PlayerEventMap>(event: K, data: PlayerEventMap[K]) {
     const callbacks = this.listeners[event] || [];
     callbacks.forEach((cb) => cb(data as unknown));
@@ -201,7 +204,7 @@ export class PlayerEngine {
     return this.currentTrack;
   }
 
-  // === 统一 URL 解析器：本地歌曲 → 已下载本地文件 → 在线取链（带优先级降级链） ===
+  // === 统一 URL 解析器：本地歌曲 → 已下载本地文件 → 预加载缓存 → 在线取链（带优先级降级链） ===
   private async resolvePlayUrl(track: PlayerTrack, quality: Quality): Promise<{ url: string; isLocal: boolean; result: PlayUrlResult; actualSourceId: string }> {
     // 0. 本地歌曲（sourceId === 'local'，v12 已合并分支）：直接读取文件系统
     if (track.sourceId === 'local') {
@@ -253,6 +256,24 @@ export class PlayerEngine {
           });
         }
       }
+    }
+
+    // 1.5 v16: 检查预加载缓存（命中则零等待取链）
+    const cacheKey = `${track.sourceId}_${track.sourceSongId}_${quality}`;
+    const prefetchHit = this.prefetchCache.get(cacheKey);
+    if (prefetchHit) {
+      debugLogger.info('player', `预加载缓存命中: ${track.title}`, {
+        sourceId: track.sourceId,
+        actualSourceId: prefetchHit.actualSourceId,
+        quality,
+        urlPrefix: prefetchHit.url.slice(0, 60),
+      });
+      return {
+        url: prefetchHit.url,
+        isLocal: false,
+        result: prefetchHit.result,
+        actualSourceId: prefetchHit.actualSourceId,
+      };
     }
 
     // 2. 在线取链 —— v13: 多平台降级链
@@ -337,6 +358,9 @@ export class PlayerEngine {
     this.setState('loading');
     this.currentTrack = track;
     this.prefetchTriggered = false;
+
+    // v16: 切歌后立即预加载下一首
+    this.schedulePrefetchNext();
 
     // 提前把 metadata 推到系统（用户切歌时立即更新通知）
     void updateMetadata({
@@ -532,7 +556,18 @@ export class PlayerEngine {
     });
   }
 
-  // v14.4: 预取下一首首块
+  // v16: 调度预加载下一首（防抖，避免频繁触发）
+  private prefetchTimer: number | null = null;
+  private schedulePrefetchNext(): void {
+    if (this.prefetchTimer) {
+      clearTimeout(this.prefetchTimer);
+    }
+    this.prefetchTimer = window.setTimeout(() => {
+      void this.prefetchNextTrack();
+    }, 800);
+  }
+
+  // v16: 增强预取下一首（流式+非流式统一，存入预加载缓存）
   private async prefetchNextTrack(): Promise<void> {
     const nextIndex = this.currentIndex + 1;
     if (nextIndex < 0 || nextIndex >= this.queue.length) return;
@@ -540,24 +575,49 @@ export class PlayerEngine {
     const nextTrack = this.queue[nextIndex];
     if (!nextTrack || nextTrack.sourceId === 'local') return;
 
-    debugLogger.info('player', 'Prefetching next track', {
+    const cacheKey = `${nextTrack.sourceId}_${nextTrack.sourceSongId}_${this.lastQuality}`;
+
+    // 已预加载过，跳过
+    if (this.prefetchCache.has(cacheKey)) return;
+
+    debugLogger.info('player', 'v16 预加载下一首', {
       title: nextTrack.title,
       index: nextIndex,
+      sourceId: nextTrack.sourceId,
+      quality: this.lastQuality,
     });
 
     try {
-      // 取链下一首
-      const { url, result } = await this.resolvePlayUrl(nextTrack, this.lastQuality);
-      const cacheKey = `${nextTrack.sourceId}_${nextTrack.sourceSongId}_${this.lastQuality}`;
+      // 取链下一首（按优先级 酷我>咪咕>网易云>酷狗>QQ）
+      const { url, result, actualSourceId } = await this.resolvePlayUrl(nextTrack, this.lastQuality);
 
-      await streamingAudioPlayer.prefetchNext({
-        url,
-        headers: result.headers || {},
+      // 存入预加载缓存
+      this.prefetchCache.set(cacheKey, { url, result, actualSourceId });
+      debugLogger.info('player', 'v16 预加载成功', {
+        title: nextTrack.title,
         cacheKey,
-        format: result.format,
+        actualSourceId,
+        urlPrefix: url.slice(0, 60),
       });
+
+      // 流式模式下同时预取首块数据
+      if (!result.isLocal && nextTrack.sourceId !== 'local') {
+        try {
+          await streamingAudioPlayer.prefetchNext({
+            url,
+            headers: result.headers || {},
+            cacheKey,
+            format: result.format,
+          });
+        } catch (streamErr) {
+          debugLogger.warn('player', 'v16 流式首块预取失败（不影响缓存）', {
+            title: nextTrack.title,
+            error: streamErr instanceof Error ? streamErr.message : String(streamErr),
+          });
+        }
+      }
     } catch (err) {
-      debugLogger.warn('player', 'Prefetch next track failed', {
+      debugLogger.warn('player', 'v16 预加载失败', {
         title: nextTrack.title,
         error: err instanceof Error ? err.message : String(err),
       });

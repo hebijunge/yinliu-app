@@ -149,7 +149,7 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
           }}
         >
           <div
-            className="h-full bg-[var(--accent)] rounded-full group-hover:bg-[var(--accent-hover)] transition-all relative"
+            className="h-full bg-[var(--accent)] rounded-full group-hover:bg-[var(--accent-hover)] progress-bar-smooth relative"
             style={{ width: `${progressPercent}%` }}
           >
             <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full border-2 border-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -163,7 +163,8 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
             onClick={() => setShowFullScreen(true)}
           >
             <div
-              className={`rounded-2xl bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)]/30 transition-all ${
+              key={currentTrack?.id || 'no-track'}
+              className={`cover-crossfade rounded-2xl bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)]/30 transition-all ${
                 isLandscape ? 'w-12 h-12' : 'w-10 h-10'
               }`}
             >
@@ -208,13 +209,13 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
                 if (isPlaying) playerEngine.pause();
                 else if (currentTrack) playerEngine.resume();
               }}
-              className="player-control-btn p-2.5 rounded-full bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] active:scale-95 transition-all focus-ring"
+              className="player-control-btn p-2.5 rounded-full bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] play-btn-transition focus-ring"
               title={isPlaying ? '暂停' : '播放'}
             >
               {isPlaying ? (
-                <Pause className={isLandscape ? 'w-6 h-6' : 'w-5 h-5'} />
+                <Pause className={`${isLandscape ? 'w-6 h-6' : 'w-5 h-5'} transition-transform duration-200`} />
               ) : (
-                <Play className={`${isLandscape ? 'w-6 h-6' : 'w-5 h-5'} ml-0.5`} />
+                <Play className={`${isLandscape ? 'w-6 h-6' : 'w-5 h-5'} ml-0.5 transition-transform duration-200`} />
               )}
             </button>
             <button

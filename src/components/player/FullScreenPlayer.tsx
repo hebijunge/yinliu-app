@@ -1,15 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   X, Play, Pause, SkipBack, SkipForward, Volume2, ChevronDown,
-  Mic2, ListMusic, Repeat, Repeat1, Shuffle, AudioLines, Moon,
+  Mic2, ListMusic, Repeat, Repeat1, Shuffle, AudioLines,
 } from 'lucide-react';
 import { usePlayerStore } from '../../shared/store/playerStore';
 import { playerEngine } from '../../core/player';
 import { lyricsManager } from '../../modules/music/lyrics';
 import QueuePanel from './QueuePanel';
 import QualitySelector, { qualityLabel } from './QualitySelector';
-import SleepTimerPanel from './SleepTimerPanel';
-import { useSleepTimerStore, formatSleepTimerRemaining } from '../../shared/store/sleepTimerStore';
 import type { ParsedLyrics } from '../../modules/music/lyrics';
 import type { RepeatMode } from '../../shared/store/playerStore';
 
@@ -33,13 +31,11 @@ interface Props {
 
 export default function FullScreenPlayer({ onClose }: Props) {
   const { state, currentTrack, currentTime, duration, volume, queue, repeatMode, currentQuality, actualQuality, isPreview, actualSourceId } = usePlayerStore();
-  const { active: sleepTimerActive, remainingSeconds: sleepTimerRemaining, mode: sleepTimerMode } = useSleepTimerStore();
   const isPlaying = state === 'playing';
 
   const [showLyrics, setShowLyrics] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
   const [showQuality, setShowQuality] = useState(false);
-  const [showSleepTimer, setShowSleepTimer] = useState(false);
   const [lyrics, setLyrics] = useState<ParsedLyrics | null>(null);
   const [currentLineIndex, setCurrentLineIndex] = useState(-1);
 
@@ -99,8 +95,6 @@ export default function FullScreenPlayer({ onClose }: Props) {
       {showQueue && <QueuePanel onClose={() => setShowQueue(false)} />}
       {/* Quality Selector overlay */}
       {showQuality && <QualitySelector onClose={() => setShowQuality(false)} />}
-      {/* Sleep Timer overlay */}
-      {showSleepTimer && <SleepTimerPanel onClose={() => setShowSleepTimer(false)} />}
 
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4">
@@ -144,21 +138,6 @@ export default function FullScreenPlayer({ onClose }: Props) {
               </span>
             )}
           </button>
-          {/* Sleep Timer toggle */}
-          <button
-            onClick={() => setShowSleepTimer(!showSleepTimer)}
-            className={`p-2 rounded-2xl hover:bg-[var(--bg-tertiary)] transition-colors focus-ring relative ${
-              sleepTimerActive ? 'text-[var(--accent)]' : 'text-[var(--text-secondary)]'
-            }`}
-            title="睡眠定时"
-          >
-            <Moon className="w-5 h-5" />
-            {sleepTimerActive && sleepTimerMode === 'duration' && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 bg-[var(--accent)] text-white text-[9px] font-bold rounded-full flex items-center justify-center">
-                {Math.ceil(sleepTimerRemaining / 60)}
-              </span>
-            )}
-          </button>
           <button onClick={onClose} className="p-2 rounded-2xl hover:bg-[var(--bg-tertiary)] transition-colors focus-ring">
             <X className="w-5 h-5 text-[var(--text-secondary)]" />
           </button>
@@ -198,7 +177,7 @@ export default function FullScreenPlayer({ onClose }: Props) {
         ) : (
           /* Cover view */
           <div className="flex-1 flex items-center justify-center px-10 h-full">
-            <div className={`w-64 h-64 md:w-80 md:h-80 rounded-[2rem] bg-[var(--bg-tertiary)] flex items-center justify-center border border-[var(--border-subtle)] ${isPlaying ? 'animate-pulse-slow' : ''}`}>
+            <div key={currentTrack?.id || 'no-track'} className={`cover-crossfade w-64 h-64 md:w-80 md:h-80 rounded-[2rem] bg-[var(--bg-tertiary)] flex items-center justify-center border border-[var(--border-subtle)] ${isPlaying ? 'animate-pulse-slow' : ''}`}>
               {currentTrack?.coverUrl ? (
                 <img src={currentTrack.coverUrl} alt="" className="w-full h-full rounded-[2rem] object-cover" />
               ) : (
@@ -228,32 +207,18 @@ export default function FullScreenPlayer({ onClose }: Props) {
             </span>
           )}
         </p>
-        <div className="flex items-center justify-center gap-2 mt-3">
-          <button
-            onClick={() => setShowQuality(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors focus-ring"
-            title="切换音质"
-          >
-            <AudioLines className="w-3.5 h-3.5" />
-            {qualityLabel(currentQuality)}
-            {actualQuality && actualQuality !== currentQuality && (
-              <span className="text-amber-500">实际 {qualityLabel(actualQuality)}</span>
-            )}
-            {isPreview && <span className="text-amber-500">试听</span>}
-          </button>
-          {sleepTimerActive && (
-            <button
-              onClick={() => setShowSleepTimer(true)}
-              className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs bg-[var(--accent)]/10 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors focus-ring"
-              title="睡眠定时中"
-            >
-              <Moon className="w-3 h-3" />
-              {sleepTimerMode === 'duration'
-                ? formatSleepTimerRemaining(sleepTimerRemaining)
-                : '播完暂停'}
-            </button>
+        <button
+          onClick={() => setShowQuality(true)}
+          className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors focus-ring"
+          title="切换音质"
+        >
+          <AudioLines className="w-3.5 h-3.5" />
+          {qualityLabel(currentQuality)}
+          {actualQuality && actualQuality !== currentQuality && (
+            <span className="text-amber-500">实际 {qualityLabel(actualQuality)}</span>
           )}
-        </div>
+          {isPreview && <span className="text-amber-500">试听</span>}
+        </button>
       </div>
 
       {/* Progress */}
@@ -266,7 +231,7 @@ export default function FullScreenPlayer({ onClose }: Props) {
             playerEngine.seek(percent * duration);
           }}
         >
-          <div className="h-full bg-[var(--accent)] rounded-full relative" style={{ width: `${progressPercent}%` }}>
+          <div className="h-full bg-[var(--accent)] rounded-full progress-bar-smooth relative" style={{ width: `${progressPercent}%` }}>
             <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full border-2 border-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity" />
           </div>
         </div>
@@ -290,10 +255,10 @@ export default function FullScreenPlayer({ onClose }: Props) {
             if (isPlaying) playerEngine.pause();
             else if (currentTrack) playerEngine.resume();
           }}
-          className="p-5 rounded-full bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] active:scale-95 transition-all focus-ring"
+          className="p-5 rounded-full bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] play-btn-transition focus-ring"
           title={isPlaying ? '暂停' : '播放'}
         >
-          {isPlaying ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8 ml-1" />}
+          {isPlaying ? <Pause className="w-8 h-8 transition-transform duration-200" /> : <Play className="w-8 h-8 ml-1 transition-transform duration-200" />}
         </button>
         <button
           onClick={handleNext}

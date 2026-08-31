@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play, MoreVertical, Download } from 'lucide-react';
 import { toast } from '../shared/components/Toast';
 import { useSearchStore } from '../shared/store/searchStore';
@@ -46,6 +46,11 @@ export default function SearchPage() {
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // v16: 搜索结果分页加载
+  const PAGE_SIZE = 15;
+  const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
+  const loadMoreRef = useRef<HTMLDivElement>(null);
+
   // 搜索后自动滚动到结果
   const resultSectionRef = useRef<HTMLDivElement>(null);
 
@@ -56,6 +61,26 @@ export default function SearchPage() {
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
   }, [activeMenuId]);
+
+  // v16: 搜索结果变化时重置分页
+  useEffect(() => {
+    setDisplayCount(PAGE_SIZE);
+  }, [keyword, results.length]);
+
+  // v16: Intersection Observer 滚动加载更多
+  useEffect(() => {
+    if (!loadMoreRef.current) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && displayCount < results.length) {
+          setDisplayCount((prev) => Math.min(prev + PAGE_SIZE, results.length));
+        }
+      },
+      { rootMargin: '200px' }
+    );
+    observer.observe(loadMoreRef.current);
+    return () => observer.disconnect();
+  }, [displayCount, results.length]);
 
   const handleSearch = useCallback(async () => {
     if (!inputValue.trim()) return;
@@ -440,14 +465,19 @@ export default function SearchPage() {
         </div>
       )}
 
-      {/* Search results */}
+      {/* Search results — v16: 分页渲染 */}
       <div ref={resultSectionRef} className="space-y-2">
         {results.length > 0 && (
           <h2 className="text-base font-semibold text-[var(--text-primary)] mb-3">
             搜索结果 ({results.length})
+            {displayCount < results.length && (
+              <span className="text-xs text-[var(--text-tertiary)] ml-2">
+                已加载 {displayCount} 首
+              </span>
+            )}
           </h2>
         )}
-        {results.map((result) => (
+        {results.slice(0, displayCount).map((result) => (
           <div
             key={result.id}
             role="button"
@@ -526,6 +556,20 @@ export default function SearchPage() {
             </div>
           </div>
         ))}
+
+        {/* v16: 滚动加载更多触发器 */}
+        {results.length > 0 && (
+          <div ref={loadMoreRef} className="py-4 text-center">
+            {displayCount < results.length ? (
+              <div className="flex items-center justify-center gap-2 text-xs text-[var(--text-tertiary)]">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                滚动加载更多...
+              </div>
+            ) : (
+              <span className="text-xs text-[var(--text-tertiary)]">已显示全部 {results.length} 首</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Empty state */}

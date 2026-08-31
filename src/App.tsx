@@ -1,13 +1,15 @@
 import { Routes, Route } from 'react-router-dom';
-import { useEffect } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import Layout from './components/layout/Layout';
 import SearchPage from './pages/SearchPage';
-import PlaylistPage from './pages/PlaylistPage';
-import DownloadPage from './pages/DownloadPage';
-import ReadingPage from './pages/ReadingPage';
-import SettingsPage from './pages/SettingsPage';
-import HistoryPage from './pages/HistoryPage';
-import DebugLogPage from './pages/DebugLogPage';
+
+// v16: 非核心页面懒加载，减少首屏 bundle
+const PlaylistPage = lazy(() => import('./pages/PlaylistPage'));
+const DownloadPage = lazy(() => import('./pages/DownloadPage'));
+const ReadingPage = lazy(() => import('./pages/ReadingPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const HistoryPage = lazy(() => import('./pages/HistoryPage'));
+const DebugLogPage = lazy(() => import('./pages/DebugLogPage'));
 import { playerEngine } from './core/player';
 import { downloadEngine } from './core/download';
 import { usePlayerStore } from './shared/store/playerStore';
@@ -16,7 +18,6 @@ import { usePlaylistStore } from './shared/store/playlistStore';
 import { usePlayHistoryStore } from './shared/store/playHistoryStore';
 import { useSettingsStore } from './shared/store/settingsStore';
 import { configureAudioFocus, updateAudioFocusOptions } from './core/player/audioFocus';
-import { initSleepTimerWatcher, initSleepTimerEndedListener } from './shared/store/sleepTimerStore';
 import { initDatabase } from './shared/database';
 
 function App() {
@@ -57,10 +58,6 @@ function App() {
     const unsubSettings = useSettingsStore.subscribe((state) => {
       updateAudioFocusOptions({ autoResumeOnFocusGain: state.autoResumeOnAudioFocus });
     });
-
-    // 初始化睡眠定时器（防后台冻结 + 播完当前曲监听）
-    const unsubSleepTimer = initSleepTimerWatcher();
-    const unsubSleepEnded = initSleepTimerEndedListener();
 
     // 绑定播放器事件到 Store
     const unsub1 = playerEngine.on('stateChange', ({ state }) => {
@@ -117,23 +114,23 @@ function App() {
       unsub6();
       unsub7();
       unsubSettings();
-      unsubSleepTimer();
-      unsubSleepEnded();
     };
   }, []);
 
   return (
     <Layout>
-      <Routes>
-        <Route path="/" element={<SearchPage />} />
-        <Route path="/search" element={<SearchPage />} />
-        <Route path="/history" element={<HistoryPage />} />
-        <Route path="/playlists" element={<PlaylistPage />} />
-        <Route path="/downloads" element={<DownloadPage />} />
-        <Route path="/reading" element={<ReadingPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="/debug" element={<DebugLogPage />} />
-      </Routes>
+      <Suspense fallback={<div className="flex-1 flex items-center justify-center min-h-[50vh]"><div className="w-8 h-8 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" /></div>}>
+        <Routes>
+          <Route path="/" element={<SearchPage />} />
+          <Route path="/search" element={<SearchPage />} />
+          <Route path="/history" element={<HistoryPage />} />
+          <Route path="/playlists" element={<PlaylistPage />} />
+          <Route path="/downloads" element={<DownloadPage />} />
+          <Route path="/reading" element={<ReadingPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/debug" element={<DebugLogPage />} />
+        </Routes>
+      </Suspense>
     </Layout>
   );
 }
