@@ -1,8 +1,8 @@
 import { Quality } from '@core/types';
 import type { DownloadTask, DownloadStatus } from '@core/types';
 import { sourceRegistry } from '@providers/music/registry';
-import { deriveRawKey } from '@utils/crypto/kuwoEkey';
-import { qmc2DecryptBytes, isDecryptedMagic } from '@utils/crypto/qmc2';
+import { deriveRawKey } from '@/utils/crypto/kuwoEkey';
+import { qmc2DecryptBytes, isDecryptedMagic } from '@/utils/crypto/qmc2';
 
 // 使用简单UUID生成（避免引入完整uuid库）
 function generateId(): string {
