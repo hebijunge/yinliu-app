@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
-import { Quality } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult } from '@core/types';
+import { Quality, YinliuError, ErrorCode } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 
@@ -424,6 +424,36 @@ export class KuwoSource extends BaseHttpSource {
       lines.push(`[${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(ms).padStart(2, '0')}]${lrc}`);
     }
     return lines.length > 0 ? lines.join('\n') : null;
+  }
+
+  // ===================== 歌单 =====================
+
+  async getPlaylist(playlistId: string): Promise<PlaylistDetail> {
+    const url = `${this.SEARCH_V2_HOST}/api/www/playlist/playListInfo?pid=${playlistId}&pn=1&rn=50`;
+    const data = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
+    if (!data?.data) {
+      throw new YinliuError(ErrorCode.SOURCE_ERROR, `酷我歌单不存在或无权限: ${playlistId}`, 404);
+    }
+    const pl = data.data;
+    const list = pl.musicList || [];
+    return {
+      id: playlistId,
+      name: pl.name || '酷我歌单',
+      description: pl.info || '',
+      coverUrl: pl.img || '',
+      songs: list.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[],
+      total: list.length,
+    };
+  }
+
+  async parsePlaylistUrl(url: string): Promise<PlaylistDetail> {
+    const match = url.match(/playlist_detail\/(\d+)/)
+      || url.match(/playlists\/(\d+)/)
+      || url.match(/[?&]pid=(\d+)/);
+    if (!match || !match[1]) {
+      throw new YinliuError(ErrorCode.VALIDATION_ERROR, '无法解析酷我歌单URL', 400);
+    }
+    return this.getPlaylist(match[1]);
   }
 
   // ===================== 健康检查 =====================

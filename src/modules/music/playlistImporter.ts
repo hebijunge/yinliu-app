@@ -116,7 +116,7 @@ export class PlaylistImporter {
     if (!parsed) {
       throw new YinliuError(
         ErrorCode.VALIDATION_ERROR,
-        '不支持的歌单URL格式，目前支持：QQ音乐、网易云、酷狗、酷我、咪咕',
+        '不支持的歌单URL格式，目前支持：QQ音乐、网易云、酷狗、酷我、咪咕、Spotify',
         400
       );
     }
@@ -168,7 +168,7 @@ export class PlaylistImporter {
     if (!parsed) {
       throw new YinliuError(
         ErrorCode.VALIDATION_ERROR,
-        '不支持的歌单URL格式，目前支持：QQ音乐、网易云、酷狗、酷我、咪咕',
+        '不支持的歌单URL格式，目前支持：QQ音乐、网易云、酷狗、酷我、咪咕、Spotify',
         400
       );
     }
@@ -263,7 +263,7 @@ export class PlaylistImporter {
    */
   private toFailedSong(r: SearchResult, reason: string) {
     return {
-      songId: r.id || `failed_${Math.random().toString(36).slice(2, 10)}`,
+      songId: r.id || `failed_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       title: r.title || '未知曲目',
       artist: r.artist,
       album: r.album,

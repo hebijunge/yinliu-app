@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Plus, Trash2, Edit3, ListMusic, Play, Link2, Loader2, CheckCircle2, AlertCircle, X, Music2, ArrowLeft, Clock, CloudDownload } from 'lucide-react';
 import { usePlaylistStore } from '../shared/store/playlistStore';
+import { usePlayerStore } from '../shared/store/playerStore';
+import { playerEngine } from '../core/player';
 import { useSearchParams } from 'react-router-dom';
 import { SkeletonPlaylistGrid } from '../components/ui/Skeleton';
 import { toast } from '../shared/components/Toast';
@@ -38,7 +40,7 @@ export default function PlaylistPage() {
       return;
     }
     if (!playlistImporter.isSupported(url)) {
-      setImportError('暂不支持此歌单链接格式（目前支持：QQ音乐、网易云、酷狗、酷我、咪咕）');
+      setImportError('暂不支持此歌单链接格式（目前支持：QQ音乐、网易云、酷狗、酷我、咪咕、Spotify）');
       return;
     }
     setImportError(null);
@@ -55,6 +57,33 @@ export default function PlaylistPage() {
       const msg = err instanceof Error ? err.message : '未知错误';
       setImportError(msg);
       toast.error('导入失败', msg);
+    }
+  };
+
+  const handlePlayPlaylist = async (playlistId: string) => {
+    try {
+      await loadPlaylistSongs(playlistId);
+      const songs = usePlaylistStore.getState().currentPlaylistSongs;
+      if (!songs || songs.length === 0) {
+        toast.error('歌单为空', '当前歌单没有可播放的歌曲');
+        return;
+      }
+      const tracks = songs.map((s) => ({
+        id: s.songId,
+        title: s.title,
+        artist: s.artist,
+        album: s.album,
+        coverUrl: s.coverUrl,
+        duration: s.duration,
+        sourceId: s.source,
+        sourceSongId: s.songId,
+        uri: `stream://${s.source}/${s.songId}`,
+      }));
+      usePlayerStore.getState().setQueue(tracks);
+      await playerEngine.playTrack(tracks[0]);
+      toast.success('开始播放', `正在播放「${tracks[0].title}」`);
+    } catch (err) {
+      toast.error('播放失败', err instanceof Error ? err.message : '未知错误');
     }
   };
 
@@ -245,7 +274,14 @@ export default function PlaylistPage() {
               )}
 
               {/* Play button */}
-              <button className="absolute bottom-16 right-3 p-2.5 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 focus-ring">
+              <button
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handlePlayPlaylist(pl.id);
+                }}
+                className="absolute bottom-16 right-3 p-2.5 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 focus-ring"
+              >
                 <Play className="w-4 h-4 ml-0.5" />
               </button>
             </div>
@@ -322,6 +358,7 @@ function ImportReportView({ report, onClose }: { report: ImportReport; onClose: 
  */
 function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: string; playlistName: string; onBack: () => void }) {
   const { currentPlaylistSongs, loadPlaylistSongs, removeSongFromPlaylist, addSongToPlaylist, isLoading } = usePlaylistStore();
+  const { currentQuality } = usePlayerStore();
   const [filter, setFilter] = useState<'all' | 'playable' | 'failed'>('all');
 
   // 加载歌单歌曲
@@ -422,18 +459,26 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
                 </div>
                 {!isFailed && (
                   <button
-                    onClick={() => addSongToPlaylist(playlistId, {
-                      songId: s.songId,
-                      title: s.title,
-                      artist: s.artist,
-                      album: s.album,
-                      duration: s.duration ?? 0,
-                      coverUrl: s.coverUrl,
-                      source: s.source,
-                      quality: s.quality,
-                    })}
+                    onClick={async () => {
+                      try {
+                        await playerEngine.playTrack({
+                          id: s.songId,
+                          title: s.title,
+                          artist: s.artist,
+                          album: s.album,
+                          coverUrl: s.coverUrl,
+                          duration: s.duration,
+                          sourceId: s.source,
+                          sourceSongId: s.songId,
+                          uri: `stream://${s.source}/${s.songId}`,
+                        }, currentQuality);
+                      } catch (err) {
+                        const msg = err instanceof Error ? err.message : '播放失败';
+                        toast.error('播放失败', msg);
+                      }
+                    }}
                     className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--accent)] transition-all"
-                    aria-label="收藏"
+                    aria-label="播放"
                   >
                     <Play className="w-3.5 h-3.5" />
                   </button>

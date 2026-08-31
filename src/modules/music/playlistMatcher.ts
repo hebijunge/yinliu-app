@@ -84,9 +84,12 @@ export class PlaylistMatcher {
     }
     const p = this._matchOneImpl(track, options);
     inflight.set(cacheKey, p);
+    // TTL 兜底：防止挂起 promise 永久残留于全局 Map
+    const ttl = setTimeout(() => inflight.delete(cacheKey), 60_000);
     try {
       return await p;
     } finally {
+      clearTimeout(ttl);
       inflight.delete(cacheKey);
     }
   }
@@ -174,17 +177,16 @@ export class PlaylistMatcher {
     if (track.sourceId === 'local') return true;
     const source = sourceRegistry.get(track.sourceId);
     if (!source) return false;
+    const controller = new AbortController();
+    const tm = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const controller = new AbortController();
-      const tm = setTimeout(() => controller.abort(), timeoutMs);
       // 通过 baseHttpSource.linkRace 路径不直接暴露；走 getPlayUrl + short timeout
       const url = await Promise.race([
         source.getPlayUrl(track.sourceSongId, 'standard' as any),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('probe-timeout')), timeoutMs)
-        ),
+        new Promise<never>((_, reject) => {
+          controller.signal.addEventListener('abort', () => reject(new Error('probe-timeout')), { once: true });
+        }),
       ]);
-      clearTimeout(tm);
       if (!url || !url.url) return false;
       // 再做一次轻量 HEAD 校验（避免 404/版权空链）
       if (url.isPreview) return false;
@@ -195,6 +197,8 @@ export class PlaylistMatcher {
       return Boolean(head && head.ok);
     } catch {
       return false;
+    } finally {
+      clearTimeout(tm);
     }
   }
 

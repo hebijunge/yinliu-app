@@ -1,5 +1,5 @@
 import { BaseHttpSource } from './BaseHttpSource';
-import { Quality } from '@core/types';
+import { Quality, YinliuError, ErrorCode } from '@core/types';
 import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
@@ -386,13 +386,20 @@ export class KugouSource extends BaseHttpSource {
    *   https://www.kugou.com/yy/special/single/12345-zhash.html (带 hash 段，ID 是第一段)
    */
   async parsePlaylistUrl(url: string) {
-    // 匹配 single/{id} 或 special/{id}，取第一段数字
-    const match = url.match(/(?:special\/single|special)\/(\d+)/)
-      || url.match(/[?&]id=(\d+)/);
-    if (!match || !match[1]) {
-      throw new Error('无法解析酷狗歌单URL');
+    let playlistId: string | null = null;
+    // gcid 格式: m.kugou.com/songlist/gcid_xxx
+    const gcidMatch = url.match(/songlist[\/]gcid[_]?(\w+)/);
+    if (gcidMatch) playlistId = gcidMatch[1];
+    else {
+      // single/special 格式
+      const specialMatch = url.match(/(?:special\/single|special)\/(\d+)/)
+        || url.match(/[?&]id=(\d+)/);
+      if (specialMatch) playlistId = specialMatch[1];
     }
-    return this.getPlaylist(match[1]);
+    if (!playlistId) {
+      throw new YinliuError(ErrorCode.VALIDATION_ERROR, '无法解析酷狗歌单URL', 400);
+    }
+    return this.getPlaylist(playlistId);
   }
 
   // ===================== 健康检查 =====================
