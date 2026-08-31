@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { Quality } from '@core/types';
 import { downloadEngine } from '@core/download';
+import { debugLogger } from '@shared/utils/debugLogger';
 
 const STORAGE_KEY = 'yinliu.settings.v1';
 
@@ -15,6 +16,10 @@ export interface SettingsPersisted {
   enabledSources?: Record<string, boolean>;
   downloadQuality?: Quality;
   maxConcurrentDownloads?: number;
+  autoResumeOnAudioFocus?: boolean;
+  enableNotificationControls?: boolean;
+  dismissNotificationOnPause?: boolean;
+  debugMode?: boolean;
 }
 
 function loadPersisted(): SettingsPersisted {
@@ -34,6 +39,10 @@ function persist(state: SettingsState): void {
       enabledSources: state.enabledSources,
       downloadQuality: state.downloadQuality,
       maxConcurrentDownloads: state.maxConcurrentDownloads,
+      autoResumeOnAudioFocus: state.autoResumeOnAudioFocus,
+      enableNotificationControls: state.enableNotificationControls,
+      dismissNotificationOnPause: state.dismissNotificationOnPause,
+      debugMode: state.debugMode,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch {
@@ -52,11 +61,23 @@ interface SettingsState {
   maxConcurrentDownloads: number;
   /** 下载目录（Android 外部存储，只读展示） */
   readonly downloadDir: string;
+  /** 音频焦点恢复后自动续播 */
+  autoResumeOnAudioFocus: boolean;
+  /** 显示系统通知栏媒体卡片 */
+  enableNotificationControls: boolean;
+  /** 暂停后从通知栏移除 */
+  dismissNotificationOnPause: boolean;
+  /** 调试模式：开启后记录所有操作和事件日志 */
+  debugMode: boolean;
 
   setPreferredQuality: (quality: Quality) => void;
   setSourceEnabled: (sourceId: string, enabled: boolean) => void;
   setDownloadQuality: (quality: Quality) => void;
   setMaxConcurrentDownloads: (n: number) => void;
+  setAutoResumeOnAudioFocus: (enabled: boolean) => void;
+  setEnableNotificationControls: (enabled: boolean) => void;
+  setDismissNotificationOnPause: (enabled: boolean) => void;
+  setDebugMode: (enabled: boolean) => void;
   clearAllSettings: () => void;
 }
 
@@ -68,6 +89,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   downloadQuality: persisted.downloadQuality ?? Quality.STANDARD,
   maxConcurrentDownloads: persisted.maxConcurrentDownloads ?? 3,
   downloadDir: '/storage/emulated/0/YinliuDownloads/',
+  autoResumeOnAudioFocus: persisted.autoResumeOnAudioFocus ?? true,
+  enableNotificationControls: persisted.enableNotificationControls ?? true,
+  dismissNotificationOnPause: persisted.dismissNotificationOnPause ?? false,
+  debugMode: persisted.debugMode ?? false,
 
   setPreferredQuality: (preferredQuality) => {
     set({ preferredQuality });
@@ -91,13 +116,44 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     persist(get());
   },
 
+  setAutoResumeOnAudioFocus: (autoResumeOnAudioFocus) => {
+    set({ autoResumeOnAudioFocus });
+    persist(get());
+  },
+
+  setEnableNotificationControls: (enableNotificationControls) => {
+    set({ enableNotificationControls });
+    persist(get());
+  },
+
+  setDismissNotificationOnPause: (dismissNotificationOnPause) => {
+    set({ dismissNotificationOnPause });
+    persist(get());
+  },
+
+  setDebugMode: (debugMode) => {
+    set({ debugMode });
+    debugLogger.setEnabled(debugMode);
+    persist(get());
+  },
+
   clearAllSettings: () => {
     try {
       localStorage.removeItem(STORAGE_KEY);
     } catch {
       // ignore
     }
-    set({ preferredQuality: Quality.STANDARD, enabledSources: {}, downloadQuality: Quality.STANDARD, maxConcurrentDownloads: 3 });
+    set({
+      preferredQuality: Quality.STANDARD,
+      enabledSources: {},
+      downloadQuality: Quality.STANDARD,
+      maxConcurrentDownloads: 3,
+      autoResumeOnAudioFocus: true,
+      enableNotificationControls: true,
+      dismissNotificationOnPause: false,
+      debugMode: false,
+    });
+    debugLogger.setEnabled(false);
   },
 }));
 
