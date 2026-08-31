@@ -63,13 +63,13 @@ export default function PlayerBar() {
     <>
       {/* Lyrics Panel */}
       {showLyrics && lyrics && (
-        <div className="fixed inset-x-0 bottom-[var(--player-height)] lg:bottom-[var(--player-height)] z-50 bg-[var(--bg-secondary)]/95 backdrop-blur-lg border-t border-[var(--border)] max-h-64 overflow-y-auto shadow-lg">
-          <div className="p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold text-sm">歌词</h3>
+        <div className="fixed inset-x-0 bottom-[var(--player-height)] lg:bottom-[var(--player-height)] z-50 bg-[var(--bg-secondary)]/95 backdrop-blur-lg border-t border-[var(--border-subtle)] max-h-64 overflow-y-auto">
+          <div className="p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-sm text-[var(--text-primary)]">歌词</h3>
               <button
                 onClick={() => setShowLyrics(false)}
-                className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-2 py-1 rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors"
+                className="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-3 py-1.5 rounded-xl hover:bg-[var(--bg-tertiary)] transition-colors"
               >
                 关闭
               </button>
@@ -92,10 +92,10 @@ export default function PlayerBar() {
         </div>
       )}
 
-      <div className="bg-[var(--bg-secondary)]/95 backdrop-blur-md border-t border-[var(--border-subtle)] px-4 py-2 shadow-lg">
+      <div className="bg-[var(--bg-secondary)]/95 backdrop-blur-md border-t border-[var(--border-subtle)] px-5 py-2.5">
         {/* Progress bar */}
         <div
-          className="w-full h-1 bg-[var(--bg-tertiary)] rounded-full mb-2.5 cursor-pointer group relative"
+          className="w-full h-[3px] bg-[var(--bg-tertiary)] rounded-full mb-2.5 cursor-pointer group relative"
           onClick={(e) => {
             const rect = e.currentTarget.getBoundingClientRect();
             const percent = (e.clientX - rect.left) / rect.width;
@@ -106,7 +106,7 @@ export default function PlayerBar() {
             className="h-full bg-[var(--accent)] rounded-full group-hover:bg-[var(--accent-hover)] transition-all relative"
             style={{ width: `${progressPercent}%` }}
           >
-            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full shadow-md opacity-0 group-hover:opacity-100 transition-opacity" />
+            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full border-2 border-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity" />
           </div>
         </div>
 
@@ -116,7 +116,7 @@ export default function PlayerBar() {
             className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer group"
             onClick={() => setShowFullScreen(true)}
           >
-            <div className="w-10 h-10 rounded-xl bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden shadow-sm ring-1 ring-[var(--border-subtle)] group-hover:ring-[var(--accent)]/30 transition-all">
+            <div className="w-10 h-10 rounded-2xl bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)]/30 transition-all">
               {currentTrack?.coverUrl ? (
                 <img src={currentTrack.coverUrl} alt="" className="w-full h-full object-cover" />
               ) : (
@@ -126,7 +126,7 @@ export default function PlayerBar() {
               )}
             </div>
             <div className="min-w-0">
-              <div className="text-sm font-semibold truncate group-hover:text-[var(--accent)] transition-colors">
+              <div className="text-sm font-semibold truncate group-hover:text-[var(--accent)] transition-colors text-[var(--text-primary)]">
                 {currentTrack?.title || '未在播放'}
               </div>
               <div className="text-xs text-[var(--text-tertiary)] truncate">
@@ -149,7 +149,7 @@ export default function PlayerBar() {
                 if (isPlaying) playerEngine.pause();
                 else if (currentTrack) playerEngine.resume();
               }}
-              className="p-2.5 rounded-full bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] active:scale-95 transition-all shadow-md focus-ring"
+              className="p-2.5 rounded-full bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] active:scale-95 transition-all focus-ring"
               title={isPlaying ? '暂停' : '播放'}
             >
               {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
@@ -198,9 +198,7 @@ export default function PlayerBar() {
       </div>
 
       {/* Full Screen Player */}
-      {showFullScreen && (
-        <FullScreenPlayer onClose={() => setShowFullScreen(false)} />
-      )}
+      {showFullScreen && <FullScreenPlayer onClose={() => setShowFullScreen(false)} />}
     </>
   );
 }

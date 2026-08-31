@@ -13,20 +13,20 @@ export default function MobileNav() {
   ];
 
   return (
-    <nav className="bg-[var(--bg-secondary)]/95 backdrop-blur-md border-t border-[var(--border-subtle)] flex justify-around items-center py-1.5 safe-area-bottom">
+    <nav className="bg-[var(--bg-secondary)]/95 backdrop-blur-md border-t border-[var(--border-subtle)] flex justify-around items-center py-2 safe-area-bottom">
       {navItems.map((item) => {
         const isActive = location.pathname === item.path;
         return (
           <Link
             key={item.path}
             to={item.path}
-            className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition-all duration-200 focus-ring ${
+            className={`flex flex-col items-center gap-0.5 px-3 py-2 rounded-2xl transition-all duration-200 focus-ring ${
               isActive
                 ? 'text-[var(--accent)]'
                 : 'text-[var(--text-tertiary)]'
             }`}
           >
-            <div className={`p-1 rounded-lg transition-colors ${isActive ? 'bg-[var(--accent-soft)]' : ''}`}>
+            <div className={`p-1 rounded-xl transition-colors ${isActive ? 'bg-[var(--accent-soft)]' : ''}`}>
               <item.icon className={`w-5 h-5 ${isActive ? 'stroke-[2.5]' : ''}`} />
             </div>
             <span className="text-[10px] font-medium">{item.label}</span>

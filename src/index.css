@@ -4,98 +4,93 @@
 
 /* ===== CSS Variables ===== */
 :root {
-  /* Light theme (default) */
-  --bg-primary: #ffffff;
-  --bg-secondary: #f8fafc;
-  --bg-tertiary: #f1f5f9;
+  /* Light theme — C Style: 留白极简 */
+  --bg-primary: #f5f5f7;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f0f2;
   --bg-elevated: #ffffff;
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-tertiary: #94a3b8;
-  --accent: #0ea5e9;
-  --accent-hover: #0284c7;
-  --accent-soft: rgba(14, 165, 233, 0.1);
-  --border: #e2e8f0;
-  --border-subtle: rgba(226, 232, 240, 0.6);
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.06), 0 2px 4px -1px rgba(0, 0, 0, 0.04);
-  --shadow-lg: 0 12px 24px -4px rgba(0, 0, 0, 0.08), 0 4px 8px -2px rgba(0, 0, 0, 0.04);
-  --shadow-glow: 0 0 20px rgba(14, 165, 233, 0.15);
+  --text-primary: #1a1a1a;
+  --text-secondary: #6b7280;
+  --text-tertiary: #9ca3af;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: rgba(37, 99, 235, 0.08);
+  --border: #e5e7eb;
+  --border-subtle: rgba(229, 231, 235, 0.6);
+  --shadow-sm: none;
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.06);
+  --shadow-glow: none;
   --sidebar-width: 220px;
   --player-height: 72px;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
 }
 
 html.dark {
-  /* Dark theme — richer palette with depth */
-  --bg-primary: #0b0f19;
-  --bg-secondary: #131b2e;
-  --bg-tertiary: #1e293b;
-  --bg-elevated: #1a2236;
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-tertiary: #64748b;
-  --accent: #38bdf8;
-  --accent-hover: #0ea5e9;
-  --accent-soft: rgba(56, 189, 248, 0.12);
-  --border: #1e293b;
-  --border-subtle: rgba(30, 41, 59, 0.8);
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
-  --shadow-lg: 0 12px 24px -4px rgba(0, 0, 0, 0.4), 0 4px 8px -2px rgba(0, 0, 0, 0.25);
-  --shadow-glow: 0 0 24px rgba(56, 189, 248, 0.12);
+  /* Dark theme — muted, minimal */
+  --bg-primary: #121212;
+  --bg-secondary: #1e1e1e;
+  --bg-tertiary: #2a2a2a;
+  --bg-elevated: #1e1e1e;
+  --text-primary: #f5f5f7;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-soft: rgba(59, 130, 246, 0.12);
+  --border: #27272a;
+  --border-subtle: rgba(39, 39, 42, 0.8);
+  --shadow-sm: none;
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.15);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.2);
+  --shadow-glow: none;
 }
 
 /* ===== Yinliu Component Utilities ===== */
 @layer components {
   .yinliu-input {
-    @apply px-4 py-2.5 rounded-xl border bg-[var(--bg-secondary)] text-[var(--text-primary)] outline-none transition-all;
+    @apply px-4 py-3 rounded-2xl border bg-[var(--bg-secondary)] text-[var(--text-primary)] outline-none transition-all;
     border-color: var(--border);
-    box-shadow: var(--shadow-sm);
   }
   .yinliu-input::placeholder {
     color: var(--text-tertiary);
   }
   .yinliu-input:focus {
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent), var(--shadow-sm);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
   }
 
   .yinliu-btn {
-    @apply px-4 py-2.5 rounded-xl text-white font-medium transition-all disabled:opacity-50;
-    background: linear-gradient(135deg, var(--accent), var(--accent-hover));
-    box-shadow: var(--shadow-sm);
+    @apply px-5 py-3 rounded-2xl text-white font-medium transition-all disabled:opacity-50;
+    background-color: var(--accent);
   }
   .yinliu-btn:hover {
-    filter: brightness(1.1);
-    box-shadow: var(--shadow-md);
+    background-color: var(--accent-hover);
   }
   .yinliu-btn:active {
-    transform: scale(0.96);
+    transform: scale(0.97);
   }
 
   .yinliu-btn-secondary {
-    @apply px-4 py-2.5 rounded-xl transition-all font-medium;
+    @apply px-5 py-3 rounded-2xl transition-all font-medium;
     background-color: var(--bg-tertiary);
     color: var(--text-secondary);
-    box-shadow: var(--shadow-sm);
   }
   .yinliu-btn-secondary:hover {
     background-color: var(--border);
     color: var(--text-primary);
   }
   .yinliu-btn-secondary:active {
-    transform: scale(0.96);
+    transform: scale(0.97);
   }
 
   .yinliu-card {
-    @apply rounded-xl p-4;
+    @apply rounded-2xl p-5;
     border: 1px solid var(--border-subtle);
     background-color: var(--bg-secondary);
-    box-shadow: var(--shadow-sm);
   }
 
   .yinliu-card-hover {
@@ -103,8 +98,6 @@ html.dark {
   }
   .yinliu-card-hover:hover {
     border-color: var(--accent);
-    box-shadow: var(--shadow-md);
-    transform: translateY(-1px);
   }
 }
 
@@ -138,8 +131,8 @@ html.dark {
 
 /* ===== Custom Scrollbar ===== */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
@@ -147,12 +140,12 @@ html.dark {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(128, 128, 128, 0.25);
-  border-radius: 3px;
+  background: rgba(128, 128, 128, 0.2);
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(128, 128, 128, 0.45);
+  background: rgba(128, 128, 128, 0.35);
 }
 
 /* ===== Lyrics highlight animation ===== */
@@ -161,7 +154,7 @@ html.dark {
 }
 
 .lyrics-line.active {
-  color: var(--primary-color, #3b82f6);
+  color: var(--accent);
   font-weight: 600;
   transform: scale(1.02);
 }
@@ -193,6 +186,17 @@ html.dark {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+/* ===== Slide animations ===== */
+@keyframes slideInLeft {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* ===== Reduced motion ===== */

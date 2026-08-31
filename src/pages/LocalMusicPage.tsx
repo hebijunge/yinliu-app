@@ -46,8 +46,8 @@ export default function LocalMusicPage() {
 
   return (
     <div className="max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold flex items-center gap-2">
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="text-2xl font-light flex items-center gap-3 text-[var(--text-primary)]">
           <HardDrive className="w-6 h-6" />
           本地音乐
         </h1>
@@ -57,13 +57,13 @@ export default function LocalMusicPage() {
       <div className="yinliu-card mb-6">
         <div className="flex gap-2 mb-3">
           <div className="flex-1 relative">
-            <FolderOpen className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-tertiary)]" />
+            <FolderOpen className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-tertiary)]" />
             <input
               type="text"
               value={scanPath}
               onChange={(e) => setScanPath(e.target.value)}
               placeholder="输入扫描目录（留空使用默认）..."
-              className="yinliu-input w-full pl-9"
+              className="yinliu-input w-full pl-10"
             />
           </div>
           <button
@@ -98,13 +98,13 @@ export default function LocalMusicPage() {
 
       {/* Song List */}
       {!isScanning && (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {songs.map((song) => (
             <div
               key={song.id}
-              className="flex items-center gap-3 p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 hover:shadow-sm transition-all duration-200 group"
+              className="flex items-center gap-4 p-4 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-all duration-200 group"
             >
-              <div className="w-12 h-12 rounded-xl bg-[var(--bg-tertiary)] flex-shrink-0 flex items-center justify-center overflow-hidden shadow-sm ring-1 ring-[var(--border-subtle)]">
+              <div className="w-14 h-14 rounded-2xl bg-[var(--bg-tertiary)] flex-shrink-0 flex items-center justify-center overflow-hidden border border-[var(--border-subtle)]">
                 {song.coverUrl ? (
                   <img src={song.coverUrl} alt="" className="w-full h-full object-cover" />
                 ) : (
@@ -113,7 +113,7 @@ export default function LocalMusicPage() {
               </div>
 
               <div className="flex-1 min-w-0">
-                <div className="font-medium truncate">{song.title}</div>
+                <div className="font-medium truncate text-[var(--text-primary)]">{song.title}</div>
                 <div className="text-sm text-[var(--text-secondary)] truncate">
                   {song.artist} {song.album && `· ${song.album}`}
                 </div>
@@ -129,7 +129,7 @@ export default function LocalMusicPage() {
 
               <button
                 onClick={() => handlePlay(song)}
-                className="p-2 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 shadow-sm focus-ring"
+                className="p-2 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 focus-ring"
                 title="播放"
               >
                 <Play className="w-4 h-4 ml-0.5" />
@@ -140,8 +140,8 @@ export default function LocalMusicPage() {
       )}
 
       {songs.length === 0 && !isScanning && (
-        <div className="text-center py-16">
-          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center">
+        <div className="text-center py-20">
+          <div className="w-16 h-16 mx-auto mb-5 rounded-3xl bg-[var(--bg-tertiary)] flex items-center justify-center">
             <FolderOpen className="w-8 h-8 text-[var(--text-tertiary)]" />
           </div>
           <p className="text-[var(--text-tertiary)]">点击「扫描」按钮发现本地音乐文件</p>

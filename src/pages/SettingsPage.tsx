@@ -19,17 +19,17 @@ export default function SettingsPage() {
 
   return (
     <div className="max-w-2xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6 hidden lg:block">设置</h1>
+      <h1 className="text-2xl font-light mb-8 hidden lg:block text-[var(--text-primary)]">设置</h1>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-6 overflow-x-auto pb-1">
+      <div className="flex gap-1 mb-8 overflow-x-auto pb-1">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm whitespace-nowrap transition-all focus-ring ${
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-sm whitespace-nowrap transition-all focus-ring ${
               activeTab === tab.id
-                ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold shadow-sm'
+                ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold'
                 : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
             }`}
           >
@@ -44,15 +44,15 @@ export default function SettingsPage() {
         {activeTab === 'general' && (
           <>
             <div className="yinliu-card">
-              <h3 className="font-semibold mb-4">主题设置</h3>
+              <h3 className="font-semibold mb-4 text-[var(--text-primary)]">主题设置</h3>
               <div className="flex gap-2">
                 {(['light', 'dark', 'system'] as const).map((m) => (
                   <button
                     key={m}
                     onClick={() => setMode(m)}
-                    className={`px-4 py-2.5 rounded-xl text-sm font-medium transition-all focus-ring ${
+                    className={`px-5 py-2.5 rounded-2xl text-sm font-medium transition-all focus-ring ${
                       mode === m
-                        ? 'bg-[var(--accent)] text-white shadow-sm'
+                        ? 'bg-[var(--accent)] text-white'
                         : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]'
                     }`}
                   >
@@ -69,15 +69,15 @@ export default function SettingsPage() {
         {activeTab === 'music' && (
           <>
             <div className="yinliu-card">
-              <h3 className="font-semibold mb-4">音源管理</h3>
+              <h3 className="font-semibold mb-4 text-[var(--text-primary)]">音源管理</h3>
               <div className="space-y-2">
                 {sources.map((source) => (
                   <div
                     key={source.id}
-                    className="flex items-center justify-between p-3 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]"
+                    className="flex items-center justify-between p-4 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]"
                   >
                     <div>
-                      <div className="font-medium">{source.name}</div>
+                      <div className="font-medium text-[var(--text-primary)]">{source.name}</div>
                       <div className="text-xs text-[var(--text-tertiary)]">
                         最高音质: {source.maxQuality}
                       </div>
@@ -94,10 +94,10 @@ export default function SettingsPage() {
             </div>
 
             <div className="yinliu-card">
-              <h3 className="font-semibold mb-4">下载设置</h3>
-              <div className="space-y-3">
+              <h3 className="font-semibold mb-4 text-[var(--text-primary)]">下载设置</h3>
+              <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <span className="text-sm">默认下载音质</span>
+                  <span className="text-sm text-[var(--text-primary)]">默认下载音质</span>
                   <select className="yinliu-input text-sm py-1">
                     <option>标准 (128K)</option>
                     <option>高品 (320K)</option>
@@ -105,7 +105,7 @@ export default function SettingsPage() {
                   </select>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-sm">最大并发下载数</span>
+                  <span className="text-sm text-[var(--text-primary)]">最大并发下载数</span>
                   <select className="yinliu-input text-sm py-1">
                     <option>1</option>
                     <option>2</option>
@@ -120,10 +120,10 @@ export default function SettingsPage() {
 
         {activeTab === 'reading' && (
           <div className="yinliu-card">
-            <h3 className="font-semibold mb-4">阅读设置</h3>
-            <div className="space-y-3">
+            <h3 className="font-semibold mb-4 text-[var(--text-primary)]">阅读设置</h3>
+            <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <span className="text-sm">字体大小</span>
+                <span className="text-sm text-[var(--text-primary)]">字体大小</span>
                 <select className="yinliu-input text-sm py-1">
                   <option>小</option>
                   <option selected>中</option>
@@ -132,7 +132,7 @@ export default function SettingsPage() {
                 </select>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-sm">翻页动画</span>
+                <span className="text-sm text-[var(--text-primary)]">翻页动画</span>
                 <select className="yinliu-input text-sm py-1">
                   <option>无</option>
                   <option selected>滑动</option>
@@ -140,7 +140,7 @@ export default function SettingsPage() {
                 </select>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-sm">背景颜色</span>
+                <span className="text-sm text-[var(--text-primary)]">背景颜色</span>
                 <select className="yinliu-input text-sm py-1">
                   <option>白色</option>
                   <option selected>米色</option>
@@ -154,10 +154,10 @@ export default function SettingsPage() {
 
         {activeTab === 'dj' && (
           <div className="yinliu-card">
-            <h3 className="font-semibold mb-4">DJ设置</h3>
-            <div className="space-y-3">
+            <h3 className="font-semibold mb-4 text-[var(--text-primary)]">DJ设置</h3>
+            <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <span className="text-sm">Crossfade过渡</span>
+                <span className="text-sm text-[var(--text-primary)]">Crossfade过渡</span>
                 <select className="yinliu-input text-sm py-1">
                   <option>关闭</option>
                   <option>2秒</option>
@@ -166,7 +166,7 @@ export default function SettingsPage() {
                 </select>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-sm">BPM显示</span>
+                <span className="text-sm text-[var(--text-primary)]">BPM显示</span>
                 <input type="checkbox" defaultChecked className="w-4 h-4 accent-[var(--accent)]" />
               </div>
             </div>
@@ -174,16 +174,17 @@ export default function SettingsPage() {
         )}
 
         {activeTab === 'about' && (
-          <div className="yinliu-card text-center py-10">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[var(--accent)]/10 flex items-center justify-center">
+          <div className="yinliu-card text-center py-12">
+            <div className="w-16 h-16 mx-auto mb-5 rounded-3xl bg-[var(--accent)]/10 flex items-center justify-center">
               <svg className="w-10 h-10 text-[var(--accent)]" viewBox="0 0 64 64" fill="none">
-                <path d="M22 48V20l24-4v24" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-                <circle cx="18" cy="48" r="6" stroke="currentColor" strokeWidth="2.5" />
-                <circle cx="42" cy="44" r="6" stroke="currentColor" strokeWidth="2.5" />
+                <rect x="6" y="6" width="52" height="52" rx="18" stroke="currentColor" strokeWidth="2" opacity="0.2" />
+                <path d="M24 46V22l20-4v20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                <circle cx="20" cy="46" r="5" stroke="currentColor" strokeWidth="2" />
+                <circle cx="40" cy="42" r="5" stroke="currentColor" strokeWidth="2" />
               </svg>
             </div>
-            <div className="text-2xl font-bold mb-1">音流</div>
-            <div className="text-sm text-[var(--text-secondary)] mb-6">Audio Stream</div>
+            <div className="text-2xl font-light mb-1 text-[var(--text-primary)] tracking-widest">音流</div>
+            <div className="text-sm text-[var(--text-secondary)] mb-8">Audio Stream</div>
             <div className="text-xs text-[var(--text-tertiary)] space-y-1.5">
               <p>版本: v0.1.0 MVP</p>
               <p>多音源聚合音乐播放器</p>

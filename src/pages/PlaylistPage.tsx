@@ -18,8 +18,8 @@ export default function PlaylistPage() {
 
   return (
     <div className="max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">{selectedPlaylist ? selectedPlaylist.name : '我的歌单'}</h1>
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="text-2xl font-light text-[var(--text-primary)]">{selectedPlaylist ? selectedPlaylist.name : '我的歌单'}</h1>
         <button onClick={() => setShowCreate(true)} className="yinliu-btn flex items-center gap-2">
           <Plus className="w-4 h-4" />
           新建歌单
@@ -29,7 +29,7 @@ export default function PlaylistPage() {
       {/* Create Playlist Modal */}
       {showCreate && (
         <div className="yinliu-card mb-6">
-          <h3 className="font-semibold mb-3">新建歌单</h3>
+          <h3 className="font-semibold mb-4 text-[var(--text-primary)]">新建歌单</h3>
           <div className="flex gap-2">
             <input
               type="text"
@@ -69,13 +69,13 @@ export default function PlaylistPage() {
           {playlists.map((pl) => (
             <div
               key={pl.id}
-              className="group relative rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] overflow-hidden hover:border-[var(--accent)]/30 hover:shadow-lg transition-all duration-200"
+              className="group relative rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] overflow-hidden hover:border-[var(--accent)]/30 transition-all duration-200"
             >
               <a href={`/playlists?id=${pl.id}`} className="block">
-                <div className="aspect-square bg-gradient-to-br from-[var(--accent)]/10 to-[var(--accent-hover)]/5 flex items-center justify-center">
+                <div className="aspect-square bg-[var(--bg-tertiary)] flex items-center justify-center">
                   <ListMusic className="w-12 h-12 text-[var(--text-tertiary)]" />
                 </div>
-                <div className="p-3">
+                <div className="p-4">
                   {editingId === pl.id ? (
                     <div className="flex gap-1">
                       <input
@@ -96,9 +96,9 @@ export default function PlaylistPage() {
                       />
                     </div>
                   ) : (
-                    <h3 className="font-medium truncate">{pl.name}</h3>
+                    <h3 className="font-medium truncate text-[var(--text-primary)]">{pl.name}</h3>
                   )}
-                  <p className="text-xs text-[var(--text-tertiary)] mt-0.5">{pl.songCount} 首歌曲</p>
+                  <p className="text-xs text-[var(--text-tertiary)] mt-1">{pl.songCount} 首歌曲</p>
                 </div>
               </a>
 
@@ -107,13 +107,13 @@ export default function PlaylistPage() {
                 <div className="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button
                     onClick={() => { setEditingId(pl.id); setEditName(pl.name); }}
-                    className="p-1.5 rounded-lg bg-black/50 text-white hover:bg-black/70 backdrop-blur-sm transition-colors focus-ring"
+                    className="p-1.5 rounded-xl bg-black/40 text-white hover:bg-black/60 backdrop-blur-sm transition-colors focus-ring"
                   >
                     <Edit3 className="w-3.5 h-3.5" />
                   </button>
                   <button
                     onClick={() => removePlaylist(pl.id)}
-                    className="p-1.5 rounded-lg bg-black/50 text-white hover:bg-red-500/80 backdrop-blur-sm transition-colors focus-ring"
+                    className="p-1.5 rounded-xl bg-black/40 text-white hover:bg-red-500/70 backdrop-blur-sm transition-colors focus-ring"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -121,7 +121,7 @@ export default function PlaylistPage() {
               )}
 
               {/* Play button */}
-              <button className="absolute bottom-14 right-3 p-2.5 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all shadow-lg hover:bg-[var(--accent-hover)] active:scale-95 focus-ring">
+              <button className="absolute bottom-16 right-3 p-2.5 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 focus-ring">
                 <Play className="w-4 h-4 ml-0.5" />
               </button>
             </div>

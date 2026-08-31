@@ -68,8 +68,8 @@ export default function DownloadPage() {
 
   return (
     <div className="max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold flex items-center gap-2">
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="text-2xl font-light flex items-center gap-3 text-[var(--text-primary)]">
           <Download className="w-6 h-6" />
           下载管理
         </h1>
@@ -90,7 +90,7 @@ export default function DownloadPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-8">
         {[
           { label: '总计', value: stats.total },
           { label: '等待中', value: stats.pending },
@@ -98,17 +98,17 @@ export default function DownloadPage() {
           { label: '已完成', value: stats.completed },
           { label: '失败', value: stats.failed },
         ].map((s) => (
-          <div key={s.label} className="yinliu-card text-center py-3">
-            <div className="text-2xl font-bold">{s.value}</div>
-            <div className="text-xs text-[var(--text-tertiary)]">{s.label}</div>
+          <div key={s.label} className="yinliu-card text-center py-4">
+            <div className="text-2xl font-light text-[var(--text-primary)]">{s.value}</div>
+            <div className="text-xs text-[var(--text-tertiary)] mt-1">{s.label}</div>
           </div>
         ))}
       </div>
 
       {/* Task List */}
-      <div className="space-y-2">
+      <div className="space-y-3">
         {tasks.length === 0 && (
-          <div className="text-center py-12 text-[var(--text-tertiary)]">
+          <div className="text-center py-16 text-[var(--text-tertiary)]">
             暂无下载任务
           </div>
         )}
@@ -116,24 +116,24 @@ export default function DownloadPage() {
         {tasks.map((task) => (
           <div
             key={task.id}
-            className="yinliu-card p-4"
+            className="yinliu-card p-5"
           >
-            <div className="flex items-center gap-3 mb-2">
+            <div className="flex items-center gap-3 mb-3">
               <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
               <div className="flex-1 min-w-0">
-                <div className="font-medium truncate">
+                <div className="font-medium truncate text-[var(--text-primary)]">
                   {task.title || task.songId}
                   {task.artist && (
                     <span className="text-[var(--text-secondary)] text-sm ml-1">— {task.artist}</span>
                   )}
                   {task.isFallback && (
-                    <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-500">
+                    <span className="ml-2 text-xs px-2 py-0.5 rounded-lg bg-yellow-500/10 text-yellow-500">
                       兜底
                     </span>
                   )}
                 </div>
                 {task.localPath && task.status === 'completed' && (
-                  <div className="text-xs text-[var(--text-tertiary)] truncate mt-0.5">
+                  <div className="text-xs text-[var(--text-tertiary)] truncate mt-1">
                     已保存: {task.localPath.split('/').pop()}
                   </div>
                 )}
@@ -144,7 +144,7 @@ export default function DownloadPage() {
             </div>
 
             {/* Progress bar */}
-            <div className="w-full h-2 bg-[var(--bg-tertiary)] rounded-full mb-2">
+            <div className="w-full h-2 bg-[var(--bg-tertiary)] rounded-full mb-3">
               <div
                 className={`h-full rounded-full transition-all ${
                   task.status === 'failed' ? 'bg-red-500' :
@@ -156,7 +156,7 @@ export default function DownloadPage() {
             </div>
 
             <div className="flex items-center justify-between text-xs text-[var(--text-secondary)]">
-              <div className="flex gap-3">
+              <div className="flex gap-4">
                 <span>{Math.round((task.progress || 0) * 100)}%</span>
                 <span>{formatSize(task.downloadedSize)} / {formatSize(task.fileSize)}</span>
                 {task.status === 'downloading' && (
@@ -168,7 +168,7 @@ export default function DownloadPage() {
                 {task.status === 'downloading' && (
                   <button
                     onClick={() => { downloadEngine.pauseDownload(task.id); refreshTasks(); }}
-                    className="p-1.5 rounded hover:bg-[var(--bg-tertiary)]"
+                    className="p-1.5 rounded-xl hover:bg-[var(--bg-tertiary)] transition-colors"
                     title="暂停"
                   >
                     <Pause className="w-4 h-4" />
@@ -177,7 +177,7 @@ export default function DownloadPage() {
                 {task.status === 'paused' && (
                   <button
                     onClick={() => { downloadEngine.resumeDownload(task.id); refreshTasks(); }}
-                    className="p-1.5 rounded hover:bg-[var(--bg-tertiary)]"
+                    className="p-1.5 rounded-xl hover:bg-[var(--bg-tertiary)] transition-colors"
                     title="恢复"
                   >
                     <Play className="w-4 h-4" />
@@ -186,7 +186,7 @@ export default function DownloadPage() {
                 {task.status === 'failed' && (
                   <button
                     onClick={() => { downloadEngine.retryDownload(task.id); refreshTasks(); }}
-                    className="p-1.5 rounded hover:bg-[var(--bg-tertiary)]"
+                    className="p-1.5 rounded-xl hover:bg-[var(--bg-tertiary)] transition-colors"
                     title="重试"
                   >
                     <RotateCcw className="w-4 h-4" />
@@ -194,17 +194,13 @@ export default function DownloadPage() {
                 )}
                 <button
                   onClick={() => { downloadEngine.cancelDownload(task.id); refreshTasks(); }}
-                  className="p-1.5 rounded hover:bg-red-500/20 hover:text-red-500"
+                  className="p-1.5 rounded-xl hover:bg-red-500/10 hover:text-red-500 transition-colors"
                   title="取消"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
             </div>
-
-            {task.errorMessage && (
-              <div className="text-xs text-red-500 mt-1">{task.errorMessage}</div>
-            )}
           </div>
         ))}
       </div>

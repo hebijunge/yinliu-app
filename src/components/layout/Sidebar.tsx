@@ -7,7 +7,6 @@ import {
   Download,
   HardDrive,
   Settings,
-  Music2,
   X,
   Sun,
   Moon,
@@ -35,20 +34,24 @@ export default function Sidebar({ onClose }: SidebarProps) {
   return (
     <div className="h-full flex flex-col bg-[var(--bg-secondary)]">
       {/* Logo */}
-      <div className="flex items-center justify-between px-4 py-4 border-b border-[var(--border)]">
+      <div className="flex items-center justify-between px-5 py-5 border-b border-[var(--border-subtle)]">
         <Link to="/" className="flex items-center gap-3 group" onClick={onClose}>
-          <div className="w-9 h-9 rounded-xl bg-[var(--accent)]/10 flex items-center justify-center group-hover:bg-[var(--accent)]/20 transition-colors">
-            <Music2 className="w-5 h-5 text-[var(--accent)]" />
+          <div className="w-9 h-9 rounded-2xl bg-[var(--accent)]/10 flex items-center justify-center group-hover:bg-[var(--accent)]/15 transition-colors">
+            <svg className="w-5 h-5 text-[var(--accent)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 18V5l12-2v13" />
+              <circle cx="6" cy="18" r="3" />
+              <circle cx="18" cy="16" r="3" />
+            </svg>
           </div>
           <div className="flex flex-col">
-            <span className="text-lg font-bold leading-tight">音流</span>
+            <span className="text-lg font-semibold leading-tight text-[var(--text-primary)]">音流</span>
             <span className="text-[10px] text-[var(--text-tertiary)] leading-tight -mt-0.5">多音源聚合播放器</span>
           </div>
         </Link>
         {onClose && (
           <button
             onClick={onClose}
-            className="lg:hidden p-2 rounded-xl hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
+            className="lg:hidden p-2 rounded-2xl hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -56,7 +59,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto">
+      <nav className="flex-1 py-4 px-3 space-y-0.5 overflow-y-auto">
         {navItems.map((item) => {
           const isActive = location.pathname === item.path;
           return (
@@ -64,9 +67,9 @@ export default function Sidebar({ onClose }: SidebarProps) {
               key={item.path}
               to={item.path}
               onClick={onClose}
-              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 focus-ring ${
+              className={`flex items-center gap-3 px-3.5 py-2.5 rounded-2xl transition-all duration-200 focus-ring ${
                 isActive
-                  ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold shadow-sm'
+                  ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold'
                   : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
               }`}
             >
@@ -81,10 +84,10 @@ export default function Sidebar({ onClose }: SidebarProps) {
       </nav>
 
       {/* Theme Toggle */}
-      <div className="p-3 border-t border-[var(--border)]">
+      <div className="p-3 border-t border-[var(--border-subtle)]">
         <button
           onClick={toggleTheme}
-          className="flex items-center gap-3 px-3 py-2.5 w-full rounded-xl text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors focus-ring"
+          className="flex items-center gap-3 px-3.5 py-2.5 w-full rounded-2xl text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors focus-ring"
         >
           {isDark ? (
             <Sun className="w-5 h-5" />

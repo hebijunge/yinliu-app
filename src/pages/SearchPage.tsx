@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { Search, Loader2, Music, Filter, AlertCircle, WifiOff, ShieldAlert, Clock } from 'lucide-react';
+import { Search, Loader2, Music, Filter, AlertCircle, WifiOff, ShieldAlert } from 'lucide-react';
 import { useSearchStore } from '../shared/store/searchStore';
 import { searchEngine } from '../core/search';
 import { playerEngine } from '../core/player';
@@ -15,7 +15,6 @@ export default function SearchPage() {
 
   const [inputValue, setInputValue] = useState(keyword);
   const [showFilters, setShowFilters] = useState(false);
-
   const [searchError, setSearchError] = useState<string | null>(null);
 
   const handleSearch = useCallback(async () => {
@@ -34,7 +33,6 @@ export default function SearchPage() {
       setResults(results);
       setSourceStats(sourceStats);
 
-      // 如果所有源都报错，显示聚合错误提示
       const allFailed = Object.values(sourceStats).every(s => s.error);
       if (allFailed && Object.keys(sourceStats).length > 0) {
         const errors = Object.entries(sourceStats)
@@ -78,19 +76,19 @@ export default function SearchPage() {
 
   return (
     <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6 hidden lg:block">聚合搜索</h1>
+      <h1 className="text-2xl font-light mb-8 hidden lg:block text-[var(--text-primary)]">聚合搜索</h1>
 
       {/* Search Box */}
-      <div className="flex gap-2 mb-4">
+      <div className="flex gap-3 mb-6">
         <div className="flex-1 relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--text-tertiary)]" />
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--text-tertiary)]" />
           <input
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             placeholder="搜索歌曲、歌手、专辑..."
-            className="yinliu-input w-full pl-10"
+            className="yinliu-input w-full pl-12 text-base"
           />
         </div>
         <button
@@ -103,7 +101,7 @@ export default function SearchPage() {
         </button>
         <button
           onClick={() => setShowFilters(!showFilters)}
-          className={`yinliu-btn-secondary ${showFilters ? 'text-[var(--accent)] ring-1 ring-[var(--accent)]/30' : ''}`}
+          className={`yinliu-btn-secondary ${showFilters ? 'text-[var(--accent)] border-[var(--accent)]/30' : ''}`}
         >
           <Filter className="w-4 h-4" />
         </button>
@@ -111,17 +109,17 @@ export default function SearchPage() {
 
       {/* Filters */}
       {showFilters && (
-        <div className="yinliu-card mb-4 space-y-3">
+        <div className="yinliu-card mb-6 space-y-4">
           <div>
             <label className="text-sm font-medium text-[var(--text-secondary)]">音质偏好</label>
-            <div className="flex gap-2 mt-2 flex-wrap">
+            <div className="flex gap-2 mt-3 flex-wrap">
               {([Quality.STANDARD, Quality.HIGH, Quality.LOSSLESS, Quality.HIRES] as Quality[]).map((q) => (
                 <button
                   key={q}
                   onClick={() => setQuality(q)}
-                  className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all ${
+                  className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
                     selectedQuality === q
-                      ? 'bg-[var(--accent)] text-white shadow-sm'
+                      ? 'bg-[var(--accent)] text-white'
                       : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]'
                   }`}
                 >
@@ -138,7 +136,7 @@ export default function SearchPage() {
 
       {/* Source Stats */}
       {Object.keys(sourceStats).length > 0 && (
-        <div className="flex gap-2 mb-4 flex-wrap">
+        <div className="flex gap-2 mb-6 flex-wrap">
           {Object.entries(sourceStats).map(([id, stat]) => {
             const hasError = !!stat.error;
             const errorIcon = stat.errorType === 'network' ? <WifiOff className="w-3 h-3" />
@@ -146,7 +144,7 @@ export default function SearchPage() {
               : hasError ? <AlertCircle className="w-3 h-3" />
               : null;
             return (
-              <div key={id} className={`text-xs px-3 py-1.5 rounded-full border flex items-center gap-1.5 ${hasError ? 'bg-red-500/10 text-red-400 border-red-500/20' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border-[var(--border-subtle)]'}`}>
+              <div key={id} className={`text-xs px-3 py-1.5 rounded-full border flex items-center gap-1.5 ${hasError ? 'bg-red-500/5 text-red-400 border-red-500/15' : 'bg-[var(--bg-secondary)] text-[var(--text-secondary)] border-[var(--border-subtle)]'}`}>
                 <span className="font-medium">{id}</span>
                 <span>{stat.total}条</span>
                 <span className="text-[var(--text-tertiary)]">{stat.latency}ms</span>
@@ -164,14 +162,14 @@ export default function SearchPage() {
 
       {/* Search History */}
       {searchHistory.length > 0 && results.length === 0 && !isSearching && (
-        <div className="mb-4">
-          <div className="text-sm font-medium text-[var(--text-secondary)] mb-2">搜索历史</div>
+        <div className="mb-6">
+          <div className="text-sm font-medium text-[var(--text-secondary)] mb-3">搜索历史</div>
           <div className="flex gap-2 flex-wrap">
             {searchHistory.map((h) => (
               <button
                 key={h}
                 onClick={() => { setInputValue(h); }}
-                className="px-3 py-1.5 rounded-full text-sm bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)] hover:text-[var(--text-primary)] transition-colors border border-[var(--border-subtle)]"
+                className="px-4 py-2 rounded-full text-sm bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:border-[var(--accent)]/40 hover:text-[var(--accent)] transition-colors border border-[var(--border-subtle)]"
               >
                 {h}
               </button>
@@ -187,13 +185,13 @@ export default function SearchPage() {
 
       {/* Results */}
       {!isSearching && (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {results.map((result) => (
             <div
               key={result.id}
-              className="flex items-center gap-3 p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 hover:shadow-md transition-all duration-200 group"
+              className="flex items-center gap-4 p-4 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-all duration-200 group"
             >
-              <div className="w-12 h-12 rounded-xl bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden shadow-sm ring-1 ring-[var(--border-subtle)]">
+              <div className="w-14 h-14 rounded-2xl bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden border border-[var(--border-subtle)]">
                 {result.coverUrl ? (
                   <img src={result.coverUrl} alt="" className="w-full h-full object-cover" />
                 ) : (
@@ -204,15 +202,15 @@ export default function SearchPage() {
               </div>
 
               <div className="flex-1 min-w-0">
-                <div className="font-medium truncate">{result.title}</div>
+                <div className="font-medium truncate text-[var(--text-primary)]">{result.title}</div>
                 <div className="text-sm text-[var(--text-secondary)] truncate">
                   {result.artist} {result.album && `· ${result.album}`}
                 </div>
-                <div className="flex gap-1 mt-1">
+                <div className="flex gap-1.5 mt-1.5">
                   {result.sources.map((s) => (
                     <span
                       key={s.sourceId}
-                      className={`text-[10px] px-1.5 py-0.5 rounded-md text-white font-medium ${sourceColors[s.sourceId] || 'bg-gray-500'}`}
+                      className={`text-[10px] px-2 py-0.5 rounded-md text-white font-medium ${sourceColors[s.sourceId] || 'bg-gray-500'}`}
                     >
                       {s.sourceName}
                     </span>
@@ -226,7 +224,7 @@ export default function SearchPage() {
 
               <button
                 onClick={() => handlePlay(result)}
-                className="p-2.5 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 shadow-sm focus-ring"
+                className="p-3 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 focus-ring"
                 title="播放"
               >
                 <svg className="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
@@ -240,7 +238,7 @@ export default function SearchPage() {
 
       {/* Error Banner */}
       {searchError && (
-        <div className="mb-4 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 flex items-start gap-3">
+        <div className="mb-4 p-4 rounded-2xl bg-red-500/5 border border-red-500/15 text-red-400 flex items-start gap-3">
           <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
           <div className="text-sm break-all">
             <div className="font-medium mb-1">搜索出错</div>
@@ -251,8 +249,8 @@ export default function SearchPage() {
 
       {/* Empty state */}
       {!isSearching && results.length === 0 && keyword && !searchError && (
-        <div className="text-center py-16">
-          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center">
+        <div className="text-center py-20">
+          <div className="w-16 h-16 mx-auto mb-5 rounded-3xl bg-[var(--bg-tertiary)] flex items-center justify-center">
             <Search className="w-8 h-8 text-[var(--text-tertiary)]" />
           </div>
           <p className="text-[var(--text-tertiary)]">未找到相关结果，请尝试其他关键词</p>

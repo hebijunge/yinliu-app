@@ -67,22 +67,22 @@ export default function DjPage() {
 
   return (
     <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6 hidden lg:block flex items-center gap-2">
+      <h1 className="text-2xl font-light mb-8 hidden lg:block flex items-center gap-3 text-[var(--text-primary)]">
         <Radio className="w-6 h-6" />
         DJ舞曲
       </h1>
 
       {/* Search */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-3 mb-6">
         <div className="flex-1 relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--text-tertiary)]" />
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[var(--text-tertiary)]" />
           <input
             type="text"
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             placeholder="搜索DJ舞曲..."
-            className="yinliu-input w-full pl-10"
+            className="yinliu-input w-full pl-12"
           />
         </div>
         <button
@@ -98,20 +98,20 @@ export default function DjPage() {
       {/* Categories */}
       <div className="mb-6">
         <h2 className="text-sm font-medium text-[var(--text-secondary)] mb-3">分类浏览</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {categories.map((cat) => (
             <button
               key={cat.id}
               onClick={() => handleCategoryClick(cat.id)}
-              className={`p-3 rounded-xl text-left transition-all focus-ring ${
+              className={`p-3 rounded-2xl text-left transition-all focus-ring ${
                 activeCategory === cat.id
-                  ? 'bg-[var(--accent-soft)] border border-[var(--accent)]/30 shadow-sm'
-                  : 'bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/20 hover:shadow-sm'
+                  ? 'bg-[var(--accent-soft)] border border-[var(--accent)]/30'
+                  : 'bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/20'
               }`}
             >
-              <div className="font-medium text-sm">{cat.name}</div>
+              <div className="font-medium text-sm text-[var(--text-primary)]">{cat.name}</div>
               {cat.description && (
-                <div className="text-xs text-[var(--text-tertiary)] mt-0.5">{cat.description}</div>
+                <div className="text-xs text-[var(--text-tertiary)] mt-1">{cat.description}</div>
               )}
             </button>
           ))}
@@ -125,18 +125,18 @@ export default function DjPage() {
 
       {/* Results */}
       {!isSearching && (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {results.map((result) => (
             <div
               key={result.id}
-              className="flex items-center gap-3 p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 hover:shadow-sm transition-all duration-200 group"
+              className="flex items-center gap-4 p-4 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-all duration-200 group"
             >
-              <div className="w-12 h-12 rounded-xl bg-[var(--bg-tertiary)] flex-shrink-0 flex items-center justify-center shadow-sm ring-1 ring-[var(--border-subtle)]">
+              <div className="w-14 h-14 rounded-2xl bg-[var(--bg-tertiary)] flex-shrink-0 flex items-center justify-center border border-[var(--border-subtle)]">
                 <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
               </div>
 
               <div className="flex-1 min-w-0">
-                <div className="font-medium truncate">{result.title}</div>
+                <div className="font-medium truncate text-[var(--text-primary)]">{result.title}</div>
                 <div className="text-sm text-[var(--text-secondary)] truncate">
                   {result.artist} {result.bpm && `· ${result.bpm} BPM`}
                 </div>
@@ -148,7 +148,7 @@ export default function DjPage() {
 
               <button
                 onClick={() => handlePlay(result)}
-                className="p-2.5 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 shadow-sm focus-ring"
+                className="p-3 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 focus-ring"
                 title="播放"
               >
                 <svg className="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
@@ -161,8 +161,8 @@ export default function DjPage() {
       )}
 
       {results.length === 0 && !isSearching && (
-        <div className="text-center py-16">
-          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center">
+        <div className="text-center py-20">
+          <div className="w-16 h-16 mx-auto mb-5 rounded-3xl bg-[var(--bg-tertiary)] flex items-center justify-center">
             <Radio className="w-8 h-8 text-[var(--text-tertiary)]" />
           </div>
           <p className="text-[var(--text-tertiary)]">选择分类或搜索DJ舞曲</p>
