@@ -98,8 +98,9 @@ export abstract class BaseHttpSource implements MusicSource {
       this.raceOneCandidate(c, targetQuality)
     );
 
-    // 使用自定义竞速：只要有一个成功就立即返回，不需要等其余完成
-    const result = await this.raceToFirstSuccess(candidatePromises);
+    // 使用 accurate-aware 竞速：accurate 候选一成功立即返回；
+    // inaccurate 候选先成功时继续等待，给 accurate 候选一个竞争窗口。
+    const result = await this.raceWithAccuratePriority(candidatePromises);
 
     if (result) {
       // 记录成功通道记忆
@@ -170,60 +171,72 @@ export abstract class BaseHttpSource implements MusicSource {
   }
 
   /**
-   * 竞速到第一个成功：使用循环 + Promise.race 实现"一成功即返回"
-   * 比 Promise.allSettled 快，因为不需要等所有请求完成
+   * accurate-aware 竞速：优先返回 accurate 候选，保留"一成功即返回"性能。
+   *
+   * 机制：
+   * - 若先完成的是 accurate（isAccurateResult === true），立即返回；
+   * - 若先完成的是 inaccurate，记录它并继续等待其余候选；
+   * - 当所有候选都失败后，如有记录的 inaccurate 则降级返回。
+   *
+   * 这比旧版 Promise.allSettled 更快：accurate 候选一旦先完成即可提前返回，
+   * 不需要等其余候选 settle。
    */
-  private async raceToFirstSuccess(
+  private async raceWithAccuratePriority(
     promises: Promise<(PlayUrlResult & { _candidateKey: string }) | null>[]
   ): Promise<PlayUrlResult | null> {
     if (promises.length === 0) return null;
     if (promises.length === 1) return await promises[0];
 
-    const pending = new Map<number, Promise<(PlayUrlResult & { _candidateKey: string }) | null>>();
-    promises.forEach((p, i) => pending.set(i, p));
+    return new Promise((resolve) => {
+      let resolved = false;
+      let firstInaccurate: PlayUrlResult | null = null;
+      let remaining = promises.length;
 
-    while (pending.size > 0) {
-      // 每次 race 所有剩余 promise
-      const racers = Array.from(pending.values());
-      try {
-        const winner = await Promise.race(racers);
-        if (winner) {
-          return winner;
+      const tryResolve = () => {
+        if (!resolved && remaining === 0 && firstInaccurate) {
+          resolved = true;
+          resolve(firstInaccurate);
+        } else if (!resolved && remaining === 0) {
+          resolved = true;
+          resolve(null);
         }
-        // winner 为 null 表示该候选失败了，需要移除它继续 race 其他
-        // 找出哪个 promise 完成了
-        const settled = await Promise.allSettled(racers);
-        for (let i = 0; i < settled.length; i++) {
-          const idx = Array.from(pending.keys())[i];
-          const s = settled[i];
-          if (s.status === 'fulfilled' && s.value === null) {
-            pending.delete(idx);
-          } else if (s.status === 'rejected') {
-            pending.delete(idx);
-          }
-        }
-      } catch {
-        // race 中某个 promise reject 了，移除它继续
-        const settled = await Promise.allSettled(racers);
-        const keys = Array.from(pending.keys());
-        for (let i = 0; i < settled.length; i++) {
-          if (settled[i].status === 'rejected') {
-            pending.delete(keys[i]);
-          }
-        }
-      }
-    }
+      };
 
-    return null;
+      promises.forEach((p) => {
+        p.then((result) => {
+          remaining--;
+          if (resolved) return;
+          if (!result) { tryResolve(); return; }
+          if (this.isAccurateResult(result)) {
+            resolved = true;
+            resolve(result);
+            return;
+          }
+          if (!firstInaccurate) firstInaccurate = result;
+          tryResolve();
+        }).catch(() => {
+          remaining--;
+          tryResolve();
+        });
+      });
+    });
+  }
+
+  /**
+   * 判断结果是否属于 accurate 候选（用于竞速优先）。
+   * 子类可覆写以适配各源的 accurate 语义。
+   */
+  protected isAccurateResult(result: PlayUrlResult): boolean {
+    return result.accurate !== false;
   }
 
   protected validateQuality(result: PlayUrlResult, target: Quality): boolean {
     if (!result.url) return false;
     // 音质等级校验
     if (qualityRank(result.quality) < qualityRank(target)) return false;
-    // 若子类已标记 accurate，直接信任
+    // 若子类已标记 accurate，直接信任；accurate === false 作为降级链保留，
+    // 由 raceWithAccuratePriority 在竞速层做优先级排序，不在此处直接拒绝。
     if (result.accurate === true) return true;
-    if (result.accurate === false) return false;
     // 未标记时，做保守的码率/格式兜底校验
     return this.validateBitrateAndFormat(result.bitrate, result.format, target);
   }

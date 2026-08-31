@@ -42,6 +42,14 @@ export class KuwoSource extends BaseHttpSource {
   // 缓存
   private songMetaCache = new Map<string, { name: string; artist: string }>();
 
+  /**
+   * accurate 竞速优先级判定：accurate !== false 视为可优先选用的结果。
+   * 酷我官方源按码率精确匹配标记 accurate；海棠降级链标记 accurate: false。
+   */
+  protected isAccurateResult(result: PlayUrlResult): boolean {
+    return result.accurate !== false;
+  }
+
   // ===================== 搜索 =====================
 
   async search(params: SearchParams): Promise<SearchResult[]> {

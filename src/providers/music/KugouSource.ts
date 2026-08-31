@@ -30,6 +30,14 @@ export class KugouSource extends BaseHttpSource {
   private hashCache = new Map<string, { hash: string; hash320: string; hashFlac: string; name: string; artist: string; duration: number }>();
   private nextId = 1;
 
+  /**
+   * accurate 竞速优先级判定：accurate !== false 视为可优先选用的结果。
+   * 酷狗官方源返回 accurate: true；海棠降级链返回 accurate: false。
+   */
+  protected isAccurateResult(result: PlayUrlResult): boolean {
+    return result.accurate !== false;
+  }
+
   // ===================== 搜索 =====================
 
   async search(params: SearchParams): Promise<SearchResult[]> {

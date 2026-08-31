@@ -30,6 +30,14 @@ export class NeteaseSource extends BaseHttpSource {
     { name: 'sedet', url: 'https://music.sedet.top/api.php' },
   ];
 
+  /**
+   * accurate 竞速优先级判定：accurate !== false 视为可优先选用的结果。
+   * 网易云官方源按码率精确匹配标记 accurate；试听片段或降级链标记 accurate: false。
+   */
+  protected isAccurateResult(result: PlayUrlResult): boolean {
+    return result.accurate !== false;
+  }
+
   // ===================== 搜索 =====================
 
   async search(params: SearchParams): Promise<SearchResult[]> {
