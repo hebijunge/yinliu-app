@@ -34,19 +34,44 @@ html.dark {
 /* Yinliu component utilities */
 @layer components {
   .yinliu-input {
-    @apply px-4 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] outline-none focus:ring-2 focus:ring-[var(--accent)]/30 focus:border-[var(--accent)] transition-all;
+    @apply px-4 py-2.5 rounded-xl border bg-[var(--bg-secondary)] text-[var(--text-primary)] outline-none transition-all;
+    border-color: var(--border);
+  }
+  .yinliu-input::placeholder {
+    color: var(--text-tertiary);
+  }
+  .yinliu-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
   }
 
   .yinliu-btn {
-    @apply px-4 py-2.5 rounded-xl bg-[var(--accent)] text-white font-medium hover:bg-[var(--accent-hover)] active:scale-95 transition-all disabled:opacity-50;
+    @apply px-4 py-2.5 rounded-xl text-white font-medium transition-all disabled:opacity-50;
+    background-color: var(--accent);
+  }
+  .yinliu-btn:hover {
+    background-color: var(--accent-hover);
+  }
+  .yinliu-btn:active {
+    transform: scale(0.95);
   }
 
   .yinliu-btn-secondary {
-    @apply px-4 py-2.5 rounded-xl bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)] active:scale-95 transition-all;
+    @apply px-4 py-2.5 rounded-xl transition-all;
+    background-color: var(--bg-tertiary);
+    color: var(--text-secondary);
+  }
+  .yinliu-btn-secondary:hover {
+    background-color: var(--border);
+  }
+  .yinliu-btn-secondary:active {
+    transform: scale(0.95);
   }
 
   .yinliu-card {
-    @apply rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] p-4;
+    @apply rounded-xl p-4;
+    border: 1px solid var(--border);
+    background-color: var(--bg-secondary);
   }
 }
 
