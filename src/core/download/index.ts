@@ -308,17 +308,17 @@ export class DownloadEngine {
       // QMC2 解密（Kuwo 源）
       const decrypted = task.sourceId === 'kuwo' ? qmc2DecryptBytes(merged) : merged;
 
-      // 转为 base64 写入 Capacitor Filesystem
-      // 分块转换以避免大文件栈溢出（Hi-Res FLAC >50MB）
-      let binary = '';
-      const CHUNK = 0x8000; // 32KB
-      for (let i = 0; i < decrypted.length; i += CHUNK) {
-        binary += String.fromCharCode.apply(
-          null,
-          decrypted.subarray(i, i + CHUNK) as unknown as number[]
-        );
+      // 转为 base64 写入 Capacitor Filesystem（32KB 分块避免大文件栈溢出）
+      function arrayBufferToBase64(buffer: Uint8Array): string {
+        const chunkSize = 32768;
+        let binary = '';
+        for (let i = 0; i < buffer.length; i += chunkSize) {
+          const chunk = buffer.subarray(i, i + chunkSize);
+          binary += String.fromCharCode(...chunk);
+        }
+        return btoa(binary);
       }
-      const base64 = btoa(binary);
+      const base64 = arrayBufferToBase64(decrypted);
       await Filesystem.writeFile({
         path: filePath,
         data: base64,

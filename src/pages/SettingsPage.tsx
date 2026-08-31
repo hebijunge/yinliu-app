@@ -70,7 +70,7 @@ export default function SettingsPage() {
   const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => (
     <button
       onClick={() => onChange(!on)}
-      className={`relative w-11 h-6 rounded-full transition-colors flex-s-shrink-0 focus-ring ${on ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
+      className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 focus-ring ${on ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
       role="switch"
       aria-checked={on}
     >

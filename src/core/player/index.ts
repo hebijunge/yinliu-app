@@ -46,7 +46,7 @@ interface PlayerEventMap {
   error: { message: string };
   ended: void;
   /** 取链完成（含实际音质/试听标记），UI 据此回写 actualQuality */
-  trackLoaded: { track: PlayerTrack; result: PlayUrlResult; actualSourceId?: string | null };
+  trackLoaded: { track: PlayerTrack; result: PlayUrlResult; actualSourceId: string };
   /** 系统媒体会话 / 锁屏控制触发的事件 */
   mediaAction: { action: string; seekTime: number | null };
   /**
@@ -199,7 +199,7 @@ export class PlayerEngine {
   }
 
   // === 统一 URL 解析器：本地歌曲 → 已下载本地文件 → 在线取链（带优先级降级链） ===
-  private async resolvePlayUrl(track: PlayerTrack, quality: Quality): Promise<{ url: string; isLocal: boolean; result: PlayUrlResult }> {
+  private async resolvePlayUrl(track: PlayerTrack, quality: Quality): Promise<{ url: string; isLocal: boolean; result: PlayUrlResult; actualSourceId: string }> {
     // 0. 本地歌曲（sourceId === 'local'，v12 已合并分支）：直接读取文件系统
     //    优先级降级链对本地音乐完全不可见——本地音乐本来就是「最优先」的播放来源。
     if (track.sourceId === 'local') {
@@ -210,6 +210,7 @@ export class PlayerEngine {
         url: localUrl,
         isLocal: true,
         result: { url: localUrl, quality, bitrate: 0, format: ext },
+        actualSourceId: 'local',
       };
     }
 
@@ -231,6 +232,7 @@ export class PlayerEngine {
           url: localUrl,
           isLocal: true,
           result: { url: localUrl, quality, bitrate: 0, format: 'mp3' },
+          actualSourceId: track.sourceId,
         };
       }
     }
@@ -284,7 +286,7 @@ export class PlayerEngine {
             `${fromName} 取链失败（${reason}），已自动降级到 ${toName}`
           );
         }
-        return { url: playUrl.url, isLocal: false, result: playUrl };
+        return { url: playUrl.url, isLocal: false, result: playUrl, actualSourceId: trySourceId };
       } catch (err) {
         lastError = err;
         console.warn(
@@ -321,14 +323,14 @@ export class PlayerEngine {
     }
 
     try {
-      const { url, isLocal, result } = await this.resolvePlayUrl(track, quality);
+      const { url, isLocal, result, actualSourceId } = await this.resolvePlayUrl(track, quality);
 
       if (isLocal) {
         this.currentBlobUrl = url;
       }
 
       await this.loadAndPlay(url, track);
-      this.emit('trackLoaded', { track, result, actualSourceId: this.currentTrack?.sourceId ?? null });
+      this.emit('trackLoaded', { track, result, actualSourceId });
 
       // 记录播放历史（去重由 service 处理）
       playHistoryService.addRecord({
