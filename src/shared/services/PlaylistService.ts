@@ -1,0 +1,256 @@
+import { getDb, getSqliteDb, flushDatabase } from '@shared/database';
+
+export interface PlaylistSong {
+  id: number;
+  playlistId: string;
+  songId: string;
+  title: string;
+  artist?: string;
+  album?: string;
+  duration?: number;
+  coverUrl?: string;
+  source: string;
+  quality: string;
+  addedAt: number;
+  sortOrder: number;
+}
+
+export interface Playlist {
+  id: string;
+  name: string;
+  description?: string;
+  coverUrl?: string;
+  createdAt: number;
+  updatedAt: number;
+  songCount: number;
+}
+
+class PlaylistService {
+  // === 歌单 CRUD ===
+
+  async getAllPlaylists(): Promise<Playlist[]> {
+    const sqliteDb = getSqliteDb();
+    const stmt = sqliteDb.prepare(
+      `SELECT p.*, COUNT(ps.id) as song_count
+       FROM playlists p
+       LEFT JOIN playlist_songs ps ON p.id = ps.playlist_id
+       GROUP BY p.id
+       ORDER BY p.updated_at DESC`
+    );
+    const playlists: Playlist[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>;
+      playlists.push({
+        id: String(row.id),
+        name: String(row.name),
+        description: row.description ? String(row.description) : undefined,
+        coverUrl: row.cover_url ? String(row.cover_url) : undefined,
+        createdAt: Number(row.created_at || 0),
+        updatedAt: Number(row.updated_at || 0),
+        songCount: Number(row.song_count || 0),
+      });
+    }
+    stmt.free();
+    return playlists;
+  }
+
+  async createPlaylist(name: string, description?: string): Promise<Playlist> {
+    const id = `pl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const now = Date.now();
+    const sqliteDb = getSqliteDb();
+    sqliteDb.run(
+      `INSERT INTO playlists (id, name, description, type, is_system, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, name, description || null, 'normal', 0, now, now]
+    );
+    await flushDatabase();
+    return {
+      id,
+      name,
+      description,
+      createdAt: now,
+      updatedAt: now,
+      songCount: 0,
+    };
+  }
+
+  async renamePlaylist(id: string, name: string): Promise<void> {
+    const sqliteDb = getSqliteDb();
+    sqliteDb.run(
+      `UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?`,
+      [name, Date.now(), id]
+    );
+    await flushDatabase();
+  }
+
+  async deletePlaylist(id: string): Promise<void> {
+    const sqliteDb = getSqliteDb();
+    // 先删关联歌曲
+    sqliteDb.run(`DELETE FROM playlist_songs WHERE playlist_id = ?`, [id]);
+    // 再删歌单（但保留 favorites，因为「我喜欢的音乐」是固定歌单）
+    sqliteDb.run(`DELETE FROM playlists WHERE id = ? AND id != 'favorites'`, [id]);
+    await flushDatabase();
+  }
+
+  // === 歌曲操作 ===
+
+  async getPlaylistSongs(playlistId: string): Promise<PlaylistSong[]> {
+    const sqliteDb = getSqliteDb();
+    const stmt = sqliteDb.prepare(
+      `SELECT * FROM playlist_songs WHERE playlist_id = ? ORDER BY sort_index ASC, added_at DESC`
+    );
+    stmt.bind([playlistId]);
+    const songs: PlaylistSong[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as Record<string, unknown>;
+      songs.push({
+        id: Number(row.id),
+        playlistId: String(row.playlist_id),
+        songId: String(row.song_id),
+        title: String(row.title || ''),
+        artist: row.artist ? String(row.artist) : undefined,
+        album: row.album ? String(row.album) : undefined,
+        duration: row.duration ? Number(row.duration) : undefined,
+        coverUrl: row.cover_url ? String(row.cover_url) : undefined,
+        source: String(row.source || ''),
+        quality: String(row.quality || 'standard'),
+        addedAt: Number(row.added_at || 0),
+        sortOrder: Number(row.sort_index || 0),
+      });
+    }
+    stmt.free();
+    return songs;
+  }
+
+  async addSongToPlaylist(
+    playlistId: string,
+    song: {
+      songId: string;
+      title: string;
+      artist?: string;
+      album?: string;
+      duration?: number;
+      coverUrl?: string;
+      source: string;
+      quality: string;
+    }
+  ): Promise<void> {
+    const sqliteDb = getSqliteDb();
+    const now = Date.now();
+
+    // 获取当前最大 sort_index
+    const countStmt = sqliteDb.prepare(
+      `SELECT COUNT(*) as cnt FROM playlist_songs WHERE playlist_id = ?`
+    );
+    countStmt.bind([playlistId]);
+    let maxIndex = 0;
+    if (countStmt.step()) {
+      maxIndex = Number((countStmt.getAsObject() as Record<string, unknown>).cnt || 0);
+    }
+    countStmt.free();
+
+    sqliteDb.run(
+      `INSERT INTO playlist_songs
+       (playlist_id, song_id, title, artist, album, duration, cover_url, source, quality, sort_index, added_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        playlistId,
+        song.songId,
+        song.title,
+        song.artist || null,
+        song.album || null,
+        song.duration || null,
+        song.coverUrl || null,
+        song.source,
+        song.quality,
+        maxIndex,
+        now,
+      ]
+    );
+
+    // 更新歌单的 updated_at
+    sqliteDb.run(
+      `UPDATE playlists SET updated_at = ? WHERE id = ?`,
+      [now, playlistId]
+    );
+
+    await flushDatabase();
+  }
+
+  async removeSongFromPlaylist(playlistId: string, songId: string): Promise<void> {
+    const sqliteDb = getSqliteDb();
+    sqliteDb.run(
+      `DELETE FROM playlist_songs WHERE playlist_id = ? AND song_id = ?`,
+      [playlistId, songId]
+    );
+    sqliteDb.run(
+      `UPDATE playlists SET updated_at = ? WHERE id = ?`,
+      [Date.now(), playlistId]
+    );
+    await flushDatabase();
+  }
+
+  async moveSongOrder(playlistId: string, songId: string, newIndex: number): Promise<void> {
+    const sqliteDb = getSqliteDb();
+    sqliteDb.run(
+      `UPDATE playlist_songs SET sort_index = ? WHERE playlist_id = ? AND song_id = ?`,
+      [newIndex, playlistId, songId]
+    );
+    sqliteDb.run(
+      `UPDATE playlists SET updated_at = ? WHERE id = ?`,
+      [Date.now(), playlistId]
+    );
+    await flushDatabase();
+  }
+
+  // === 收藏：加入「我喜欢的音乐」（id='favorites' 的普通歌单）===
+  async addToFavorites(song: {
+    songId: string;
+    title: string;
+    artist?: string;
+    album?: string;
+    duration?: number;
+    coverUrl?: string;
+    source: string;
+    quality: string;
+  }): Promise<void> {
+    // 先检查是否已存在
+    const sqliteDb = getSqliteDb();
+    const checkStmt = sqliteDb.prepare(
+      `SELECT COUNT(*) as cnt FROM playlist_songs WHERE playlist_id = 'favorites' AND song_id = ?`
+    );
+    checkStmt.bind([song.songId]);
+    let exists = false;
+    if (checkStmt.step()) {
+      exists = Number((checkStmt.getAsObject() as Record<string, unknown>).cnt || 0) > 0;
+    }
+    checkStmt.free();
+
+    if (exists) {
+      // 已存在，不做任何事（幂等）
+      return;
+    }
+
+    await this.addSongToPlaylist('favorites', song);
+  }
+
+  async removeFromFavorites(songId: string): Promise<void> {
+    await this.removeSongFromPlaylist('favorites', songId);
+  }
+
+  async isFavorite(songId: string): Promise<boolean> {
+    const sqliteDb = getSqliteDb();
+    const stmt = sqliteDb.prepare(
+      `SELECT COUNT(*) as cnt FROM playlist_songs WHERE playlist_id = 'favorites' AND song_id = ?`
+    );
+    stmt.bind([songId]);
+    let exists = false;
+    if (stmt.step()) {
+      exists = Number((stmt.getAsObject() as Record<string, unknown>).cnt || 0) > 0;
+    }
+    stmt.free();
+    return exists;
+  }
+}
+
+export const playlistService = new PlaylistService();

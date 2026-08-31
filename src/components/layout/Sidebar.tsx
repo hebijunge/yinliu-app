@@ -1,101 +1,80 @@
-import { Link, useLocation } from 'react-router-dom';
-import {
-  Search,
-  ListMusic,
-  BookOpen,
-  Radio,
-  Download,
-  HardDrive,
-  Settings,
-  X,
-  Sun,
-  Moon,
-} from 'lucide-react';
-import { useThemeStore } from '../../shared/store/themeStore';
+import { NavLink } from 'react-router-dom';
+import { Search, Music, Download, BookOpen, Settings, Heart, Clock, ListMusic } from 'lucide-react';
+import { usePlaylistStore } from '../../shared/store/playlistStore';
 
 interface SidebarProps {
   onClose?: () => void;
 }
 
 export default function Sidebar({ onClose }: SidebarProps) {
-  const location = useLocation();
-  const { isDark, toggleTheme } = useThemeStore();
+  const { playlists } = usePlaylistStore();
 
   const navItems = [
-    { path: '/', icon: Search, label: '搜索' },
-    { path: '/playlists', icon: ListMusic, label: '歌单' },
-    { path: '/local', icon: HardDrive, label: '本地音乐' },
-    { path: '/reading', icon: BookOpen, label: '阅读' },
-    { path: '/dj', icon: Radio, label: 'DJ' },
-    { path: '/downloads', icon: Download, label: '下载' },
-    { path: '/settings', icon: Settings, label: '设置' },
+    { to: '/', icon: Search, label: '发现/搜索' },
+    { to: '/playlists', icon: ListMusic, label: '我的歌单' },
+    { to: '/downloads', icon: Download, label: '下载管理' },
+    { to: '/reading', icon: BookOpen, label: '书架' },
+    { to: '/settings', icon: Settings, label: '设置' },
   ];
 
   return (
-    <div className="h-full flex flex-col bg-[var(--bg-secondary)]">
+    <div className="h-full flex flex-col p-4">
       {/* Logo */}
-      <div className="flex items-center justify-between px-5 py-5 border-b border-[var(--border-subtle)]">
-        <Link to="/" className="flex items-center gap-3 group" onClick={onClose}>
-          <div className="w-9 h-9 rounded-2xl bg-[var(--accent)]/10 flex items-center justify-center group-hover:bg-[var(--accent)]/15 transition-colors">
-            <svg className="w-5 h-5 text-[var(--accent)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M9 18V5l12-2v13" />
-              <circle cx="6" cy="18" r="3" />
-              <circle cx="18" cy="16" r="3" />
-            </svg>
-          </div>
-          <div className="flex flex-col">
-            <span className="text-lg font-semibold leading-tight text-[var(--text-primary)]">音流</span>
-            <span className="text-[10px] text-[var(--text-tertiary)] leading-tight -mt-0.5">多音源聚合播放器</span>
-          </div>
-        </Link>
-        {onClose && (
-          <button
-            onClick={onClose}
-            className="lg:hidden p-2 rounded-2xl hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        )}
+      <div className="flex items-center gap-3 mb-6 px-2">
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-400 to-primary-600 flex items-center justify-center">
+          <Music className="w-5 h-5 text-white" />
+        </div>
+        <span className="text-xl font-bold">音流</span>
       </div>
 
-      {/* Navigation */}
-      <nav className="flex-1 py-4 px-3 space-y-0.5 overflow-y-auto">
-        {navItems.map((item) => {
-          const isActive = location.pathname === item.path;
-          return (
-            <Link
-              key={item.path}
-              to={item.path}
-              onClick={onClose}
-              className={`flex items-center gap-3 px-3.5 py-2.5 rounded-2xl transition-all duration-200 focus-ring ${
+      {/* Main Nav */}
+      <nav className="space-y-1">
+        {navItems.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            onClick={onClose}
+            className={({ isActive }) =>
+              `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                 isActive
-                  ? 'bg-[var(--accent-soft)] text-[var(--accent)] font-semibold'
+                  ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
                   : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
-              }`}
-            >
-              <item.icon className={`w-5 h-5 ${isActive ? 'stroke-[2.5]' : ''}`} />
-              <span className="text-sm">{item.label}</span>
-              {isActive && (
-                <div className="ml-auto w-1.5 h-1.5 rounded-full bg-[var(--accent)]" />
-              )}
-            </Link>
-          );
-        })}
+              }`
+            }
+          >
+            <item.icon className="w-5 h-5" />
+            {item.label}
+          </NavLink>
+        ))}
       </nav>
 
-      {/* Theme Toggle */}
-      <div className="p-3 border-t border-[var(--border-subtle)]">
-        <button
-          onClick={toggleTheme}
-          className="flex items-center gap-3 px-3.5 py-2.5 w-full rounded-2xl text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors focus-ring"
-        >
-          {isDark ? (
-            <Sun className="w-5 h-5" />
-          ) : (
-            <Moon className="w-5 h-5" />
-          )}
-          <span className="text-sm">{isDark ? '浅色模式' : '深色模式'}</span>
-        </button>
+      {/* Divider */}
+      <div className="my-4 border-t border-[var(--border)]" />
+
+      {/* Playlists */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="px-3 mb-2 text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider">
+          我的歌单
+        </div>
+        <div className="space-y-0.5">
+          {playlists.map((pl) => (
+            <NavLink
+              key={pl.id}
+              to={`/playlists?id=${pl.id}`}
+              onClick={onClose}
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  isActive
+                    ? 'bg-[var(--accent)]/10 text-[var(--accent)]'
+                    : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
+                }`
+              }
+            >
+              {pl.id === 'favorites' ? <Heart className="w-4 h-4" /> : <ListMusic className="w-4 h-4" />}
+              <span className="truncate">{pl.name}</span>
+            </NavLink>
+          ))}
+        </div>
       </div>
     </div>
   );

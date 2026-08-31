@@ -3,24 +3,100 @@ import initSqlJs from 'sql.js';
 import * as schema from './schema';
 
 let db: ReturnType<typeof drizzle<typeof schema>> | null = null;
+let sqliteDb: InstanceType<ReturnType<typeof initSqlJs>['Database']> | null = null;
+let sqlJsModule: Awaited<ReturnType<typeof initSqlJs>> | null = null;
 
+const DB_NAME = 'yinliu_music_db';
+const DB_STORE = 'sqlite_databases';
+const DB_VERSION = 1;
+
+// === IndexedDB 持久化后端 ===
+function openIndexedDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_STORE, DB_VERSION);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    request.onupgradeneeded = (event) => {
+      const idb = (event.target as IDBOpenDBRequest).result;
+      if (!idb.objectStoreNames.contains('databases')) {
+        idb.createObjectStore('databases');
+      }
+    };
+  });
+}
+
+async function saveDbToIndexedDB(data: Uint8Array): Promise<void> {
+  try {
+    const idb = await openIndexedDB();
+    const tx = idb.transaction('databases', 'readwrite');
+    const store = tx.objectStore('databases');
+    await new Promise<void>((resolve, reject) => {
+      const req = store.put(data, DB_NAME);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+    idb.close();
+  } catch (err) {
+    console.error('[DB Persist] Failed to save to IndexedDB:', err);
+    throw err;
+  }
+}
+
+async function loadDbFromIndexedDB(): Promise<Uint8Array | null> {
+  try {
+    const idb = await openIndexedDB();
+    const tx = idb.transaction('databases', 'readonly');
+    const store = tx.objectStore('databases');
+    const data = await new Promise<Uint8Array | undefined>((resolve, reject) => {
+      const req = store.get(DB_NAME);
+      req.onsuccess = () => resolve(req.result as Uint8Array | undefined);
+      req.onerror = () => reject(req.error);
+    });
+    idb.close();
+    return data ?? null;
+  } catch (err) {
+    console.error('[DB Persist] Failed to load from IndexedDB:', err);
+    return null;
+  }
+}
+
+// === 显式 flush：导出内存 DB 并写入 IndexedDB ===
+export async function flushDatabase(): Promise<void> {
+  if (!sqliteDb || !sqlJsModule) {
+    throw new Error('Database not initialized, cannot flush');
+  }
+  const data = sqliteDb.export();
+  await saveDbToIndexedDB(data);
+  console.log('[DB Persist] Database flushed to IndexedDB, size:', data.length, 'bytes');
+}
+
+// === 初始化数据库（支持从 IndexedDB 恢复）===
 export async function initDatabase(): Promise<typeof db> {
   if (db) return db;
-  
+
   const SQL = await initSqlJs({
-    locateFile: (file) => {
-      // Try local bundled WASM first, fallback to CDN only in dev
-      if (import.meta.env?.DEV) {
-        return `https://sql.js.org/dist/${file}`;
-      }
-      return `./${file}`;
-    },
+    locateFile: (file) => `/${file}`,
   });
-  
-  const sqliteDb = new SQL.Database();
+  sqlJsModule = SQL;
+
+  // 尝试从 IndexedDB 恢复已有数据库
+  const savedData = await loadDbFromIndexedDB();
+  if (savedData && savedData.length > 0) {
+    try {
+      sqliteDb = new SQL.Database(savedData);
+      console.log('[DB Persist] Restored database from IndexedDB, size:', savedData.length, 'bytes');
+    } catch (err) {
+      console.error('[DB Persist] Failed to restore saved DB, creating new:', err);
+      sqliteDb = new SQL.Database();
+    }
+  } else {
+    sqliteDb = new SQL.Database();
+    console.log('[DB Persist] No saved DB found, creating new database');
+  }
+
   db = drizzle(sqliteDb, { schema });
-  
-  // Create tables
+
+  // === 建表（IF NOT EXISTS，兼容已有数据）===
   sqliteDb.run(`
     CREATE TABLE IF NOT EXISTS songs (
       id TEXT PRIMARY KEY,
@@ -58,6 +134,13 @@ export async function initDatabase(): Promise<typeof db> {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       playlist_id TEXT NOT NULL,
       song_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      artist TEXT,
+      album TEXT,
+      duration INTEGER,
+      cover_url TEXT,
+      source TEXT NOT NULL,
+      quality TEXT NOT NULL,
       sort_index INTEGER NOT NULL,
       added_at INTEGER
     );
@@ -156,8 +239,8 @@ export async function initDatabase(): Promise<typeof db> {
       created_at INTEGER
     );
   `);
-  
-  // Insert default source configs
+
+  // 插入默认音源配置
   const defaults = [
     { id: 'netease', name: '网易云音乐', enabled: 1, priority: 100, maxQuality: 'hires' },
     { id: 'qq', name: 'QQ音乐', enabled: 1, priority: 90, maxQuality: 'hifi' },
@@ -167,20 +250,34 @@ export async function initDatabase(): Promise<typeof db> {
     { id: 'qishui', name: '汽水音乐', enabled: 0, priority: 50, maxQuality: 'standard' },
     { id: 'qianqian', name: '千千音乐', enabled: 0, priority: 40, maxQuality: 'high' },
   ];
-  
+
   for (const s of defaults) {
     sqliteDb.run(
       `INSERT OR IGNORE INTO source_configs (id, name, enabled, priority, max_quality) VALUES (?, ?, ?, ?, ?)`,
       [s.id, s.name, s.enabled, s.priority, s.maxQuality]
     );
   }
-  
+
+  // 初始化「我喜欢的音乐」歌单（固定 id='favorites'，普通歌单，不做特殊分支）
+  sqliteDb.run(
+    `INSERT OR IGNORE INTO playlists (id, name, description, type, is_system, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ['favorites', '我喜欢的音乐', '默认收藏歌单', 'normal', 0, Date.now(), Date.now()]
+  );
+
+  // 首次初始化后立刻 flush
+  await flushDatabase();
+
   return db;
 }
 
 export function getDb() {
   if (!db) throw new Error('Database not initialized');
   return db;
+}
+
+export function getSqliteDb() {
+  if (!sqliteDb) throw new Error('Database not initialized');
+  return sqliteDb;
 }
 
 export { schema };

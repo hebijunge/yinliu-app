@@ -1,501 +1,361 @@
-import { Quality } from '@core/types';
-import type { DownloadTask, DownloadStatus } from '@core/types';
+import type { Quality, DownloadStatus, DownloadTask } from '@core/types';
 import { sourceRegistry } from '@providers/music/registry';
-import { deriveRawKey } from '@/utils/crypto/kuwoEkey';
-import { qmc2DecryptBytes, isDecryptedMagic } from '@/utils/crypto/qmc2';
+import { platformFetch } from '@shared/utils/platformFetch';
+import { getSqliteDb, flushDatabase } from '@shared/database';
+import { Filesystem, Directory } from '@capacitor/filesystem';
 
-// 使用简单UUID生成（避免引入完整uuid库）
-function generateId(): string {
-  return 'dl_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 9);
+export interface DownloadProgressEvent {
+  taskId: string;
+  progress: number;
+  downloadedSize: number;
+  totalSize: number;
+  speed: number;
 }
 
-export interface DownloadQueueItem extends DownloadTask {
-  abortController?: AbortController;
-  blob?: Blob;
-  fileSize?: number;
-  downloadedSize?: number;
-  retryCount?: number;
-  /** 歌曲标题（用于文件命名） */
-  title?: string;
-  /** 歌手名 */
-  artist?: string;
-}
-
-export interface DownloadEngineOptions {
-  maxConcurrent?: number;
-  downloadDir?: string;
-}
-
-/**
- * 下载管理引擎
- * 功能：下载队列管理、多档音质下载、进度显示、暂停/恢复/取消
- *       支持写入本地文件系统（Capacitor Filesystem）
- *       支持酷我加密内容解密（mflac/mgg → flac/ogg）
- */
 export class DownloadEngine {
-  private queue: DownloadQueueItem[] = [];
-  private activeDownloads = 0;
-  private maxConcurrent: number;
-  private defaultQuality: Quality = Quality.STANDARD;
-  private listeners: Map<string, Array<(task: DownloadQueueItem) => void>> = new Map();
+  private tasks = new Map<string, DownloadTask>();
+  private abortControllers = new Map<string, AbortController>();
+  private listeners: Record<string, Array<(data: unknown) => void>> = {};
 
-  constructor(options: DownloadEngineOptions = {}) {
-    this.maxConcurrent = options.maxConcurrent || 3;
+  private emit(event: string, data: unknown) {
+    const callbacks = this.listeners[event] || [];
+    callbacks.forEach((cb) => cb(data));
   }
 
-  /** 设置最大并发下载数（设置页实时生效） */
-  setMaxConcurrent(count: number): void {
-    const n = Math.max(1, Math.min(10, Math.floor(count) || 1));
-    this.maxConcurrent = n;
-    // 并发上限调大后尝试继续处理队列
-    this.processQueue();
-  }
-
-  /** 设置默认下载音质（设置页实时生效） */
-  setDefaultQuality(quality: Quality): void {
-    this.defaultQuality = quality;
-  }
-
-  /** 获取默认下载音质 */
-  getDefaultQuality(): Quality {
-    return this.defaultQuality;
-  }
-
-  // 事件监听
-  on(event: 'progress' | 'complete' | 'error' | 'statusChange', callback: (task: DownloadQueueItem) => void): () => void {
-    if (!this.listeners.has(event)) {
-      this.listeners.set(event, []);
-    }
-    this.listeners.get(event)!.push(callback);
-
+  on(event: string, callback: (data: unknown) => void): () => void {
+    if (!this.listeners[event]) this.listeners[event] = [];
+    this.listeners[event].push(callback);
     return () => {
-      const list = this.listeners.get(event);
-      if (list) {
-        this.listeners.set(event, list.filter((cb) => cb !== callback));
-      }
+      this.listeners[event] = this.listeners[event].filter((cb) => cb !== callback);
     };
   }
 
-  private emit(event: 'progress' | 'complete' | 'error' | 'statusChange', task: DownloadQueueItem) {
-    const callbacks = this.listeners.get(event) || [];
-    callbacks.forEach((cb) => cb(task));
+  // === 从数据库恢复下载任务 ===
+  async restoreTasks(): Promise<void> {
+    try {
+      const sqliteDb = getSqliteDb();
+      const stmt = sqliteDb.prepare('SELECT * FROM downloads ORDER BY created_at DESC');
+      while (stmt.step()) {
+        const row = stmt.getAsObject() as Record<string, unknown>;
+        const task: DownloadTask = {
+          id: String(row.id),
+          songId: String(row.song_id),
+          sourceId: String(row.source_id || ''),
+          quality: String(row.quality || 'standard') as Quality,
+          url: row.url ? String(row.url) : undefined,
+          filePath: row.local_path ? String(row.local_path) : undefined,
+          status: String(row.status || 'pending') as DownloadStatus,
+          progress: Number(row.progress || 0),
+          totalSize: Number(row.file_size || 0),
+          errorMessage: row.error_message ? String(row.error_message) : undefined,
+          createdAt: Number(row.created_at || Date.now()),
+        };
+        this.tasks.set(task.id, task);
+      }
+      stmt.free();
+    } catch (err) {
+      console.error('[DownloadEngine] restoreTasks failed:', err);
+    }
   }
 
-  /**
-   * 添加下载任务
-   */
-  async addDownload(
-    songId: string,
-    sourceId: string,
-    quality: Quality,
-    metadata?: { title?: string; artist?: string; album?: string }
-  ): Promise<DownloadQueueItem> {
-    const task: DownloadQueueItem = {
-      id: generateId(),
-      songId,
-      sourceId,
-      quality,
+  getTasks(): DownloadTask[] {
+    return Array.from(this.tasks.values()).sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  getTask(id: string): DownloadTask | undefined {
+    return this.tasks.get(id);
+  }
+
+  // === 创建下载任务 ===
+  async createTask(params: {
+    songId: string;
+    sourceId: string;
+    quality: Quality;
+    title: string;
+    artist?: string;
+  }): Promise<DownloadTask> {
+    const id = `dl_${params.sourceId}_${params.songId}_${params.quality}_${Date.now()}`;
+    const task: DownloadTask = {
+      id,
+      songId: params.songId,
+      sourceId: params.sourceId,
+      quality: params.quality,
       status: 'pending',
       progress: 0,
-      speed: 0,
-      isFallback: false,
-      title: metadata?.title,
-      artist: metadata?.artist,
+      totalSize: 0,
+      createdAt: Date.now(),
     };
 
-    this.queue.push(task);
-    this.processQueue();
+    // 去重：同一 source+song+quality 如果已在 pending/downloading 状态，直接返回
+    const existing = this.getTasks().find(
+      (t) => t.songId === params.songId && t.sourceId === params.sourceId && t.quality === params.quality
+        && (t.status === 'pending' || t.status === 'downloading')
+    );
+    if (existing) {
+      return existing;
+    }
 
+    this.tasks.set(id, task);
+    await this.persistTask(task);
     return task;
   }
 
-  /**
-   * 批量添加下载任务
-   */
-  async addBatchDownloads(
-    items: Array<{ songId: string; sourceId: string; quality: Quality; metadata?: { title?: string; artist?: string } }>
-  ): Promise<DownloadQueueItem[]> {
-    const tasks = items.map((item) => ({
-      id: generateId(),
-      songId: item.songId,
-      sourceId: item.sourceId,
-      quality: item.quality,
-      status: 'pending' as DownloadStatus,
-      progress: 0,
-      speed: 0,
-      isFallback: false,
-      title: item.metadata?.title,
-      artist: item.metadata?.artist,
-    }));
+  // === 启动下载（pending → downloading）===
+  async startDownload(taskId: string): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Task ${taskId} not found`);
+    if (task.status === 'completed') return;
+    if (task.status === 'downloading') return;
 
-    this.queue.push(...tasks);
-    this.processQueue();
-
-    return tasks;
-  }
-
-  /**
-   * 处理下载队列
-   */
-  private async processQueue(): Promise<void> {
-    if (this.activeDownloads >= this.maxConcurrent) return;
-
-    const pendingTask = this.queue.find((t) => t.status === 'pending');
-    if (!pendingTask) return;
-
-    this.activeDownloads++;
-    pendingTask.status = 'downloading';
-    pendingTask.abortController = new AbortController();
-    this.emit('statusChange', pendingTask);
+    task.status = 'downloading';
+    task.errorMessage = undefined;
+    await this.persistTask(task);
+    this.emit('stateChange', { taskId, status: 'downloading', task });
 
     try {
-      await this.executeDownload(pendingTask);
-    } finally {
-      this.activeDownloads--;
-      this.processQueue();
-    }
-  }
-
-  /**
-   * 执行单个下载
-   */
-  private async executeDownload(task: DownloadQueueItem): Promise<void> {
-    const startTime = Date.now();
-    let lastUpdateTime = startTime;
-    let lastDownloaded = 0;
-
-    try {
+      // 1. 获取播放 URL
       const source = sourceRegistry.get(task.sourceId);
       if (!source) {
         throw new Error(`Source ${task.sourceId} not found`);
       }
 
-      // 获取播放URL（下载链接）
-      let playUrl;
+      const playUrl = await source.getPlayUrl(task.songId, task.quality);
+      task.url = playUrl.url;
+
+      // 2. 确保下载目录存在
+      const dir = 'yinliu/downloads';
       try {
-        playUrl = await source.getPlayUrl(task.songId, task.quality);
+        await Filesystem.mkdir({ path: dir, directory: Directory.Data, recursive: true });
       } catch {
-        // 尝试酷我兜底
-        const kuwo = sourceRegistry.get('kuwo');
-        if (kuwo && task.sourceId !== 'kuwo') {
-          playUrl = await kuwo.getPlayUrl(task.songId, task.quality);
-          task.isFallback = true;
-        } else {
-          throw new Error('无法获取下载链接');
-        }
+        // 目录可能已存在
       }
 
-      if (!playUrl?.url) {
-        throw new Error('下载链接为空');
-      }
+      // 3. 构建文件路径
+      const ext = playUrl.format || 'mp3';
+      const fileName = `${task.sourceId}_${task.songId}_${task.quality}.${ext}`;
+      const filePath = `${dir}/${fileName}`;
+      task.filePath = filePath;
 
-      // 开始下载（二进制响应，避免 CapacitorHttp UTF-8 解码损坏音频数据）
-      const { platformFetch } = await import('@shared/utils/platformFetch');
+      // 4. 发起二进制下载
+      const abortCtrl = new AbortController();
+      this.abortControllers.set(taskId, abortCtrl);
+
       const response = await platformFetch(playUrl.url, {
-        signal: task.abortController?.signal,
-        headers: playUrl.headers,
-        responseType: 'arraybuffer',
+        method: 'GET',
+        signal: abortCtrl.signal,
+        headers: playUrl.headers || {},
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      const contentLength = parseInt(response.headers.get('content-length') || '0', 10);
-      task.fileSize = contentLength;
+      const contentLength = Number(response.headers.get('content-length') || '0');
+      task.totalSize = contentLength;
 
-      const reader = response.body!.getReader();
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('Response body is not readable');
+      }
+
+      // 5. 流式读取并写入文件
       const chunks: Uint8Array[] = [];
       let downloaded = 0;
+      let lastTime = Date.now();
+      let lastDownloaded = 0;
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
+        // 检查是否被暂停/取消
+        if (task.status !== 'downloading') {
+          reader.cancel();
+          break;
+        }
+
         chunks.push(value);
         downloaded += value.length;
+        task.progress = task.totalSize > 0 ? downloaded / task.totalSize : 0;
 
-        // 更新进度
-        task.progress = contentLength > 0 ? downloaded / contentLength : 0;
-        task.downloadedSize = downloaded;
-
-        // 计算速度
+        // 计算速度 (bytes/s)
         const now = Date.now();
-        if (now - lastUpdateTime >= 1000) {
-          task.speed = Math.round(((downloaded - lastDownloaded) / (now - lastUpdateTime)) * 1000);
-          lastUpdateTime = now;
+        const dt = now - lastTime;
+        if (dt >= 500) {
+          const speed = Math.round(((downloaded - lastDownloaded) / dt) * 1000);
+          lastTime = now;
           lastDownloaded = downloaded;
-        }
-
-        this.emit('progress', task);
-      }
-
-      // 合并chunks为Blob
-      let blob = new Blob(chunks as BlobPart[]);
-      task.blob = blob;
-      task.progress = 1;
-      task.speed = 0;
-
-      // 酷我加密内容解密（mflac/mgg → flac/ogg）
-      if (playUrl.ekey) {
-        try {
-          const rawKey = deriveRawKey(playUrl.ekey);
-          if (rawKey) {
-            const encrypted = new Uint8Array(await blob.arrayBuffer());
-            const decrypted = qmc2DecryptBytes(encrypted, rawKey);
-            if (isDecryptedMagic(decrypted)) {
-              blob = new Blob([decrypted.buffer as ArrayBuffer]);
-              task.blob = blob;
-              // 解密成功，修正格式后缀
-              if (playUrl.format === 'mflac') playUrl.format = 'flac';
-              if (playUrl.format === 'mgg') playUrl.format = 'ogg';
-            } else {
-              console.warn('酷我解密后魔数校验失败，保留原始加密文件');
-            }
-          } else {
-            console.warn('酷我 ekey 派生密钥失败，保留原始加密文件');
-          }
-        } catch (decryptErr) {
-          console.warn('酷我解密异常，保留原始加密文件:', decryptErr);
+          this.emit('progress', {
+            taskId,
+            progress: task.progress,
+            downloadedSize: downloaded,
+            totalSize: task.totalSize,
+            speed,
+          });
         }
       }
 
-      // 保存到本地文件系统
-      const localPath = await this.saveToLocalFile(task, blob, playUrl);
-      task.localPath = localPath;
-      task.status = 'completed';
-
-      this.emit('complete', task);
-      this.emit('statusChange', task);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : '下载失败';
-      task.status = 'failed';
-      task.errorMessage = message;
-      task.speed = 0;
-
-      this.emit('error', task);
-      this.emit('statusChange', task);
-    }
-  }
-
-  /**
-   * 保存下载文件到本地存储
-   */
-  private async saveToLocalFile(
-    task: DownloadQueueItem,
-    blob: Blob,
-    playUrl: any
-  ): Promise<string | undefined> {
-    try {
-      // 检测平台
-      const isCapacitor = typeof (window as any)?.Capacitor !== 'undefined';
-      if (!isCapacitor) {
-        // Web环境：触发浏览器下载
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = this.buildFileName(task, playUrl.format);
-        a.click();
-        URL.revokeObjectURL(url);
-        return undefined;
+      // 6. 合并 chunks 并写入本地文件
+      const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+      const merged = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
       }
 
-      // Capacitor环境：写入外部存储
-      const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem');
-
-      // 构建文件名和路径
-      const ext = playUrl.format || 'mp3';
-      const fileName = this.buildFileName(task, ext);
-      const subDir = 'YinliuDownloads';
-
-      // 确保目录存在
-      try {
-        await Filesystem.mkdir({
-          path: subDir,
-          directory: Directory.ExternalStorage,
-          recursive: true,
-        });
-      } catch {
-        // 目录可能已存在
-      }
-
-      // 读取blob为base64
-      const arrayBuffer = await blob.arrayBuffer();
-      const base64 = this.arrayBufferToBase64(arrayBuffer);
-
-      // 写入文件
-      const filePath = `${subDir}/${fileName}`;
+      // 转为 base64 写入 Capacitor Filesystem
+      const base64 = btoa(String.fromCharCode(...merged));
       await Filesystem.writeFile({
         path: filePath,
         data: base64,
-        directory: Directory.ExternalStorage,
+        directory: Directory.Data,
         recursive: true,
       });
 
-      // 获取文件URI
-      const stat = await Filesystem.stat({
-        path: filePath,
-        directory: Directory.ExternalStorage,
-      });
+      // 7. 标记完成
+      task.status = 'completed';
+      task.progress = 1;
+      await this.persistTask(task);
+      this.emit('stateChange', { taskId, status: 'completed', task });
+      this.emit('completed', { taskId, filePath });
 
-      return stat.uri || filePath;
+      this.abortControllers.delete(taskId);
     } catch (err) {
-      console.warn('保存文件失败:', err);
-      return undefined;
+      const msg = err instanceof Error ? err.message : String(err);
+      task.status = 'failed';
+      task.errorMessage = msg;
+      await this.persistTask(task);
+      this.emit('stateChange', { taskId, status: 'failed', task });
+      this.emit('failed', { taskId, error: msg });
+      this.abortControllers.delete(taskId);
     }
   }
 
-  /**
-   * 构建文件名
-   */
-  private buildFileName(task: DownloadQueueItem, ext: string): string {
-    const safe = (s?: string) => (s || '').replace(/[\\/:*?"<>|]/g, '_').trim() || 'unknown';
-    const title = safe(task.title);
-    const artist = safe(task.artist);
-    const qualityLabel = this.qualityLabel(task.quality);
-    const name = artist && artist !== 'unknown'
-      ? `${artist} - ${title}`
-      : title;
-    return `${name} [${qualityLabel}].${ext}`;
-  }
+  // === 暂停下载（downloading → paused）===
+  async pauseDownload(taskId: string): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task || task.status !== 'downloading') return;
 
-  private qualityLabel(q: Quality): string {
-    switch (q) {
-      case Quality.LOW: return '48k';
-      case Quality.STANDARD: return '128k';
-      case Quality.HIGH: return '320k';
-      case Quality.LOSSLESS: return 'FLAC';
-      case Quality.HIFI: return 'HiFi';
-      case Quality.HIRES: return 'Hi-Res';
-      default: return 'audio';
+    const ctrl = this.abortControllers.get(taskId);
+    if (ctrl) {
+      ctrl.abort();
+      this.abortControllers.delete(taskId);
     }
-  }
 
-  /**
-   * ArrayBuffer 转 Base64（分块编码，避免大文件 InvalidCharacterError）
-   */
-  private arrayBufferToBase64(buffer: ArrayBuffer): string {
-    const bytes = new Uint8Array(buffer);
-    const chunkSize = 0x8000; // 32KB 分块，绕过 btoa 单字符串长度限制
-    let binary = '';
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      const chunk = bytes.subarray(i, i + chunkSize);
-      binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
-    }
-    return btoa(binary);
-  }
-
-  /**
-   * 暂停下载
-   */
-  pauseDownload(taskId: string): DownloadQueueItem | null {
-    const task = this.queue.find((t) => t.id === taskId);
-    if (!task || task.status !== 'downloading') return null;
-
-    task.abortController?.abort();
     task.status = 'paused';
-    task.speed = 0;
-
-    this.emit('statusChange', task);
-    return task;
+    await this.persistTask(task);
+    this.emit('stateChange', { taskId, status: 'paused', task });
   }
 
-  /**
-   * 恢复下载
-   */
-  resumeDownload(taskId: string): DownloadQueueItem | null {
-    const task = this.queue.find((t) => t.id === taskId);
-    if (!task || task.status !== 'paused') return null;
-
-    task.status = 'pending';
-    task.errorMessage = undefined;
-    this.emit('statusChange', task);
-
-    this.processQueue();
-    return task;
+  // === 继续下载（paused → downloading）===
+  async resumeDownload(taskId: string): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task || task.status !== 'paused') return;
+    await this.startDownload(taskId);
   }
 
-  /**
-   * 取消下载
-   */
-  cancelDownload(taskId: string): boolean {
-    const index = this.queue.findIndex((t) => t.id === taskId);
-    if (index === -1) return false;
+  // === 取消/删除任务 ===
+  async cancelDownload(taskId: string): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
 
-    const task = this.queue[index];
-
-    if (task.status === 'downloading') {
-      task.abortController?.abort();
+    const ctrl = this.abortControllers.get(taskId);
+    if (ctrl) {
+      ctrl.abort();
+      this.abortControllers.delete(taskId);
     }
 
-    this.queue.splice(index, 1);
-    return true;
+    // 如果已完成，尝试删除本地文件
+    if (task.status === 'completed' && task.filePath) {
+      try {
+        await Filesystem.deleteFile({
+          path: task.filePath,
+          directory: Directory.Data,
+        });
+      } catch {
+        // 文件可能不存在
+      }
+    }
+
+    this.tasks.delete(taskId);
+
+    // 从数据库删除
+    try {
+      const sqliteDb = getSqliteDb();
+      sqliteDb.run('DELETE FROM downloads WHERE id = ?', [taskId]);
+      await flushDatabase();
+    } catch (err) {
+      console.error('[DownloadEngine] Failed to delete task from DB:', err);
+    }
+
+    this.emit('stateChange', { taskId, status: 'failed', task: { ...task, status: 'failed' } });
   }
 
-  /**
-   * 重试下载
-   */
-  retryDownload(taskId: string): DownloadQueueItem | null {
-    const task = this.queue.find((t) => t.id === taskId);
-    if (!task || task.status !== 'failed') return null;
-
-    task.status = 'pending';
-    task.progress = 0;
-    task.errorMessage = undefined;
-    task.retryCount = (task.retryCount || 0) + 1;
-
-    this.emit('statusChange', task);
-    this.processQueue();
-    return task;
+  // === 检查本地文件是否存在 ===
+  async checkLocalFile(filePath: string): Promise<boolean> {
+    try {
+      await Filesystem.stat({ path: filePath, directory: Directory.Data });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
-  /**
-   * 获取所有下载任务
-   */
-  getAllTasks(): DownloadQueueItem[] {
-    return [...this.queue];
-  }
-
-  /**
-   * 获取指定状态的任务
-   */
-  getTasksByStatus(status: DownloadStatus): DownloadQueueItem[] {
-    return this.queue.filter((t) => t.status === status);
-  }
-
-  /**
-   * 获取任务统计
-   */
-  getStats(): {
-    total: number;
-    pending: number;
-    downloading: number;
-    paused: number;
-    completed: number;
-    failed: number;
-  } {
-    return {
-      total: this.queue.length,
-      pending: this.queue.filter((t) => t.status === 'pending').length,
-      downloading: this.queue.filter((t) => t.status === 'downloading').length,
-      paused: this.queue.filter((t) => t.status === 'paused').length,
-      completed: this.queue.filter((t) => t.status === 'completed').length,
-      failed: this.queue.filter((t) => t.status === 'failed').length,
+  // === 读取本地文件为 Blob URL（用于离线播放）===
+  async readLocalFileAsUrl(filePath: string): Promise<string> {
+    const result = await Filesystem.readFile({
+      path: filePath,
+      directory: Directory.Data,
+    });
+    const base64 = typeof result.data === 'string' ? result.data : '';
+    // 推断 mime type
+    const ext = filePath.split('.').pop()?.toLowerCase() || 'mp3';
+    const mimeMap: Record<string, string> = {
+      mp3: 'audio/mpeg',
+      flac: 'audio/flac',
+      wav: 'audio/wav',
+      m4a: 'audio/mp4',
+      ogg: 'audio/ogg',
+      aac: 'audio/aac',
     };
+    const mime = mimeMap[ext] || 'audio/mpeg';
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: mime });
+    return URL.createObjectURL(blob);
   }
 
-  /**
-   * 清空已完成任务
-   */
-  clearCompleted(): void {
-    this.queue = this.queue.filter((t) => t.status !== 'completed');
-  }
-
-  /**
-   * 清空失败任务
-   */
-  clearFailed(): void {
-    this.queue = this.queue.filter((t) => t.status !== 'failed');
+  // === 持久化任务到数据库 ===
+  private async persistTask(task: DownloadTask): Promise<void> {
+    try {
+      const sqliteDb = getSqliteDb();
+      sqliteDb.run(
+        `INSERT OR REPLACE INTO downloads
+         (id, song_id, source_id, quality, status, progress, local_path, file_size, error_message, created_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          task.id,
+          task.songId,
+          task.sourceId,
+          task.quality,
+          task.status,
+          task.progress,
+          task.filePath || null,
+          task.totalSize,
+          task.errorMessage || null,
+          task.createdAt,
+          task.status === 'completed' ? Date.now() : null,
+        ]
+      );
+      // 每次写操作后显式 flush，确保落盘
+      await flushDatabase();
+    } catch (err) {
+      console.error('[DownloadEngine] persistTask failed:', err);
+    }
   }
 }
 

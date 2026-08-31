@@ -1,7 +1,7 @@
-import { Quality } from '@core/types';
 import type { PlayUrlResult } from '@core/types';
+import { Quality } from '@core/types';
 import { sourceRegistry } from '@providers/music/registry';
-import type { RepeatMode } from '@shared/store/playerStore';
+import { downloadEngine } from '@core/download';
 
 export type PlayerState = 'idle' | 'loading' | 'playing' | 'paused' | 'error';
 
@@ -18,46 +18,36 @@ export interface PlayerTrack {
 }
 
 interface PlayerEventMap {
-  stateChange: { state: PlayerState; track?: PlayerTrack; index?: number };
+  stateChange: { state: PlayerState; track?: PlayerTrack };
   progress: { currentTime: number; duration: number; progress: number };
   error: { message: string };
   ended: void;
-  /** 取链完成（含实际音质/试听标记），UI 据此回写 actualQuality */
-  trackLoaded: { track: PlayerTrack; result: PlayUrlResult };
 }
-
-type PlayerEventCallback<T> = (data: T) => void;
 
 export class PlayerEngine {
   private audio: HTMLAudioElement | null = null;
   private currentTrack: PlayerTrack | null = null;
   private state: PlayerState = 'idle';
-  private listeners: { [K in keyof PlayerEventMap]?: Array<PlayerEventCallback<PlayerEventMap[keyof PlayerEventMap]>> } = {};
+  private listeners: Record<string, Array<(data: unknown) => void>> = {};
   private progressInterval: number | null = null;
-
-  // Queue state
-  queue: PlayerTrack[] = [];
-  currentIndex: number = -1;
-  repeatMode: RepeatMode = 'sequence';
-  shuffledIndices: number[] = [];
-  lastQuality: Quality = Quality.STANDARD;
+  private currentBlobUrl: string | null = null;
 
   private emit<K extends keyof PlayerEventMap>(event: K, data: PlayerEventMap[K]) {
-    const callbacks = (this.listeners[event] || []) as Array<PlayerEventCallback<PlayerEventMap[K]>>;
-    callbacks.forEach((cb) => cb(data));
+    const callbacks = this.listeners[event] || [];
+    callbacks.forEach((cb) => cb(data as unknown));
   }
 
-  on<K extends keyof PlayerEventMap>(event: K, callback: PlayerEventCallback<PlayerEventMap[K]>): () => void {
+  on<K extends keyof PlayerEventMap>(event: K, callback: (data: PlayerEventMap[K]) => void): () => void {
     if (!this.listeners[event]) this.listeners[event] = [];
-    (this.listeners[event] as Array<PlayerEventCallback<PlayerEventMap[K]>>).push(callback);
+    this.listeners[event].push(callback as (data: unknown) => void);
     return () => {
-      this.listeners[event] = (this.listeners[event] || []).filter((cb) => cb !== callback);
+      this.listeners[event] = this.listeners[event].filter((cb) => cb !== callback);
     };
   }
 
   private setState(state: PlayerState) {
     this.state = state;
-    this.emit('stateChange', { state, track: this.currentTrack || undefined, index: this.currentIndex });
+    this.emit('stateChange', { state, track: this.currentTrack || undefined });
   }
 
   getState(): PlayerState {
@@ -68,180 +58,70 @@ export class PlayerEngine {
     return this.currentTrack;
   }
 
-  setQueue(queue: PlayerTrack[], index: number = -1): void {
-    this.queue = queue;
-    this.currentIndex = index;
-    this.updateShuffleIndices();
-  }
+  // === 统一 URL 解析器：本地文件优先，否则在线取链 ===
+  private async resolvePlayUrl(track: PlayerTrack, quality: Quality): Promise<{ url: string; isLocal: boolean }> {
+    // 1. 先检查是否有已下载的本地文件
+    const tasks = downloadEngine.getTasks();
+    const completedTask = tasks.find(
+      (t) => t.songId === track.sourceSongId
+        && t.sourceId === track.sourceId
+        && t.status === 'completed'
+        && t.filePath
+    );
 
-  setRepeatMode(mode: RepeatMode): void {
-    this.repeatMode = mode;
-    this.updateShuffleIndices();
-  }
-
-  private updateShuffleIndices(): void {
-    if (this.repeatMode === 'shuffle') {
-      this.shuffledIndices = this.fisherYatesShuffle([...Array(this.queue.length).keys()]);
-      // Ensure current index is first if valid
-      if (this.currentIndex >= 0 && this.shuffledIndices.length > 0) {
-        const currentPos = this.shuffledIndices.indexOf(this.currentIndex);
-        if (currentPos > 0) {
-          [this.shuffledIndices[0], this.shuffledIndices[currentPos]] = [this.shuffledIndices[currentPos], this.shuffledIndices[0]];
-        }
-      }
-    } else {
-      this.shuffledIndices = [];
-    }
-  }
-
-  private fisherYatesShuffle<T>(arr: T[]): T[] {
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
-  }
-
-  getNextIndex(): number {
-    if (this.queue.length === 0) return -1;
-
-    switch (this.repeatMode) {
-      case 'repeat-one':
-        return this.currentIndex;
-      case 'repeat-all':
-        return (this.currentIndex + 1) % this.queue.length;
-      case 'shuffle': {
-        if (this.shuffledIndices.length === 0) return -1;
-        const currentPos = this.shuffledIndices.indexOf(this.currentIndex);
-        const nextPos = currentPos + 1;
-        if (nextPos < this.shuffledIndices.length) {
-          return this.shuffledIndices[nextPos];
-        }
-        // Reshuffle and continue
-        this.updateShuffleIndices();
-        return this.shuffledIndices[0] ?? 0;
-      }
-      case 'sequence':
-      default:
-        return this.currentIndex + 1 < this.queue.length ? this.currentIndex + 1 : -1;
-    }
-  }
-
-  getPreviousIndex(): number {
-    if (this.queue.length === 0) return -1;
-
-    switch (this.repeatMode) {
-      case 'repeat-one':
-        return this.currentIndex;
-      case 'repeat-all':
-        return (this.currentIndex - 1 + this.queue.length) % this.queue.length;
-      case 'shuffle': {
-        if (this.shuffledIndices.length === 0) return -1;
-        const currentPos = this.shuffledIndices.indexOf(this.currentIndex);
-        const prevPos = currentPos - 1;
-        if (prevPos >= 0) {
-          return this.shuffledIndices[prevPos];
-        }
-        return this.shuffledIndices[this.shuffledIndices.length - 1] ?? 0;
-      }
-      case 'sequence':
-      default:
-        return this.currentIndex > 0 ? this.currentIndex - 1 : -1;
-    }
-  }
-
-  async playNext(): Promise<void> {
-    const nextIndex = this.getNextIndex();
-    if (nextIndex >= 0 && nextIndex < this.queue.length) {
-      this.currentIndex = nextIndex;
-      try {
-        await this.playTrack(this.queue[nextIndex], this.lastQuality);
-      } catch {
-        // 错误已经由 error 事件上报
-      }
-    } else {
-      this.stop();
-    }
-  }
-
-  async playPrevious(): Promise<void> {
-    // If current time > 3s, seek to start instead of going to previous track
-    if (this.audio && this.audio.currentTime > 3) {
-      this.seek(0);
-      return;
-    }
-    const prevIndex = this.getPreviousIndex();
-    if (prevIndex >= 0 && prevIndex < this.queue.length) {
-      this.currentIndex = prevIndex;
-      try {
-        await this.playTrack(this.queue[prevIndex], this.lastQuality);
-      } catch {
-        // 错误已经由 error 事件上报
+    if (completedTask?.filePath) {
+      const exists = await downloadEngine.checkLocalFile(completedTask.filePath);
+      if (exists) {
+        const localUrl = await downloadEngine.readLocalFileAsUrl(completedTask.filePath);
+        console.log('[PlayerEngine] Playing from local file:', completedTask.filePath);
+        return { url: localUrl, isLocal: true };
       }
     }
+
+    // 2. 本地不存在，走在线取链
+    const source = sourceRegistry.get(track.sourceId);
+    if (!source) {
+      throw new Error(`Source ${track.sourceId} not found`);
+    }
+
+    let playUrl: PlayUrlResult;
+    try {
+      playUrl = await source.getPlayUrl(track.sourceSongId, quality);
+    } catch {
+      // Fallback to Kuwo
+      const kuwo = sourceRegistry.get('kuwo');
+      if (kuwo && source.id !== 'kuwo') {
+        playUrl = await kuwo.getPlayUrl(track.sourceSongId, quality);
+      } else {
+        throw new Error('Failed to get play URL');
+      }
+    }
+
+    return { url: playUrl.url, isLocal: false };
   }
 
-  async playTrack(track: PlayerTrack, quality: Quality = Quality.STANDARD): Promise<PlayUrlResult> {
-    this.lastQuality = quality;
+  async playTrack(track: PlayerTrack, quality: Quality = Quality.STANDARD): Promise<void> {
     this.setState('loading');
     this.currentTrack = track;
 
+    // 清理之前的 blob URL
+    if (this.currentBlobUrl) {
+      URL.revokeObjectURL(this.currentBlobUrl);
+      this.currentBlobUrl = null;
+    }
+
     try {
-      const source = sourceRegistry.get(track.sourceId);
-      if (!source) {
-        throw new Error(`Source ${track.sourceId} not found`);
+      const { url, isLocal } = await this.resolvePlayUrl(track, quality);
+
+      if (isLocal) {
+        this.currentBlobUrl = url;
       }
 
-      let playUrl: PlayUrlResult;
-      try {
-        playUrl = await source.getPlayUrl(track.sourceSongId, quality);
-      } catch {
-        // Fallback to Kuwo
-        const kuwo = sourceRegistry.get('kuwo');
-        if (kuwo && source.id !== 'kuwo') {
-          playUrl = await kuwo.getPlayUrl(track.sourceSongId, quality);
-        } else {
-          throw new Error('Failed to get play URL');
-        }
-      }
-
-      await this.loadAndPlay(playUrl.url, track);
-      this.emit('trackLoaded', { track, result: playUrl });
-      return playUrl;
+      await this.loadAndPlay(url, track);
     } catch (err) {
       this.setState('error');
       this.emit('error', { message: err instanceof Error ? err.message : '播放失败' });
-      throw err;
     }
-  }
-
-  /** 切换音质：对当前曲目重新取链并接续播放进度 */
-  async switchQuality(quality: Quality): Promise<PlayUrlResult | null> {
-    if (!this.currentTrack) return null;
-    const track = this.currentTrack;
-    const resumeTime = this.audio?.currentTime ?? 0;
-
-    const result = await this.playTrack(track, quality);
-
-    // 接续进度：等新音频可播后 seek 回原位置
-    if (resumeTime > 0 && isFinite(resumeTime) && this.audio) {
-      const audio = this.audio;
-      const seekOnce = () => {
-        try {
-          audio.currentTime = Math.min(resumeTime, audio.duration || resumeTime);
-        } catch {
-          // seek 失败不影响播放
-        }
-        audio.removeEventListener('canplay', seekOnce);
-      };
-      if (audio.readyState >= 2) {
-        seekOnce();
-      } else {
-        audio.addEventListener('canplay', seekOnce);
-      }
-    }
-
-    return result;
   }
 
   private async loadAndPlay(url: string, track: PlayerTrack): Promise<void> {
@@ -259,7 +139,9 @@ export class PlayerEngine {
     });
 
     this.audio.addEventListener('ended', () => {
-      this.handleTrackEnded();
+      this.setState('idle');
+      this.stopProgressTracking();
+      this.emit('ended', undefined);
     });
 
     this.audio.addEventListener('error', () => {
@@ -280,21 +162,6 @@ export class PlayerEngine {
     });
 
     await this.audio.play();
-  }
-
-  private handleTrackEnded(): void {
-    this.setState('idle');
-    this.stopProgressTracking();
-    this.emit('ended', undefined);
-
-    // Auto-advance based on repeat mode
-    const nextIndex = this.getNextIndex();
-    if (nextIndex >= 0 && nextIndex < this.queue.length) {
-      this.currentIndex = nextIndex;
-      this.playTrack(this.queue[nextIndex], this.lastQuality).catch(() => {
-        // 错误已经由 error 事件上报
-      });
-    }
   }
 
   pause(): void {
