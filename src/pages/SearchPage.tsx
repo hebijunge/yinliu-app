@@ -19,6 +19,7 @@ export default function SearchPage() {
   const [inputValue, setInputValue] = useState(keyword);
   const [showFilters, setShowFilters] = useState(false);
   const [playError, setPlayError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloadBusyId, setDownloadBusyId] = useState<string | null>(null);
 
   const handleSearch = useCallback(async () => {
@@ -44,12 +45,22 @@ export default function SearchPage() {
   }, [inputValue, selectedSources]);
 
   const handlePlay = async (result: AggregatedSearchResult) => {
-    const bestSource = result.sources[0];
-    if (!bestSource) return;
-
     setPlayError(null);
 
-    // v11 修复：立即把当前曲目同步到 playerStore，避免 UI 长时间不显示曲目信息
+    const bestSource = result.sources[0];
+    if (!bestSource) {
+      // 兜底：不允许静默无响应，必须给 UI 反馈
+      setPlayError(`${result.title} — 没有可用音源`);
+      return;
+    }
+
+    // 构建 fallbackSources（已按优先级排序的其他源）
+    const fallbackSources = result.sources.slice(1).map((s) => ({
+      sourceId: s.sourceId,
+      sourceSongId: s.sourceSongId,
+    }));
+
+    // v11.2：取链按优先级选源（酷我→咪咕→网易云→酷狗→QQ），支持多源降级
     const track: PlayerTrack = {
       id: result.id,
       title: result.title,
@@ -58,32 +69,36 @@ export default function SearchPage() {
       coverUrl: result.coverUrl,
       duration: result.duration,
       sourceId: bestSource.sourceId,
-      sourceSongId: result.sourceSongId,
-      uri: `stream://${bestSource.sourceId}/${result.sourceSongId}`,
+      sourceSongId: bestSource.sourceSongId,
+      uri: `stream://${bestSource.sourceId}/${bestSource.sourceSongId}`,
+      fallbackSources: fallbackSources.length > 0 ? fallbackSources : undefined,
     };
     usePlayerStore.getState().setTrack(track);
 
-    // v11 修复：playTrack 现在在失败时 re-throw，必须 try/catch 防止 unhandled rejection
     try {
       await playerEngine.playTrack(track, selectedQuality);
     } catch (err) {
       const msg = err instanceof Error ? err.message : '播放失败';
       console.error('[SearchPage] playTrack failed:', err);
-      setPlayError(`${result.title} - ${msg}`);
+      setPlayError(`${result.title} — ${msg}`);
       usePlayerStore.getState().setState('error');
     }
   };
 
   const handleDownload = async (result: AggregatedSearchResult) => {
-    const bestSource = result.sources[0];
-    if (!bestSource) return;
+    setDownloadError(null);
 
-    // v11 修复：使用 addDownload 一站式方法（自动 createTask + startDownload）
-    // 避免 createTask 之后忘记 await startDownload 导致任务停留在 pending
+    const bestSource = result.sources[0];
+    if (!bestSource) {
+      setDownloadError(`${result.title} — 没有可用音源`);
+      return;
+    }
+
+    // v11.2：下载也按优先级选源
     setDownloadBusyId(result.id);
     try {
       const taskId = await downloadEngine.addDownload(
-        result.sourceSongId,
+        bestSource.sourceSongId,
         bestSource.sourceId,
         selectedQuality,
         { title: result.title, artist: result.artist, album: result.album }
@@ -94,7 +109,9 @@ export default function SearchPage() {
         useDownloadStore.getState().upsertTask(task);
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : '下载失败';
       console.error('[SearchPage] download failed:', err);
+      setDownloadError(`${result.title} — ${msg}`);
     } finally {
       setDownloadBusyId(null);
     }
@@ -120,6 +137,21 @@ export default function SearchPage() {
           <button
             onClick={() => setPlayError(null)}
             className="text-red-600/60 hover:text-red-600"
+            aria-label="关闭"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* Download error banner */}
+      {downloadError && (
+        <div className="mb-3 p-3 rounded-lg bg-amber-500/10 text-amber-600 text-sm flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          <span className="flex-1">{downloadError}</span>
+          <button
+            onClick={() => setDownloadError(null)}
+            className="text-amber-600/60 hover:text-amber-600"
             aria-label="关闭"
           >
             ×

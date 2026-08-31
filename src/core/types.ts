@@ -131,6 +131,19 @@ export interface DownloadTask {
   createdAt: number;
 }
 
+// === 取链平台优先级（聚合多源时的尝试顺序：酷我→咪咕→网易云→酷狗→QQ）===
+export const SourcePlayPriority: Record<string, number> = {
+  kuwo: 1,
+  migu: 2,
+  netease: 3,
+  kugou: 4,
+  qq: 5,
+};
+
+export function getSourcePriority(sourceId: string): number {
+  return SourcePlayPriority[sourceId] ?? 99;
+}
+
 // === 错误码 ===
 export enum ErrorCode {
   VALIDATION_ERROR = 'VALIDATION_ERROR',

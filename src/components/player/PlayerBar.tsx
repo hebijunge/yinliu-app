@@ -28,7 +28,7 @@ const MODE_LABELS: Record<RepeatMode, string> = {
 };
 
 export default function PlayerBar() {
-  const { state, currentTrack, currentTime, duration, volume, isMuted, queue, repeatMode } = usePlayerStore();
+  const { state, currentTrack, currentTime, duration, volume, isMuted, queue, repeatMode, actualSourceId } = usePlayerStore();
   const [showFullScreen, setShowFullScreen] = useState(false);
   const [showLyrics, setShowLyrics] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
@@ -159,8 +159,13 @@ export default function PlayerBar() {
               <div className="text-sm font-semibold truncate group-hover:text-[var(--accent)] transition-colors text-[var(--text-primary)]">
                 {currentTrack?.title || '未在播放'}
               </div>
-              <div className="text-xs text-[var(--text-tertiary)] truncate">
-                {currentTrack?.artist || '选择一首歌开始播放'}
+              <div className="text-xs text-[var(--text-tertiary)] truncate flex items-center gap-1.5">
+                <span>{currentTrack?.artist || '选择一首歌开始播放'}</span>
+                {actualSourceId && (
+                  <span className="px-1 py-0.5 rounded text-[10px] bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
+                    {actualSourceId}
+                  </span>
+                )}
               </div>
             </div>
           </div>

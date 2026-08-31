@@ -30,7 +30,7 @@ interface Props {
 }
 
 export default function FullScreenPlayer({ onClose }: Props) {
-  const { state, currentTrack, currentTime, duration, volume, queue, repeatMode, currentQuality, actualQuality, isPreview } = usePlayerStore();
+  const { state, currentTrack, currentTime, duration, volume, queue, repeatMode, currentQuality, actualQuality, isPreview, actualSourceId } = usePlayerStore();
   const isPlaying = state === 'playing';
 
   const [showLyrics, setShowLyrics] = useState(false);
@@ -199,7 +199,14 @@ export default function FullScreenPlayer({ onClose }: Props) {
       {/* Info */}
       <div className="px-10 py-5 text-center">
         <h2 className="text-xl font-semibold truncate text-[var(--text-primary)]">{currentTrack?.title || '未在播放'}</h2>
-        <p className="text-[var(--text-secondary)] mt-1.5 text-sm">{currentTrack?.artist || '选择一首歌'}</p>
+        <p className="text-[var(--text-secondary)] mt-1.5 text-sm">
+          {currentTrack?.artist || '选择一首歌'}
+          {actualSourceId && (
+            <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
+              {actualSourceId}
+            </span>
+          )}
+        </p>
         <button
           onClick={() => setShowQuality(true)}
           className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors focus-ring"

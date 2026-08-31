@@ -17,6 +17,8 @@ interface PlayerStore {
   /** 当前曲目是否为试听片段 */
   isPreview: boolean;
   isMuted: boolean;
+  /** 实际生效的音源（多源降级后可能不同于 track.sourceId） */
+  actualSourceId: string | null;
 
   // Queue
   queue: PlayerTrack[];
@@ -31,6 +33,7 @@ interface PlayerStore {
   setVolume: (volume: number) => void;
   setQuality: (quality: Quality) => void;
   setActualQuality: (quality: Quality | null) => void;
+  setActualSourceId: (sourceId: string | null) => void;
   setPreview: (isPreview: boolean) => void;
   toggleMute: () => void;
 
@@ -57,6 +60,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   actualQuality: null,
   isPreview: false,
   isMuted: false,
+  actualSourceId: null,
 
   queue: [],
   currentIndex: -1,
@@ -73,6 +77,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
     useSettingsStore.getState().setPreferredQuality(currentQuality);
   },
   setActualQuality: (actualQuality) => set({ actualQuality }),
+  setActualSourceId: (actualSourceId) => set({ actualSourceId }),
   setPreview: (isPreview) => set({ isPreview }),
   toggleMute: () => set((s) => ({ isMuted: !s.isMuted })),
 

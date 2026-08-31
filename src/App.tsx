@@ -39,6 +39,9 @@ function App() {
     const unsub3 = playerEngine.on('ended', () => {
       // Auto-play next logic would go here
     });
+    const unsub3b = playerEngine.on('trackLoaded', ({ actualSourceId }) => {
+      usePlayerStore.getState().setActualSourceId(actualSourceId || null);
+    });
 
     // 绑定下载事件到 Store
     const unsub4 = downloadEngine.on('stateChange', ({ task }) => {
@@ -63,6 +66,7 @@ function App() {
       unsub1();
       unsub2();
       unsub3();
+      unsub3b();
       unsub4();
       unsub5();
       unsub6();

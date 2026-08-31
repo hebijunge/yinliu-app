@@ -1,10 +1,10 @@
 import type { MusicSource } from '@providers/music/types';
-import { Quality } from '@core/types';
+import { Quality, getSourcePriority } from '@core/types';
 import type { SearchParams, SearchResult } from '@core/types';
 import { sourceRegistry } from '@providers/music/registry';
 
 export interface AggregatedSearchResult extends SearchResult {
-  sources: Array<{ sourceId: string; sourceName: string; maxQuality: Quality; available: boolean }>;
+  sources: Array<{ sourceId: string; sourceName: string; maxQuality: Quality; available: boolean; sourceSongId: string }>;
 }
 
 export interface SearchEngineOptions {
@@ -77,6 +77,7 @@ export class SearchEngine {
             sourceName: sr.source.name,
             maxQuality: sr.source.maxQuality,
             available: true,
+            sourceSongId: r.sourceSongId,
           };
           if (!existing.sources.find((s) => s.sourceId === sr.source.id)) {
             existing.sources.push(sourceInfo);
@@ -89,13 +90,18 @@ export class SearchEngine {
               sourceName: sr.source.name,
               maxQuality: sr.source.maxQuality,
               available: true,
+              sourceSongId: r.sourceSongId,
             }],
           });
         }
       }
     }
 
-    const results = Array.from(resultMap.values()).sort((a, b) => {
+    const results = Array.from(resultMap.values()).map((r) => {
+      // 按取链优先级排序 sources（酷我→咪咕→网易云→酷狗→QQ）
+      r.sources.sort((a, b) => getSourcePriority(a.sourceId) - getSourcePriority(b.sourceId));
+      return r;
+    }).sort((a, b) => {
       // Sort by: source count desc, then quality desc
       const aSources = a.sources.length;
       const bSources = b.sources.length;

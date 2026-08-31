@@ -1,5 +1,5 @@
 import type { PlayUrlResult } from '@core/types';
-import { Quality } from '@core/types';
+import { Quality, getSourcePriority } from '@core/types';
 import { sourceRegistry } from '@providers/music/registry';
 import { downloadEngine } from '@core/download';
 
@@ -15,6 +15,8 @@ export interface PlayerTrack {
   sourceId: string;
   sourceSongId: string;
   uri: string;
+  /** 多源降级候选（聚合结果有多源时使用），已按优先级排序 */
+  fallbackSources?: Array<{ sourceId: string; sourceSongId: string }>;
 }
 
 interface PlayerEventMap {
@@ -23,7 +25,7 @@ interface PlayerEventMap {
   error: { message: string };
   ended: void;
   /** 取链完成（含实际音质/试听标记），UI 据此回写 actualQuality */
-  trackLoaded: { track: PlayerTrack; result: PlayUrlResult };
+  trackLoaded: { track: PlayerTrack; result: PlayUrlResult; actualSourceId?: string };
 }
 
 export class PlayerEngine {
@@ -65,9 +67,12 @@ export class PlayerEngine {
     return this.currentTrack;
   }
 
-  // === 统一 URL 解析器：本地文件优先，否则在线取链 ===
-  private async resolvePlayUrl(track: PlayerTrack, quality: Quality): Promise<{ url: string; isLocal: boolean; result: PlayUrlResult }> {
-    // 1. 先检查是否有已下载的本地文件
+  // === 统一 URL 解析器：本地文件优先 → 多源降级取链 ===
+  private async resolvePlayUrl(
+    track: PlayerTrack,
+    quality: Quality
+  ): Promise<{ url: string; isLocal: boolean; result: PlayUrlResult; actualSourceId: string }> {
+    // 1. 先检查是否有已下载的本地文件（仍优先直接播本地）
     try {
       const tasks = downloadEngine.getTasks();
       const completedTask = tasks.find(
@@ -88,6 +93,7 @@ export class PlayerEngine {
               url: localUrl,
               isLocal: true,
               result: { url: localUrl, quality, bitrate: 0, format: 'mp3' },
+              actualSourceId: track.sourceId,
             };
           } catch (localErr) {
             console.warn('[PlayerEngine] Local file read failed, falling back to online:', localErr);
@@ -100,17 +106,40 @@ export class PlayerEngine {
       console.warn('[PlayerEngine] Local file check failed, falling back to online:', err);
     }
 
-    // 2. 本地不存在或读取失败，走在线取链
-    const source = sourceRegistry.get(track.sourceId);
-    if (!source) {
-      throw new Error(`Source ${track.sourceId} not found`);
+    // 2. 构建候选源列表：当前源优先，fallbackSources 按优先级已排序
+    const candidates: Array<{ sourceId: string; sourceSongId: string }> = [
+      { sourceId: track.sourceId, sourceSongId: track.sourceSongId },
+      ...(track.fallbackSources || []).filter((f) => f.sourceId !== track.sourceId),
+    ];
+
+    const errors: string[] = [];
+
+    // 3. 按优先级逐一尝试取链
+    for (const candidate of candidates) {
+      const source = sourceRegistry.get(candidate.sourceId);
+      if (!source) {
+        errors.push(`${candidate.sourceId}: 音源未注册`);
+        continue;
+      }
+      try {
+        const playUrl = await source.getPlayUrl(candidate.sourceSongId, quality);
+        console.log('[PlayerEngine] Play URL resolved from', candidate.sourceId);
+        return {
+          url: playUrl.url,
+          isLocal: false,
+          result: playUrl,
+          actualSourceId: candidate.sourceId,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        errors.push(`${candidate.sourceId}: ${msg}`);
+        console.warn(`[PlayerEngine] Source ${candidate.sourceId} failed for "${track.title}": ${msg}`);
+        // 继续尝试下一个候选源
+      }
     }
 
-    // v11 修复：移除跨源 fallback（不同源 songId 不通用，跨源取链必然失败）
-    // 仅当原 source 取链失败时向上抛错，让 UI 提示用户，避免错误信息被吞掉
-    const playUrl = await source.getPlayUrl(track.sourceSongId, quality);
-
-    return { url: playUrl.url, isLocal: false, result: playUrl };
+    // 4. 全部失败：抛出聚合错误，不允许静默无响应
+    throw new Error(`取链失败 — ${errors.join('；')}`);
   }
 
   async playTrack(track: PlayerTrack, quality: Quality = Quality.STANDARD): Promise<PlayUrlResult> {
@@ -125,14 +154,14 @@ export class PlayerEngine {
     }
 
     try {
-      const { url, isLocal, result } = await this.resolvePlayUrl(track, quality);
+      const { url, isLocal, result, actualSourceId } = await this.resolvePlayUrl(track, quality);
 
       if (isLocal) {
         this.currentBlobUrl = url;
       }
 
       await this.loadAndPlay(url, track);
-      this.emit('trackLoaded', { track, result });
+      this.emit('trackLoaded', { track, result, actualSourceId });
       return result;
     } catch (err) {
       this.setState('error');
