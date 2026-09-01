@@ -1,5 +1,7 @@
 import { Routes, Route } from 'react-router-dom';
 import { useEffect, lazy, Suspense } from 'react';
+import { Capacitor, type PluginListenerHandle } from '@capacitor/core';
+import { App as CapApp } from '@capacitor/app';
 import Layout from './components/layout/Layout';
 import SearchPage from './pages/SearchPage';
 
@@ -30,6 +32,36 @@ function App() {
     } else {
       document.body.classList.remove('car-mode');
     }
+  }, []);
+
+  // Android 物理返回键：优先收起全屏播放页，其次路由回退，主界面无历史时保持系统默认（退出应用）
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let handle: PluginListenerHandle | null = null;
+    let disposed = false;
+    CapApp.addListener('backButton', (event) => {
+      // 1) 全屏播放页打开时：收起播放页回到主界面（收起为迷你条），不退出应用
+      if (usePlayerStore.getState().fullscreenOpen) {
+        usePlayerStore.getState().setFullscreenOpen(false);
+        return;
+      }
+      // 2) 处于子页面且有路由历史：正常回退上一页
+      if (event.canGoBack) {
+        window.history.back();
+        return;
+      }
+      // 3) 已在主界面且无历史：遵循系统默认行为（退出应用）
+      void CapApp.exitApp();
+    })
+      .then((h) => {
+        if (disposed) void h.remove();
+        else handle = h;
+      })
+      .catch((err) => console.error('[App] backButton listener failed:', err));
+    return () => {
+      disposed = true;
+      void handle?.remove();
+    };
   }, []);
 
   useEffect(() => {
