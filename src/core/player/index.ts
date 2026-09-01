@@ -357,8 +357,8 @@ export class PlayerEngine {
 
   async playTrack(track: PlayerTrack, quality: Quality = Quality.STANDARD): Promise<PlayUrlResult> {
     this.lastQuality = quality;
-    this.setState('loading');
     this.currentTrack = track;
+    this.setState('loading');
     this.prefetchTriggered = false;
 
     // v16: 切歌后立即预加载下一首

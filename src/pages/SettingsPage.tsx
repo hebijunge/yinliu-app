@@ -404,7 +404,7 @@ export default function SettingsPage() {
                 {debugMode && (
                   <>
                     <Link
-                      to="/debug-log"
+                      to="/debug"
                       className="block w-full p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-colors focus-ring text-sm text-[var(--text-primary)] flex items-center gap-2"
                     >
                       <Bug className="w-4 h-4 text-[var(--text-tertiary)]" />

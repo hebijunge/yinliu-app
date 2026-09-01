@@ -64,8 +64,11 @@ function App() {
     floatingLyricsBridge.start();
 
     // 绑定播放器事件到 Store
-    const unsub1 = playerEngine.on('stateChange', ({ state }) => {
+    const unsub1 = playerEngine.on('stateChange', ({ state, track }) => {
       usePlayerStore.getState().setState(state);
+      if (track) {
+        usePlayerStore.getState().setTrack(track);
+      }
     });
     const unsub2 = playerEngine.on('progress', ({ currentTime, duration }) => {
       usePlayerStore.getState().setProgress(currentTime, duration);
@@ -73,7 +76,8 @@ function App() {
     const unsub3 = playerEngine.on('ended', () => {
       // Auto-play next logic would go here
     });
-    const unsub3b = playerEngine.on('trackLoaded', ({ actualSourceId }) => {
+    const unsub3b = playerEngine.on('trackLoaded', ({ track, actualSourceId }) => {
+      usePlayerStore.getState().setTrack(track || null);
       usePlayerStore.getState().setActualSourceId(actualSourceId || null);
     });
     const unsub3c = playerEngine.on('mediaAction', ({ action }) => {
