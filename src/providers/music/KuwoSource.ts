@@ -41,6 +41,7 @@ export class KuwoSource extends BaseHttpSource {
 
   // 缓存
   private songMetaCache = new Map<string, { name: string; artist: string }>();
+  private durationCache = new Map<string, number>();
 
   /**
    * accurate 竞速优先级判定：accurate !== false 视为可优先选用的结果。
@@ -135,6 +136,7 @@ export class KuwoSource extends BaseHttpSource {
 
     // 缓存元数据用于取链
     this.songMetaCache.set(rid, { name, artist });
+    this.durationCache.set(rid, dur);
 
     return {
       id: `kw_${rid}`,
@@ -264,7 +266,16 @@ export class KuwoSource extends BaseHttpSource {
     const format = (d.format || 'mp3').toString().toLowerCase();
     const ekey = d.ekey ? String(d.ekey) : undefined;
 
-    // 防盗链占位校验
+    // nmobi 响应级防盗标记（字段名来自实测，非猜测）
+    const nmobiAntiFlag = d.isLimit === true || d.isLimit === '1' || d.isLimit === 1
+      || d.isListen === true || d.isListen === '1' || d.isListen === 1
+      || d.listenFlag === true || d.listenFlag === '1' || d.listenFlag === 1;
+    if (nmobiAntiFlag) {
+      debugLogger.warn('network', `酷我 nmobi 响应级防盗标记命中`, { url: url.slice(0, 120), isLimit: d.isLimit, isListen: d.isListen, listenFlag: d.listenFlag });
+      return null;
+    }
+
+    // URL 级防盗链占位校验
     if (this.isAntiTheft(url)) return null;
 
     // 精确音质匹配（参照 DJMusic qualityExpectation/bitrateTolerance）
@@ -320,6 +331,143 @@ export class KuwoSource extends BaseHttpSource {
     if (url.endsWith('.mgg')) return true;
     if (url.includes('防盗链') || url.includes('打击')) return true;
     return false;
+  }
+
+  /**
+   * 内容级防盗校验（覆写 BaseHttpSource）。
+   * 对竞速选中的酷我直链做：
+   * 1. HEAD 请求取 Content-Length + Content-Type
+   * 2. 按 bitrate 估算时长，与歌曲原始时长对比
+   * 3. Range GET 取前 4KB 校验音频魔数（ID3 / MP3 / FLAC / ADTS）
+   * 4. 时长异常短（< 歌曲时长 40% 或 < 30s）→ 判为防盗/试听占位
+   *
+   * 命中后竞速自动继续其余通道（本候选返回 null），不静默。
+   */
+  protected override async validateContent(result: PlayUrlResult, songId: string): Promise<boolean> {
+    const rid = songId.replace(/^kw_/, '');
+    const songDuration = this.durationCache.get(rid) || 0;
+
+    let contentLength = 0;
+    let contentType = '';
+    let headOk = false;
+
+    // 1. HEAD 请求（3 秒超时，失败不阻断）
+    try {
+      const head = await platformFetch(result.url, {
+        method: 'HEAD',
+        headers: result.headers,
+        timeout: 3000,
+      });
+      headOk = head.ok;
+      contentLength = parseInt(head.headers.get('content-length') || '0', 10);
+      contentType = head.headers.get('content-type') || '';
+    } catch (err) {
+      debugLogger.warn('network', `酷我防盗校验 HEAD 失败`, {
+        url: result.url.slice(0, 120),
+        error: err instanceof Error ? err.message : String(err),
+      });
+      // HEAD 失败时降级信任，继续放行
+      return true;
+    }
+
+    // 2. 按 bitrate 估算时长
+    const bitrateKbps = result.bitrate || 128;
+    const estimatedDuration = contentLength > 0
+      ? Math.round((contentLength * 8) / (bitrateKbps * 1000))
+      : 0;
+
+    // 3. 时长判定
+    let isTheft = false;
+    let reason = '';
+
+    if (songDuration > 0 && estimatedDuration > 0) {
+      // 有歌曲参考时长：异常短 → 防盗
+      if (estimatedDuration < songDuration * 0.4) {
+        isTheft = true;
+        reason = `估算时长(${estimatedDuration}s) < 歌曲时长(${songDuration}s)的40%`;
+      }
+    } else if (estimatedDuration > 0 && estimatedDuration < 30) {
+      // 无参考时长：保守阈值 < 30s
+      isTheft = true;
+      reason = `估算时长(${estimatedDuration}s) < 30s（无参考时长）`;
+    }
+
+    // 4. 魔数校验（辅助，非决定性）
+    let magic = 'unknown';
+    try {
+      const rangeResp = await platformFetch(result.url, {
+        method: 'GET',
+        headers: { ...result.headers, Range: 'bytes=0-4095' },
+        timeout: 5000,
+      });
+      if (rangeResp.ok) {
+        const buf = await rangeResp.arrayBuffer();
+        magic = this.detectAudioMagic(new Uint8Array(buf));
+        // 如果魔数完全不对（不是任何已知音频格式），加重嫌疑
+        if (magic === 'unknown' && contentLength > 0 && contentLength < 500 * 1024) {
+          if (!isTheft) {
+            isTheft = true;
+            reason = `魔数未知且文件过小(${Math.round(contentLength / 1024)}KB)`;
+          }
+        }
+      }
+    } catch (err) {
+      // Range 失败不阻断，仅记录
+      debugLogger.warn('network', `酷我防盗校验 Range GET 失败`, {
+        url: result.url.slice(0, 120),
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // 5. 日志留证（无论是否命中）
+    if (isTheft) {
+      debugLogger.warn('network', `酷我防盗音频命中（内容级校验）`, {
+        url: result.url.slice(0, 120),
+        contentType,
+        contentLength,
+        contentLengthKb: Math.round(contentLength / 1024),
+        magic,
+        bitrate: bitrateKbps,
+        estimatedDuration,
+        songDuration,
+        reason,
+        rid,
+      });
+      return false; // 作废该通道结果，竞速继续其余通道
+    }
+
+    debugLogger.info('network', `酷我内容级校验通过`, {
+      url: result.url.slice(0, 120),
+      contentType,
+      contentLengthKb: Math.round(contentLength / 1024),
+      magic,
+      estimatedDuration,
+      songDuration,
+      rid,
+    });
+    return true;
+  }
+
+  /** 音频文件魔数检测 */
+  private detectAudioMagic(view: Uint8Array): string {
+    if (view.length < 4) return 'unknown';
+
+    // ID3
+    if (view[0] === 0x49 && view[1] === 0x44 && view[2] === 0x33) return 'id3';
+    // FLAC
+    if (view[0] === 0x66 && view[1] === 0x4C && view[2] === 0x61 && view[3] === 0x43) return 'flac';
+    // MP3 帧头 (0xFFE0-0xFFFF)
+    if (view[0] === 0xFF && (view[1] & 0xE0) === 0xE0) return 'mp3';
+    // ADTS AAC (0xFFF0-0xFFFF)
+    if (view[0] === 0xFF && (view[1] & 0xF0) === 0xF0) return 'adts';
+    // Ogg
+    if (view[0] === 0x4F && view[1] === 0x67 && view[2] === 0x67 && view[3] === 0x53) return 'ogg';
+    // RIFF/WAV
+    if (view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46) return 'riff';
+    // M4A ftyp（在偏移 4 处）
+    if (view.length > 8 && view[4] === 0x66 && view[5] === 0x74 && view[6] === 0x79 && view[7] === 0x70) return 'm4a';
+
+    return 'unknown';
   }
 
   private brOf(quality: Quality): string {
