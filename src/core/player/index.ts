@@ -21,6 +21,7 @@ import { notifyPlaybackStateChange } from './audioFocus';
 import { playHistoryService } from '@shared/services/PlayHistoryService';
 import { debugLogger } from '@shared/utils/debugLogger';
 import { streamingAudioPlayer, type StreamingState } from '@core/streaming';
+import { eqService } from './equalizer';
 
 export type PlayerState = 'idle' | 'loading' | 'playing' | 'paused' | 'error';
 
@@ -106,6 +107,10 @@ export class PlayerEngine {
     const prev = this.state;
     this.state = state;
     this.emit('stateChange', { state, track: this.currentTrack || undefined });
+    // v18 EQ：播放中确保均衡器音频上下文处于运行态（未挂接时为 no-op）
+    if (state === 'playing') {
+      eqService.ensureActive();
+    }
     // 通知音频焦点模块
     notifyPlaybackStateChange(state, source);
     // 同步到系统媒体会话
@@ -200,6 +205,16 @@ export class PlayerEngine {
 
   getState(): PlayerState {
     return this.state;
+  }
+
+  /** v18 EQ：获取普通播放路径的 audio 元素 */
+  getEngineAudioElement(): HTMLAudioElement | null {
+    return this.audio;
+  }
+
+  /** v18 EQ：获取当前活跃播放路径的 audio 元素（流式优先） */
+  getActiveAudioElement(): HTMLAudioElement | null {
+    return this.isStreaming ? streamingAudioPlayer.getAudioElement() : this.audio;
   }
 
   getCurrentTrack(): PlayerTrack | null {
@@ -449,6 +464,8 @@ export class PlayerEngine {
 
     this.audio = new Audio(url);
     this.audio.crossOrigin = 'anonymous';
+    // v18 EQ：均衡器开启时挂接（内部自校验同源/运行态，失败自动直出）
+    void eqService.attachElement(this.audio);
 
     this.audio.addEventListener('canplay', () => {
       // 标记为用户主动播放意图
@@ -509,6 +526,11 @@ export class PlayerEngine {
     this.streamingHeaders = headers;
 
     const cacheKey = `${track.sourceId}_${track.sourceSongId}_${this.lastQuality}`;
+
+    // v18 EQ：流式引擎每创建新 audio 元素时通知均衡器挂接
+    streamingAudioPlayer.setAudioElementListener((el) => {
+      void eqService.attachElement(el);
+    });
 
     // 设置流式播放器回调
     streamingAudioPlayer.setCallbacks({
@@ -805,3 +827,6 @@ export class PlayerEngine {
 }
 
 export const playerEngine = new PlayerEngine();
+
+// v18 EQ：向均衡器注册「当前活跃 audio 元素」提供者（流式/普通两条路径统一）
+eqService.setElementProvider(() => playerEngine.getActiveAudioElement());

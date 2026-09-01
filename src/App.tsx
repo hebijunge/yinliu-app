@@ -10,6 +10,7 @@ const PlaylistPage = lazy(() => import('./pages/PlaylistPage'));
 const DownloadPage = lazy(() => import('./pages/DownloadPage'));
 const ReadingPage = lazy(() => import('./pages/ReadingPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const EqPage = lazy(() => import('./pages/EqPage'));
 const HistoryPage = lazy(() => import('./pages/HistoryPage'));
 const DebugLogPage = lazy(() => import('./pages/DebugLogPage'));
 import { playerEngine } from './core/player';
@@ -170,6 +171,7 @@ function App() {
           <Route path="/downloads" element={<DownloadPage />} />
           <Route path="/reading" element={<ReadingPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/eq" element={<EqPage />} />
           <Route path="/debug" element={<DebugLogPage />} />
         </Routes>
       </Suspense>

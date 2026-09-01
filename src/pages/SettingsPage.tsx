@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Settings, Music, Info, Trash2, Check, ListOrdered, Bug, Download, FileText, Moon } from 'lucide-react';
+import { Settings, Music, Info, Trash2, Check, ListOrdered, Bug, Download, FileText, Moon, SlidersHorizontal, ChevronRight } from 'lucide-react';
 import { useThemeStore } from '../shared/store/themeStore';
 import { useSettingsStore } from '../shared/store/settingsStore';
 import { useSearchStore } from '../shared/store/searchStore';
@@ -14,6 +14,7 @@ import {
   PLATFORM_COLORS,
 } from '../core/platformPriority';
 import { debugLogger } from '@shared/utils/debugLogger';
+import { useEqStore } from '@core/player/equalizer';
 import SleepTimerPanel from '../components/player/SleepTimerPanel';
 
 type TabId = 'general' | 'music' | 'about';
@@ -31,6 +32,7 @@ export default function SettingsPage() {
   const [cleanDone, setCleanDone] = useState<string | null>(null);
   const [showSleepTimer, setShowSleepTimer] = useState(false);
   const { active: sleepTimerActive, remainingSeconds, mode: sleepTimerMode } = useSleepTimerStore();
+  const { enabled: eqEnabled, setEnabled: setEqEnabled } = useEqStore();
 
   const { preferredQuality, enabledSources, downloadQuality, maxConcurrentDownloads, downloadDir,
     autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause, debugMode, enableFloatingLyrics,
@@ -232,6 +234,32 @@ export default function SettingsPage() {
                   </button>
                 ))}
               </div>
+            </div>
+
+            {/* 音效均衡器（v18） */}
+            <div className="yinliu-card">
+              <h3 className="font-semibold mb-1 text-[var(--text-primary)] flex items-center gap-2">
+                <SlidersHorizontal className="w-4 h-4" />
+                音效均衡器
+              </h3>
+              <p className="text-xs text-[var(--text-tertiary)] mb-4">5 段均衡 + 6 种预设，对流式边下边播与本地播放同时生效</p>
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)]">
+                <div>
+                  <div className="font-medium text-sm text-[var(--text-primary)]">启用均衡器</div>
+                  <div className="text-xs text-[var(--text-tertiary)]">关闭时保持原声直出，不影响播放链路</div>
+                </div>
+                <Toggle on={eqEnabled} onChange={setEqEnabled} />
+              </div>
+              <Link
+                to="/eq"
+                className="mt-3 flex items-center justify-between p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/40 transition-colors focus-ring"
+              >
+                <div>
+                  <div className="font-medium text-sm text-[var(--text-primary)]">调节均衡器</div>
+                  <div className="text-xs text-[var(--text-tertiary)]">预设 / 自定义曲线 / 保存个人预设</div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-[var(--text-tertiary)]" />
+              </Link>
             </div>
 
             {/* 后台播放设置 */}
