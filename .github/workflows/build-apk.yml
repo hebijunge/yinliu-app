@@ -32,7 +32,14 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
       - uses: android-actions/setup-android@v3
-      - run: npx cap add android
+      - name: Ensure Android platform
+        run: |
+          if [ -d android ]; then
+            echo "android/ already in repo (v17+ committed native project), running cap sync"
+            npx cap sync android
+          else
+            npx cap add android
+          fi
       - run: npx cap sync
       - run: |
           cd android
