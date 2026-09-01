@@ -125,6 +125,11 @@ export interface DownloadTask {
   progress: number;
   totalSize: number;
   speed?: number;
+  /** v16: 歌名/歌手（下载页展示用；老任务可能缺失，回退显示 songId） */
+  title?: string;
+  artist?: string;
+  /** v16: 已下载字节数（content-length 缺失时 UI 用它显示实时进度） */
+  downloadedSize?: number;
   localPath?: string;
   errorMessage?: string;
   isFallback?: boolean;

@@ -131,6 +131,7 @@ function App() {
         progress,
         totalSize,
         speed,
+        downloadedSize,
       });
     });
     const unsub6 = downloadEngine.on('completed', ({ taskId }) => {

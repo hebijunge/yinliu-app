@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useDownloadStore } from '../shared/store/downloadStore';
 import { downloadEngine } from '../core/download';
+import { PLATFORM_DISPLAY_NAMES } from '../core/platformPriority';
 import type { DownloadTask } from '../core/types';
 
 function formatBytes(bytes: number): string {
@@ -73,12 +74,18 @@ export default function DownloadPage() {
             className="p-4 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border)]"
           >
             <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 min-w-0">
                 <StatusBadge status={task.status} />
-                <span className="font-medium">{task.songId}</span>
-                <span className="text-xs text-[var(--text-tertiary)]">
-                  {task.quality} · {task.sourceId}
-                </span>
+                <div className="min-w-0">
+                  {/* v16：优先展示歌名·歌手；老任务无元数据时回退显示 songId */}
+                  <span className="font-medium truncate block">
+                    {task.title || task.songId}
+                    {task.artist ? <span className="text-[var(--text-tertiary)] font-normal"> · {task.artist}</span> : null}
+                  </span>
+                  <span className="text-xs text-[var(--text-tertiary)]">
+                    {task.quality} · {PLATFORM_DISPLAY_NAMES[task.sourceId] || task.sourceId}
+                  </span>
+                </div>
               </div>
               <div className="flex items-center gap-1">
                 {task.status === 'downloading' && (
@@ -121,11 +128,16 @@ export default function DownloadPage() {
 
             <div className="flex items-center justify-between text-xs text-[var(--text-tertiary)]">
               <span>
-                {task.totalSize > 0
-                  ? `${formatBytes(task.totalSize * (task.progress || 0))} / ${formatBytes(task.totalSize)}`
-                  : task.status === 'completed' && task.filePath
-                    ? '已保存到本地'
-                    : '计算中...'}
+                {/* v16：总大小未知时显示「已下载 X」而不是恒为 0% 的「计算中...」 */}
+                {task.status === 'downloading' && task.downloadedSize && task.downloadedSize > 0
+                  ? task.totalSize > 0
+                    ? `${formatBytes(task.downloadedSize)} / ${formatBytes(task.totalSize)}`
+                    : `已下载 ${formatBytes(task.downloadedSize)}`
+                  : task.totalSize > 0
+                    ? `${formatBytes(task.totalSize * (task.progress || 0))} / ${formatBytes(task.totalSize)}`
+                    : task.status === 'completed' && task.filePath
+                      ? '已保存到本地'
+                      : '等待开始...'}
               </span>
               <span>
                 {task.status === 'downloading' && task.speed && task.speed > 0
