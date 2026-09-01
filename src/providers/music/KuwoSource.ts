@@ -37,6 +37,7 @@ export class KuwoSource extends BaseHttpSource {
   private readonly ANTI_HOST = 'http://antiserver.kuwo.cn';
   private readonly HAITANG_HOST = 'https://musicapi.haitangw.net';
   private readonly COVER_BASE = 'https://img1.kuwo.cn/star/starheads/';
+  private readonly ALBUM_COVER_BASE = 'https://img4.kuwo.cn/star/albumcover/';
   private readonly NMOBI_UA = 'kwplayerhd_ar_4.3.0.8_tianbao_T1A_qirui';
 
   // 缓存
@@ -130,9 +131,22 @@ export class KuwoSource extends BaseHttpSource {
     const album = (o.ALBUM || o.album || '').toString().trim();
     const dur = parseInt((o.DURATION || o.duration || '0').toString(), 10) || 0;
     const minfo = (o.N_MINFO || o.MINFO || o.minfo || '').toString();
-    const cover = (o.web_artistpic_short || o.web_artistpic || '')
-      ? `${this.COVER_BASE}${o.web_artistpic_short || o.web_artistpic}`
-      : '';
+    // v16 封面修复：搜索列表部分条目不显示图片的根因——
+    // 旧逻辑用「歌手图」字段 web_artistpic_short 拼 starheads 前缀，多数歌曲没有歌手图，
+    // 拼出来还是 404。改为优先专辑图（web_albumpic_short → albumcover 域名，实测 200/无 Referer），
+    // 其次移动端 MVPIC（完整 https 直链），最后才回退歌手图。
+    const albumPic = (o.web_albumpic_short || o.web_albumpic || '').toString();
+    const artistPic = (o.web_artistpic_short || o.web_artistpic || '').toString();
+    const mvpic = (o.hts_MVPIC || o.MVPIC || '').toString();
+    let cover = '';
+    if (albumPic) {
+      // 尺寸段 120 → 500 升清（实测 albumcover 域名 500 路径同样 200）
+      cover = `${this.ALBUM_COVER_BASE}${albumPic.replace(/^120\//, '500/')}`;
+    } else if (mvpic.startsWith('http')) {
+      cover = mvpic;
+    } else if (artistPic) {
+      cover = `${this.COVER_BASE}${artistPic}`;
+    }
 
     // 缓存元数据用于取链
     this.songMetaCache.set(rid, { name, artist });

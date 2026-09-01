@@ -18,6 +18,26 @@ const SOURCE_COLORS: Record<string, string> = {
   migu: 'bg-orange-500',
 };
 
+/** v16 封面加载失败兜底：死链/防盗链图片自动回退占位图标，避免空白块 */
+function CoverImg({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed || !src) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      className="w-full h-full object-cover"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 function formatRelativeTime(ts: number): string {
   const now = Date.now();
   const diff = now - ts;
@@ -492,13 +512,7 @@ export default function SearchPage() {
             className="relative flex items-center gap-3 p-3 rounded-lg bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors cursor-pointer active:scale-[0.99]"
           >
             <div className="w-12 h-12 rounded-lg bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden">
-              {result.coverUrl ? (
-                <img src={result.coverUrl} alt="" className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
-                </div>
-              )}
+              <CoverImg src={result.coverUrl || ''} />
             </div>
 
             <div className="flex-1 min-w-0">
