@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search as SearchIcon, Loader2, Flame, ArrowDown } from 'lucide-react';
-import { getAggregatedHotSongs } from '../core/charts';
 import type { AggregatedSearchResult } from '../core/search';
 import {
   loadHomeHotCache,
   isHomeCacheFresh,
-  saveHomeHotCache,
+  revalidateHomeCache,
+  HOME_CACHE_TTL_MS,
+  type HomeHotCachePayload,
 } from '../core/homeCache';
 import SongRow from '../components/song/SongRow';
 import QualitySizeSheet from '../components/song/QualitySizeSheet';
@@ -29,13 +30,30 @@ function formatCacheAge(ts: number): string {
   return `${h} 小时前更新`;
 }
 
+/** 离线标注用的短格式时间差：「3 分钟前」「2 小时前」「1 天前」 */
+function formatAgeShort(ts: number): string {
+  const diff = Date.now() - ts;
+  if (diff < 60 * 60 * 1000) {
+    const m = Math.max(1, Math.round(diff / 60000));
+    return `${m} 分钟前`;
+  }
+  const h = Math.floor(diff / (60 * 60 * 1000));
+  if (h < 24) return `${h} 小时前`;
+  return `${Math.floor(h / 24)} 天前`;
+}
+
 /**
  * 首页：搜索入口 + 多源聚合热歌榜
  * 聚合排序：权重1=支持的源越多越靠前；权重2=展示优先级（汽水>酷我>咪咕>网易云>QQ>酷狗）
  * 取链播放按播放优先级（酷我>咪咕>网易云>QQ>酷狗>汽水），与展示序并存
  *
- * 缓存策略（v19.1）：聚合结果落本地缓存，24 小时内复用不请求网络；
- * 过期或首次使用才拉网络；下拉刷新强制绕过缓存并刷新时间戳；网络失败回退旧缓存。
+ * 缓存策略（v20，基于统一缓存层 cacheStore）：
+ * - 有缓存立即渲染（无论新鲜与否，绝不先转圈）；
+ * - 24h 内新鲜缓存完全复用不请求网络；
+ * - 过期缓存走 stale-while-revalidate：后台静默拉新，成功无感刷新列表与时间戳，失败保留旧数据；
+ * - 启动预热由 main.tsx 调 prewarmHomeCache 完成，进首页前数据大概率已就绪；
+ * - 断网时直接用缓存展示，顶部标注「当前离线，展示 X 前的数据」；
+ * - 下拉刷新强制绕过缓存并刷新时间戳；网络失败回退保留当前列表。
  */
 export default function HomePage() {
   const navigate = useNavigate();
@@ -44,7 +62,10 @@ export default function HomePage() {
   const [songs, setSongs] = useState<AggregatedSearchResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [cacheInfo, setCacheInfo] = useState<string>('');
+  const [offline, setOffline] = useState(false);
   const [qualitySheetSong, setQualitySheetSong] = useState<AggregatedSearchResult | null>(null);
+  // 当前展示数据的时间戳（用于断网恢复后判断是否需要补拉）
+  const shownSavedAtRef = useRef<number | null>(null);
 
   // —— 下拉刷新状态 ——
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -55,39 +76,55 @@ export default function HomePage() {
   const refreshingRef = useRef(false);
   const touchState = useRef<{ startY: number; pulling: boolean }>({ startY: 0, pulling: false });
 
-  /** 强制绕过缓存拉网络；成功则写缓存并刷新时间戳，失败抛错由调用方兜底 */
-  const fetchAndCache = useCallback(async (): Promise<void> => {
-    const list = await getAggregatedHotSongs();
-    if (list.length === 0) {
-      // 六源全部失败：不算成功，不覆盖缓存、不刷新时间戳
-      throw new Error('聚合结果为空（各音源均不可用）');
-    }
-    setSongs(list);
-    saveHomeHotCache(list);
+  /** 无感刷新列表（后台静默更新 / 断网恢复补拉成功后调用） */
+  const applyFreshList = useCallback((fresh: HomeHotCachePayload) => {
+    shownSavedAtRef.current = fresh.savedAt;
+    setSongs(fresh.songs);
     setCacheInfo('');
+    setOffline(false);
   }, []);
 
-  /** 首次进入：24h 内新鲜缓存直接用；过期/无缓存才拉网络；网络失败回退旧缓存 */
+  /**
+   * 首次进入 / 回到首页：
+   * - 有缓存（无论新鲜与否）→ 立即渲染，绝不先转圈；
+   * - 缓存新鲜 → 完全复用，不发请求；
+   * - 缓存过期且在线 → stale-while-revalidate：后台静默拉新，成功无感刷新，失败保留旧数据；
+   * - 无缓存且在线 → 拉网络；无缓存且离线 → 空态提示。
+   */
   useEffect(() => {
     let alive = true;
+    const cache = loadHomeHotCache();
+    const online = typeof navigator !== 'undefined' ? navigator.onLine : true;
+
+    if (cache && cache.songs.length > 0) {
+      shownSavedAtRef.current = cache.savedAt;
+      setSongs(cache.songs);
+      setCacheInfo(formatCacheAge(cache.savedAt));
+      setOffline(!online);
+      setLoading(false);
+      if (isHomeCacheFresh(cache) || !online) return; // 新鲜缓存或离线：不发起网络
+      revalidateHomeCache()
+        .then((fresh) => {
+          if (alive) applyFreshList(fresh);
+        })
+        .catch(() => {
+          /* 失败保持旧数据与旧标注 */
+        });
+      return;
+    }
+
+    if (!online) {
+      setOffline(true);
+      setLoading(false);
+      return;
+    }
     (async () => {
-      const cache = loadHomeHotCache();
-      if (isHomeCacheFresh(cache)) {
-        if (!alive) return;
-        setSongs(cache!.songs);
-        setCacheInfo(formatCacheAge(cache!.savedAt));
-        setLoading(false);
-        return;
-      }
       try {
-        await fetchAndCache();
+        const fresh = await revalidateHomeCache();
+        if (!alive) return;
+        applyFreshList(fresh);
       } catch (err) {
         console.error('热歌榜拉取失败:', err);
-        // 兜底：有过期旧缓存就先展示，避免空白页
-        if (alive && cache && cache.songs.length > 0) {
-          setSongs(cache.songs);
-          setCacheInfo(`${formatCacheAge(cache.savedAt)}（已过期，数据可能不是最新）`);
-        }
       } finally {
         if (alive) setLoading(false);
       }
@@ -95,15 +132,42 @@ export default function HomePage() {
     return () => {
       alive = false;
     };
-  }, [fetchAndCache]);
+  }, [applyFreshList]);
 
-  /** 手动下拉刷新：强制绕过缓存，成功后更新缓存时间戳 */
+  /** 断网 / 恢复联网：更新离线标注；恢复联网时若展示的是过期缓存则补拉一次 */
+  useEffect(() => {
+    const goOffline = () => setOffline(true);
+    const goOnline = () => {
+      setOffline(false);
+      const shownAt = shownSavedAtRef.current;
+      if (shownAt !== null && Date.now() - shownAt >= HOME_CACHE_TTL_MS) {
+        revalidateHomeCache()
+          .then(applyFreshList)
+          .catch(() => {
+            /* 失败保持旧数据 */
+          });
+      }
+    };
+    window.addEventListener('offline', goOffline);
+    window.addEventListener('online', goOnline);
+    return () => {
+      window.removeEventListener('offline', goOffline);
+      window.removeEventListener('online', goOnline);
+    };
+  }, [applyFreshList]);
+
+  /** 手动下拉刷新：强制绕过缓存，成功后更新缓存时间戳；离线时直接提示不空转 */
   const triggerRefresh = useCallback(async () => {
     if (refreshingRef.current) return;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      toast.error('当前离线', '无网络连接，已保留当前列表');
+      return;
+    }
     refreshingRef.current = true;
     setRefreshing(true);
     try {
-      await fetchAndCache();
+      const fresh = await revalidateHomeCache();
+      applyFreshList(fresh);
       toast.success('已更新', '热歌榜已刷新，缓存时间已重置');
     } catch (err) {
       const msg = err instanceof Error ? err.message : '网络异常';
@@ -112,7 +176,7 @@ export default function HomePage() {
       refreshingRef.current = false;
       setRefreshing(false);
     }
-  }, [fetchAndCache]);
+  }, [applyFreshList]);
 
   // 定位 Layout 的滚动容器（<main class="overflow-y-auto">），下拉刷新只在滚动到顶部时生效
   useEffect(() => {
@@ -228,11 +292,15 @@ export default function HomePage() {
         <Flame className="w-5 h-5 text-red-500" />
         <h2 className="text-lg font-bold">热歌榜</h2>
         <span className="text-xs text-[var(--text-tertiary)]">多源聚合</span>
-        {cacheInfo && (
+        {offline && cacheInfo ? (
+          <span className="text-xs text-amber-500 ml-auto">
+            当前离线，展示{formatAgeShort(shownSavedAtRef.current ?? Date.now())}的数据
+          </span>
+        ) : cacheInfo ? (
           <span className="text-xs text-[var(--text-tertiary)] ml-auto">
             缓存 · {cacheInfo}
           </span>
-        )}
+        ) : null}
       </div>
 
       {/* 下拉刷新指示器：触摸下拉时出现，越过阈值松手触发刷新 */}
@@ -264,7 +332,7 @@ export default function HomePage() {
         </div>
       ) : songs.length === 0 ? (
         <div className="text-center py-12 text-[var(--text-tertiary)]">
-          热歌榜暂无数据，下拉可重试
+          {offline ? '当前离线，且暂无缓存数据，联网后自动加载' : '热歌榜暂无数据，下拉可重试'}
         </div>
       ) : (
         songs.slice(0, 100).map((result) => (

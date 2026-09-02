@@ -7,6 +7,7 @@ import App from './App';
 import './index.css';
 import { initDatabase } from './shared/database';
 import { initializeProviders } from './providers/music/registry';
+import { prewarmHomeCache } from './core/homeCache';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -151,6 +152,9 @@ async function bootstrap() {
       </ErrorBoundary>
     </React.StrictMode>
   );
+
+  // 启动预热：后台检查首页缓存是否过期，过期提前拉取（fire-and-forget，失败静默）
+  prewarmHomeCache();
 }
 
 bootstrap();

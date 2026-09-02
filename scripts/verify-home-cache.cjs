@@ -14,6 +14,7 @@ const DIST = process.argv[2];
 const PORT = 4599;
 const BASE = `http://127.0.0.1:${PORT}`;
 const CACHE_KEY = 'yinliu:home:hot-cache:v1';
+const NEW_CACHE_KEY = 'yinliu:cc:home:hot:aggregated'; // v20 统一缓存层条目（迁移后生效）
 
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' };
 
@@ -55,9 +56,12 @@ function fakeSong(i) {
     await page.goto(`${BASE}/#/`);
     if (savedAt === null) {
       await page.evaluate((k) => localStorage.removeItem(k), CACHE_KEY);
+      await page.evaluate((k) => localStorage.removeItem(k), NEW_CACHE_KEY);
     } else {
       const songs = [fakeSong(1), fakeSong(2), fakeSong(3)];
       await page.evaluate(([k, payload]) => localStorage.setItem(k, JSON.stringify(payload)), [CACHE_KEY, { savedAt, songs }]);
+      // 清掉新层条目，确保本场景走「旧键迁移」路径且不受上一场景迁移结果污染
+      await page.evaluate((k) => localStorage.removeItem(k), NEW_CACHE_KEY);
     }
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(1500);
