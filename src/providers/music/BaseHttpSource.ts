@@ -56,7 +56,7 @@ export abstract class BaseHttpSource implements MusicSource {
       throw new YinliuError(ErrorCode.LINK_RACE_FAILED, `No endpoints for ${this.id}`, 503);
     }
 
-    const racePromise = this.linkRace(candidates, quality);
+    const racePromise = this.linkRace(candidates, quality, songId);
     BaseHttpSource.pendingLocks.set(lockKey, racePromise);
 
     racePromise.finally(() => {
@@ -74,7 +74,7 @@ export abstract class BaseHttpSource implements MusicSource {
    * 3. 每个候选独立 timeout，超时即放弃
    * 4. 支持 POST body
    */
-  protected async linkRace(candidates: ResolvedCandidate[], targetQuality: Quality): Promise<PlayUrlResult> {
+  protected async linkRace(candidates: ResolvedCandidate[], targetQuality: Quality, songId?: string): Promise<PlayUrlResult> {
     if (candidates.length === 0) {
       throw new YinliuError(ErrorCode.LINK_RACE_FAILED, `No endpoints for ${this.id}`, 503);
     }
@@ -95,7 +95,7 @@ export abstract class BaseHttpSource implements MusicSource {
     // 为每个候选创建一个带独立超时和解析的 promise
     // 一旦成功立即 resolve，失败/超时自动 reject
     const candidatePromises = ordered.map((c) =>
-      this.raceOneCandidate(c, targetQuality)
+      this.raceOneCandidate(c, targetQuality, songId)
     );
 
     // 使用 accurate-aware 竞速：accurate 候选一成功立即返回；
@@ -124,7 +124,8 @@ export abstract class BaseHttpSource implements MusicSource {
    */
   private async raceOneCandidate(
     c: ResolvedCandidate,
-    targetQuality: Quality
+    targetQuality: Quality,
+    songId?: string
   ): Promise<(PlayUrlResult & { _candidateKey: string }) | null> {
     const candidateKey = c.key || c.url;
     const timeout = c.timeout || 8000;
@@ -157,7 +158,12 @@ export abstract class BaseHttpSource implements MusicSource {
       }
 
       if (result && this.validateQuality(result, targetQuality)) {
-        return { ...result, _candidateKey: candidateKey };
+        // 内容级防盗校验（子类可覆写）
+        const contentValid = await this.validateContent(result, songId || '');
+        if (contentValid) {
+          return { ...result, _candidateKey: candidateKey };
+        }
+        debugLogger.warn('network', `内容级校验未通过 [${this.id}]`, { url: result.url.slice(0, 120), songId });
       }
       return null;
     } catch (err) {
@@ -228,6 +234,14 @@ export abstract class BaseHttpSource implements MusicSource {
    */
   protected isAccurateResult(result: PlayUrlResult): boolean {
     return result.accurate !== false;
+  }
+
+  /**
+   * 内容级防盗校验：对竞速选中的直链做 Range GET 魔数校验 / 时长估算等。
+   * 子类覆写以提供源级内容校验。默认返回 true（信任）。
+   */
+  protected async validateContent(_result: PlayUrlResult, _songId: string): Promise<boolean> {
+    return true;
   }
 
   protected validateQuality(result: PlayUrlResult, target: Quality): boolean {

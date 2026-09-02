@@ -13,6 +13,25 @@ import DownloadQualitySheet from '../components/common/DownloadQualitySheet';
 import type { AggregatedSearchResult } from '../core/search';
 import { Quality } from '../core/types';
 
+/** v16 封面加载失败兜底：死链/防盗链图片自动回退占位图标，避免空白块 */
+function CoverImg({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed || !src) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      className="w-full h-full object-cover"
+      onError={() => setFailed(true)}
+    />
+  );
+}
 function formatRelativeTime(ts: number): string {
   const now = Date.now();
   const diff = now - ts;

@@ -20,6 +20,9 @@ interface PlayerStore {
   /** 实际生效的音源（多源降级后可能不同于 track.sourceId） */
   actualSourceId: string | null;
 
+  /** 全屏播放页是否打开（返回键据此决定收起播放页还是走默认行为） */
+  fullscreenOpen: boolean;
+
   // Queue
   queue: PlayerTrack[];
   currentIndex: number;
@@ -34,6 +37,7 @@ interface PlayerStore {
   setQuality: (quality: Quality) => void;
   setActualQuality: (quality: Quality | null) => void;
   setActualSourceId: (sourceId: string | null) => void;
+  setFullscreenOpen: (open: boolean) => void;
   setPreview: (isPreview: boolean) => void;
   toggleMute: () => void;
 
@@ -61,6 +65,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   isPreview: false,
   isMuted: false,
   actualSourceId: null,
+  fullscreenOpen: false,
 
   queue: [],
   currentIndex: -1,
@@ -78,6 +83,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   },
   setActualQuality: (actualQuality) => set({ actualQuality }),
   setActualSourceId: (actualSourceId) => set({ actualSourceId }),
+  setFullscreenOpen: (fullscreenOpen) => set({ fullscreenOpen }),
   setPreview: (isPreview) => set({ isPreview }),
   toggleMute: () => set((s) => ({ isMuted: !s.isMuted })),
 

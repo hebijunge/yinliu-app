@@ -112,9 +112,9 @@ export default function DebugLogPage() {
     return `${d.getMonth() + 1}-${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}.${d.getMilliseconds().toString().padStart(3, '0')}`;
   };
 
-  const categories: Array<DebugLogCategory | 'all'> = ['all', 'app', 'navigate', 'network', 'player', 'download', 'click', 'init'];
+  const categories: Array<DebugLogCategory | 'all'> = ['all', 'app', 'navigate', 'network', 'player', 'download', 'click', 'init', 'streaming', 'sleepTimer'];
   const levels: Array<DebugLogLevel | 'all'> = ['all', 'info', 'warn', 'error'];
-  const categoryList: DebugLogCategory[] = ['app', 'navigate', 'network', 'player', 'download', 'click', 'init'];
+  const categoryList: DebugLogCategory[] = ['app', 'navigate', 'network', 'player', 'download', 'click', 'init', 'streaming', 'sleepTimer'];
 
   return (
     <div className="max-w-4xl mx-auto">

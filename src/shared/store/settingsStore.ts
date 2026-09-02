@@ -26,6 +26,8 @@ export interface SettingsPersisted {
   debugMode?: boolean;
   /** 车机模式：简化 UI，放大控件 */
   carMode?: boolean;
+  /** Android 桌面悬浮歌词开关 */
+  enableFloatingLyrics?: boolean;
 }
 
 function loadPersisted(): SettingsPersisted {
@@ -50,6 +52,7 @@ function persist(state: SettingsState): void {
       dismissNotificationOnPause: state.dismissNotificationOnPause,
       debugMode: state.debugMode,
       carMode: state.carMode,
+      enableFloatingLyrics: state.enableFloatingLyrics,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch {
@@ -78,6 +81,8 @@ interface SettingsState {
   debugMode: boolean;
   /** 车机模式：简化 UI，放大控件 */
   carMode: boolean;
+  /** Android 桌面悬浮歌词开关 */
+  enableFloatingLyrics: boolean;
 
   setPreferredQuality: (quality: Quality) => void;
   setSourceEnabled: (sourceId: string, enabled: boolean) => void;
@@ -88,6 +93,7 @@ interface SettingsState {
   setDismissNotificationOnPause: (v: boolean) => void;
   setDebugMode: (enabled: boolean) => void;
   setCarMode: (enabled: boolean) => void;
+  setFloatingLyricsEnabled: (enabled: boolean) => void;
   clearAllSettings: () => void;
 }
 
@@ -104,6 +110,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   dismissNotificationOnPause: persisted.dismissNotificationOnPause ?? false,
   debugMode: persisted.debugMode ?? false,
   carMode: persisted.carMode ?? false,
+  enableFloatingLyrics: persisted.enableFloatingLyrics ?? false,
 
   setPreferredQuality: (preferredQuality) => {
     set({ preferredQuality });
@@ -153,6 +160,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     persist(get());
   },
 
+  setFloatingLyricsEnabled: (enableFloatingLyrics) => {
+    set({ enableFloatingLyrics });
+    persist(get());
+  },
+
   clearAllSettings: () => {
     try {
       localStorage.removeItem(STORAGE_KEY);
@@ -169,6 +181,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       dismissNotificationOnPause: false,
       debugMode: false,
       carMode: false,
+      enableFloatingLyrics: false,
     });
     debugLogger.setEnabled(false);
   },

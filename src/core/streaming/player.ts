@@ -18,6 +18,7 @@ import { StreamFetcher, type ChunkInfo, type FetcherCallbacks } from './fetcher'
 import { streamCacheEngine, type CacheEntry } from './cache';
 import { detectMSECapability, isMSEAvailable } from './mseDetector';
 import { debugLogger } from '@shared/utils/debugLogger';
+import { useEqStore } from '@core/player/equalizer';
 
 export type StreamingState =
   | 'idle'
@@ -82,10 +83,22 @@ class StreamingAudioPlayer {
   private prefetchFetcher: StreamFetcher | null = null;
   private prefetchCallbacks?: StreamingCallbacks;
 
+  // v18 EQ：audio 元素创建监听（均衡器挂接新元素用）
+  private audioElementListener: ((el: HTMLAudioElement | null) => void) | null = null;
+
   // === 公共接口 ===
 
   setCallbacks(callbacks: StreamingCallbacks): void {
     this.callbacks = callbacks;
+  }
+
+  /** v18 EQ：监听 audio 元素创建/销毁（均衡器据此挂接） */
+  setAudioElementListener(l: ((el: HTMLAudioElement | null) => void) | null): void {
+    this.audioElementListener = l;
+  }
+
+  getAudioElement(): HTMLAudioElement | null {
+    return this.audio;
   }
 
   getState(): StreamingState {
@@ -266,6 +279,7 @@ class StreamingAudioPlayer {
       this.audio.src = '';
       this.audio = null;
     }
+    this.audioElementListener?.(null);
 
     // 清理 MSE
     if (this.mediaSource) {
@@ -306,16 +320,21 @@ class StreamingAudioPlayer {
    */
   private async playFromCache(): Promise<void> {
     let url: string;
+    // v18 EQ：均衡器开启时优先同源 blob URL（file:// URI 无法安全挂接 WebAudio，会静音）
+    const preferBlob = useEqStore.getState().enabled;
     try {
-      // 优先使用本地文件 URI（更稳定，绕过 Blob 竞态）
-      url = await streamCacheEngine.readAsFileUrl(this.cacheKey);
-      debugLogger.info('streaming', 'Playing from complete cache (file URL)', {
+      url = preferBlob
+        ? await streamCacheEngine.readAsBlobUrl(this.cacheKey)
+        : await streamCacheEngine.readAsFileUrl(this.cacheKey);
+      debugLogger.info('streaming', `Playing from complete cache (${preferBlob ? 'blob URL' : 'file URL'})`, {
         cacheKey: this.cacheKey,
       });
     } catch {
-      // 回退到 Blob URL
-      url = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
-      debugLogger.info('streaming', 'Playing from complete cache (blob URL fallback)', {
+      // 回退到另一种 URL（EQ 开启但只有 file URI 可用时，挂接层会自动跳过保持直出）
+      url = preferBlob
+        ? await streamCacheEngine.readAsFileUrl(this.cacheKey)
+        : await streamCacheEngine.readAsBlobUrl(this.cacheKey);
+      debugLogger.info('streaming', `Playing from complete cache (${preferBlob ? 'file URL' : 'blob URL'} fallback)`, {
         cacheKey: this.cacheKey,
       });
     }
@@ -374,19 +393,32 @@ class StreamingAudioPlayer {
     }
 
     // 获取播放URL：优先使用本地文件URI（更稳定），回退到Blob URL
+    // v18 EQ：均衡器开启时优先同源 blob URL（file:// URI 无法安全挂接 WebAudio）
     let newUrl: string;
+    const preferBlob = useEqStore.getState().enabled;
     try {
-      newUrl = await streamCacheEngine.readAsFileUrl(this.cacheKey);
-      debugLogger.info('streaming', 'Using file URL for playback', {
+      newUrl = preferBlob
+        ? await streamCacheEngine.readAsBlobUrl(this.cacheKey)
+        : await streamCacheEngine.readAsFileUrl(this.cacheKey);
+      debugLogger.info('streaming', `Using ${preferBlob ? 'blob' : 'file'} URL for playback`, {
         cacheKey: this.cacheKey,
       });
     } catch {
-      // 回退到 Blob URL
-      const blob = new Blob([allData as unknown as BlobPart], { type: this.mimeType });
-      newUrl = URL.createObjectURL(blob);
-      debugLogger.info('streaming', 'Using blob URL for playback (file URL unavailable)', {
-        cacheKey: this.cacheKey,
-      });
+      try {
+        newUrl = preferBlob
+          ? await streamCacheEngine.readAsFileUrl(this.cacheKey)
+          : await streamCacheEngine.readAsBlobUrl(this.cacheKey);
+        debugLogger.info('streaming', `Using ${preferBlob ? 'file' : 'blob'} URL for playback (fallback)`, {
+          cacheKey: this.cacheKey,
+        });
+      } catch {
+        // 最终回退：用内存数据构造 Blob URL
+        const blob = new Blob([allData as unknown as BlobPart], { type: this.mimeType });
+        newUrl = URL.createObjectURL(blob);
+        debugLogger.info('streaming', 'Using blob URL for playback (file URL unavailable)', {
+          cacheKey: this.cacheKey,
+        });
+      }
     }
 
     // 记录当前播放时间
@@ -514,6 +546,7 @@ class StreamingAudioPlayer {
 
       this.audio = new Audio(url);
       this.audio.crossOrigin = 'anonymous';
+      this.audioElementListener?.(this.audio);
 
       let resolved = false;
       const doResolve = () => {
@@ -595,6 +628,7 @@ class StreamingAudioPlayer {
 
     this.audio = new Audio(url);
     this.audio.crossOrigin = 'anonymous';
+    this.audioElementListener?.(this.audio);
 
     this.audio.addEventListener('canplay', () => {
       if (this.state === 'loading' || this.state === 'buffering') {

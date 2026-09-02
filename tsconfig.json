@@ -20,7 +20,8 @@
       "@modules/*": ["./src/modules/*"],
       "@shared/*": ["./src/shared/*"],
       "@providers/*": ["./src/providers/*"],
-      "@core/*": ["./src/core/*"]
+      "@core/*": ["./src/core/*"],
+      "@plugins/*": ["./src/plugins/*"]
     }
   },
   "include": ["src"],

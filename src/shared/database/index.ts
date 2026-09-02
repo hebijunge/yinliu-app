@@ -247,6 +247,10 @@ export async function initDatabase(): Promise<typeof db> {
   try { sqliteDb.run(`ALTER TABLE playlist_songs ADD COLUMN match_status TEXT DEFAULT 'matched'`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
   try { sqliteDb.run(`ALTER TABLE playlist_songs ADD COLUMN failure_reason TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
 
+  // v16 兼容迁移：downloads 增量列（下载页展示歌名/歌手；老安装的 downloads 表没有这两列）
+  try { sqliteDb.run(`ALTER TABLE downloads ADD COLUMN title TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
+  try { sqliteDb.run(`ALTER TABLE downloads ADD COLUMN artist TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
+
   // 插入默认音源配置
   const defaults = [
     { id: 'netease', name: '网易云音乐', enabled: 1, priority: 100, maxQuality: 'hires' },

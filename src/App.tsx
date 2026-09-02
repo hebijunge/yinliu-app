@@ -1,5 +1,6 @@
 import { Routes, Route } from 'react-router-dom';
 import { useEffect, lazy, Suspense } from 'react';
+import { Capacitor, type PluginListenerHandle } from '@capacitor/core';
 import Layout from './components/layout/Layout';
 import HomePage from './pages/HomePage';
 import LibraryPage from './pages/LibraryPage';
@@ -11,6 +12,7 @@ const PlaylistPage = lazy(() => import('./pages/PlaylistPage'));
 const DownloadPage = lazy(() => import('./pages/DownloadPage'));
 const ReadingPage = lazy(() => import('./pages/ReadingPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const EqPage = lazy(() => import('./pages/EqPage'));
 const HistoryPage = lazy(() => import('./pages/HistoryPage'));
 const DebugLogPage = lazy(() => import('./pages/DebugLogPage'));
 const LocalMusicPage = lazy(() => import('./pages/LocalMusicPage'));
@@ -23,6 +25,7 @@ import { usePlaylistStore } from './shared/store/playlistStore';
 import { usePlayHistoryStore } from './shared/store/playHistoryStore';
 import { useSettingsStore } from './shared/store/settingsStore';
 import { configureAudioFocus, updateAudioFocusOptions } from './core/player/audioFocus';
+import { floatingLyricsBridge } from './core/player/floatingLyricsBridge';
 import { initDatabase } from './shared/database';
 
 function App() {
@@ -34,6 +37,40 @@ function App() {
     } else {
       document.body.classList.remove('car-mode');
     }
+  }, []);
+
+  // Android 物理返回键：优先收起全屏播放页，其次路由回退，主界面无历史时保持系统默认（退出应用）
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let handle: PluginListenerHandle | null = null;
+    let disposed = false;
+    // @ts-expect-error @capacitor/app is externalized in build
+    import('@capacitor/app').then(({ App: CapApp }) => {
+      if (disposed) return;
+      CapApp.addListener('backButton', (event: { canGoBack: boolean }) => {
+        // 1) 全屏播放页打开时：收起播放页回到主界面（收起为迷你条），不退出应用
+        if (usePlayerStore.getState().fullscreenOpen) {
+          usePlayerStore.getState().setFullscreenOpen(false);
+          return;
+        }
+        // 2) 处于子页面且有路由历史：正常回退上一页
+        if (event.canGoBack) {
+          window.history.back();
+          return;
+        }
+        // 3) 已在主界面且无历史：遵循系统默认行为（退出应用）
+        void CapApp.exitApp();
+      })
+        .then((h: PluginListenerHandle) => {
+          if (disposed) void h.remove();
+          else handle = h;
+        })
+        .catch((err: Error) => console.error('[App] backButton listener failed:', err));
+    });
+    return () => {
+      disposed = true;
+      void handle?.remove();
+    };
   }, []);
 
   useEffect(() => {
@@ -64,9 +101,15 @@ function App() {
       updateAudioFocusOptions({ autoResumeOnFocusGain: state.autoResumeOnAudioFocus });
     });
 
+    // 初始化桌面悬浮歌词桥接（Android 真机生效，Web 端为 no-op）
+    floatingLyricsBridge.start();
+
     // 绑定播放器事件到 Store
-    const unsub1 = playerEngine.on('stateChange', ({ state }) => {
+    const unsub1 = playerEngine.on('stateChange', ({ state, track }) => {
       usePlayerStore.getState().setState(state);
+      if (track) {
+        usePlayerStore.getState().setTrack(track);
+      }
     });
     const unsub2 = playerEngine.on('progress', ({ currentTime, duration }) => {
       usePlayerStore.getState().setProgress(currentTime, duration);
@@ -74,7 +117,8 @@ function App() {
     const unsub3 = playerEngine.on('ended', () => {
       // Auto-play next logic would go here
     });
-    const unsub3b = playerEngine.on('trackLoaded', ({ actualSourceId }) => {
+    const unsub3b = playerEngine.on('trackLoaded', ({ track, actualSourceId }) => {
+      usePlayerStore.getState().setTrack(track || null);
       usePlayerStore.getState().setActualSourceId(actualSourceId || null);
     });
     const unsub3c = playerEngine.on('mediaAction', ({ action }) => {
@@ -94,6 +138,7 @@ function App() {
         progress,
         totalSize,
         speed,
+        downloadedSize,
       });
     });
     const unsub6 = downloadEngine.on('completed', ({ taskId }) => {
@@ -116,6 +161,7 @@ function App() {
       unsub6();
       unsub7();
       unsubSettings();
+      floatingLyricsBridge.stop();
     };
   }, []);
 
@@ -132,6 +178,7 @@ function App() {
           <Route path="/downloads" element={<DownloadPage />} />
           <Route path="/reading" element={<ReadingPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/eq" element={<EqPage />} />
           <Route path="/debug" element={<DebugLogPage />} />
           <Route path="/local" element={<LocalMusicPage />} />
         </Routes>
