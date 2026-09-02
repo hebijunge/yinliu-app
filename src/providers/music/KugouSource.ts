@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality, YinliuError, ErrorCode } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail, Chart, ChartDetail, TierSizes, PlaylistSummary } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { debugLogger } from '@shared/utils/debugLogger';
@@ -83,6 +83,19 @@ export class KugouSource extends BaseHttpSource {
     const id = `kg_${this.nextId++}`;
     this.hashCache.set(id, { hash, hash320, hashFlac, name, artist, duration: dur });
 
+    // v18：各档位文件大小（搜索/榜单接口字段）
+    const sizes: TierSizes = {};
+    const sizePairs: [string, keyof TierSizes][] = [
+      ['FileSize', '128k'],
+      ['320FileSize', '320k'],
+      ['sqFileSize', 'lossless'],
+      ['SqFileSize', 'lossless'],
+    ];
+    for (const [key, tier] of sizePairs) {
+      const sz = parseInt((o[key] || '0').toString(), 10) || 0;
+      if (sz > 0 && !sizes[tier]) sizes[tier] = sz;
+    }
+
     return {
       id,
       type: 'song',
@@ -95,6 +108,7 @@ export class KugouSource extends BaseHttpSource {
       sourceSongId: id, // 内部id，取链时反查hash
       quality: this.inferQuality(hash320, hashFlac),
       bitrate: hashFlac ? 1000 : hash320 ? 320 : 128,
+      sizes: Object.keys(sizes).length > 0 ? sizes : undefined,
     };
   }
 
@@ -289,6 +303,39 @@ export class KugouSource extends BaseHttpSource {
     }
   }
 
+  // ===================== 榜单（v18） =====================
+
+  /**
+   * 榜单列表：m.kugou.com/rank/list&json=true（55个榜单）
+   */
+  async getCharts(): Promise<Chart[]> {
+    const data = await this.httpGetJson(`${this.M_HOST}/rank/list&json=true`, { Referer: this.M_REF });
+    const list = data?.rank?.list || data?.list || [];
+    return list.map((o: any) => ({
+      id: String(o.rankid),
+      name: o.rankname || '',
+      description: '',
+    }));
+  }
+
+  /**
+   * 榜单详情：/rank/info/?rankid=&page=1&pagesize=100&json=true
+   * songs.list[] 字段与搜索兼容（hash/320hash/sqhash），parseSong 直接复用
+   */
+  async getChartDetail(chartId: string): Promise<ChartDetail> {
+    const data = await this.httpGetJson(
+      `${this.M_HOST}/rank/info/?rankid=${chartId}&page=1&pagesize=100&json=true`,
+      { Referer: this.M_REF }
+    );
+    const list = data?.songs?.list || [];
+    return {
+      id: String(chartId),
+      name: data?.rankname || data?.info?.rankname || '酷狗榜单',
+      description: '',
+      songs: list.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[],
+    };
+  }
+
   // ===================== 歌单 =====================
 
   /**
@@ -297,6 +344,33 @@ export class KugouSource extends BaseHttpSource {
    * - 字母数字混合ID：走 m.kugou.com/songlist/gcid_{id}（HTML 页提取 window.$output）
    * - 全程带 ERROR 日志，杜绝静默失败
    */
+  /**
+   * 按融合固定分类拉取歌单列表
+   * 酷狗移动端仅实测热门歌单列表（plist/index），故仅「热门推荐」可用
+   */
+  async getPlaylistsByCategory(categoryName: string, page = 0): Promise<PlaylistSummary[]> {
+    if (categoryName !== '热门推荐') return [];
+    try {
+      const url = page > 0
+        ? `${this.M_HOST}/plist/index&json=true&page=${page}`
+        : `${this.M_HOST}/plist/index&json=true`;
+      const data = await this.httpGetJson(url, { Referer: this.M_REF });
+      const list = data?.plist?.list?.info || [];
+      return list
+        .map((o: any) => ({
+          id: String(o.specialid || o.id || ''),
+          title: o.specialname || o.name || '未命名歌单',
+          coverUrl: (o.imgurl || '').replace('{size}', '480') || '',
+          playCount: typeof o.playcount === 'number' ? o.playcount : undefined,
+          trackCount: typeof o.songcount === 'number' ? o.songcount : undefined,
+          creator: o.nickname || undefined,
+        }))
+        .filter((p: PlaylistSummary) => p.id);
+    } catch {
+      return [];
+    }
+  }
+
   async getPlaylist(playlistId: string): Promise<PlaylistDetail> {
     const isAlphanumeric = !/^\d+$/.test(playlistId);
 

@@ -6,8 +6,10 @@ import type {
   PlaylistDetail,
   Chart,
   ChartDetail,
+  PlaylistSummary,
   HealthStatus,
   Quality,
+  QualityOption,
 } from '@core/types';
 
 export interface MusicSource {
@@ -24,6 +26,10 @@ export interface MusicSource {
   parsePlaylistUrl?(url: string): Promise<PlaylistDetail>;
   getCharts?(): Promise<Chart[]>;
   getChartDetail?(chartId: string): Promise<ChartDetail>;
+  /** 按融合固定分类拉取歌单列表（分类名由 core 传入，源内部映射到自家标签；仅实现有对应能力的源） */
+  getPlaylistsByCategory?(categoryName: string, page?: number): Promise<PlaylistSummary[]>;
+  /** 获取歌曲在各音质档位的可选下载项（用于音质弹窗；无则回退搜索结果里的 sizes） */
+  getQualityOptions?(songId: string): Promise<QualityOption[]>;
   healthCheck(): Promise<HealthStatus>;
 }
 

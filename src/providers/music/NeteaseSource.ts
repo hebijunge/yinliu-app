@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality, YinliuError, ErrorCode } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, TierSizes, PlaylistSummary } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 
@@ -72,14 +72,26 @@ export class NeteaseSource extends BaseHttpSource {
     const durMs = parseInt((o.duration || o.dt || '0').toString(), 10);
     const durSec = durMs > 0 ? Math.floor(durMs / 1000) : 0;
 
-    // 音质推断：从hMusic/mMusic/lMusic
+    // 音质推断：从hMusic/mMusic/lMusic（搜索）或 h/m/l（榜单详情）取码率与文件大小
     let quality = Quality.STANDARD;
     let bitrate = 128;
-    if (o.hMusic?.bitrate) { quality = Quality.HIGH; bitrate = parseInt(o.hMusic.bitrate, 10); }
-    else if (o.mMusic?.bitrate) { quality = Quality.STANDARD; bitrate = parseInt(o.mMusic.bitrate, 10); }
-    else if (o.lMusic?.bitrate) { quality = Quality.LOW; bitrate = parseInt(o.lMusic.bitrate, 10); }
-    if (o.sqMusic?.bitrate) { quality = Quality.LOSSLESS; bitrate = parseInt(o.sqMusic.bitrate, 10); }
-    if (o.hrMusic?.bitrate) { quality = Quality.HIRES; bitrate = parseInt(o.hrMusic.bitrate, 10); }
+    const sizes: TierSizes = {};
+    const musicPairs: [string, keyof TierSizes][] = [
+      ['hrMusic', 'hires'], ['hr', 'hires'],
+      ['sqMusic', 'lossless'], ['sq', 'lossless'],
+      ['hMusic', '320k'], ['h', '320k'],
+      ['mMusic', '128k'], ['m', '128k'],
+    ];
+    for (const [key, tier] of musicPairs) {
+      const m = o[key];
+      const sz = parseInt((m?.size || '0').toString(), 10) || 0;
+      if (sz > 0 && !sizes[tier]) sizes[tier] = sz;
+    }
+    if (o.hrMusic?.bitrate || o.hr?.br) { quality = Quality.HIRES; bitrate = parseInt((o.hrMusic?.bitrate || o.hr?.br) as any, 10); }
+    else if (o.sqMusic?.bitrate || o.sq?.br) { quality = Quality.LOSSLESS; bitrate = parseInt((o.sqMusic?.bitrate || o.sq?.br) as any, 10); }
+    else if (o.hMusic?.bitrate || o.h?.br) { quality = Quality.HIGH; bitrate = parseInt((o.hMusic?.bitrate || o.h?.br) as any, 10); }
+    else if (o.mMusic?.bitrate || o.m?.br) { quality = Quality.STANDARD; bitrate = parseInt((o.mMusic?.bitrate || o.m?.br) as any, 10); }
+    else if (o.lMusic?.bitrate || o.l?.br) { quality = Quality.LOW; bitrate = parseInt((o.lMusic?.bitrate || o.l?.br) as any, 10); }
 
     return {
       id: `ne_${id}`,
@@ -93,6 +105,7 @@ export class NeteaseSource extends BaseHttpSource {
       sourceSongId: id.toString(),
       quality,
       bitrate,
+      sizes: Object.keys(sizes).length > 0 ? sizes : undefined,
     };
   }
 
@@ -288,7 +301,56 @@ export class NeteaseSource extends BaseHttpSource {
     }
   }
 
+  // ===================== 榜单（v18） =====================
+
+  /**
+   * 榜单列表：/api/toplist（63个榜单，免登录）
+   */
+  async getCharts() {
+    const data = await this.httpGetJson(`${this.HOST}/api/toplist`, { Referer: this.REF });
+    if (!data?.list) return [];
+    return (data.list || []).map((o: any) => ({
+      id: String(o.id),
+      name: o.name || '',
+      description: o.updateFrequency || o.description || '',
+    }));
+  }
+
+  /**
+   * 榜单详情：/api/toplist/detail?id=（无分页，一次返回全量）
+   * tracks 为 h/m/l {br,size} 结构，parseSong 已兼容并提取文件大小
+   */
+  async getChartDetail(chartId: string) {
+    const data = await this.httpGetJson(`${this.HOST}/api/toplist/detail?id=${chartId}`, { Referer: this.REF });
+    const pl = data?.playlist;
+    const tracks = pl?.tracks || [];
+    return {
+      id: String(chartId),
+      name: pl?.name || '网易榜单',
+      description: pl?.description || '',
+      songs: tracks.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[],
+    };
+  }
+
   // ===================== 歌单 =====================
+
+  /**
+   * 按融合固定分类拉取歌单列表（分类名直接映射网易云 cat 标签）
+   */
+  async getPlaylistsByCategory(categoryName: string, page = 0): Promise<PlaylistSummary[]> {
+    const offset = page * 30;
+    const url = `${this.HOST}/api/playlist/list?cat=${encodeURIComponent(categoryName)}&order=hot&limit=30&offset=${offset}`;
+    const data = await this.httpGetJson(url, { Referer: this.REF });
+    const list = data?.playlists || [];
+    return list.map((o: any) => ({
+      id: String(o.id),
+      title: o.name || '未命名歌单',
+      coverUrl: o.coverImgUrl || '',
+      playCount: typeof o.playCount === 'number' ? o.playCount : undefined,
+      trackCount: typeof o.trackCount === 'number' ? o.trackCount : undefined,
+      creator: o.creator?.nickname || undefined,
+    }));
+  }
 
   /**
    * 获取网易云歌单详情

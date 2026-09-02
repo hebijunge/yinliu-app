@@ -1,11 +1,11 @@
 import { NavLink } from 'react-router-dom';
-import { Home, Library, User } from 'lucide-react';
+import { House, Library, User } from 'lucide-react';
 
 export default function MobileNav() {
   const items = [
-    { to: '/', icon: Home, label: '首页' },
+    { to: '/', icon: House, label: '首页' },
     { to: '/library', icon: Library, label: '曲库' },
-    { to: '/profile', icon: User, label: '我的' },
+    { to: '/mine', icon: User, label: '我的' },
   ];
 
   return (
@@ -15,6 +15,7 @@ export default function MobileNav() {
           <NavLink
             key={item.to}
             to={item.to}
+            end={item.to === '/'}
             className={({ isActive }) =>
               `flex flex-col items-center justify-center gap-0.5 flex-1 py-1 ${
                 isActive ? 'text-[var(--accent)]' : 'text-[var(--text-tertiary)]'

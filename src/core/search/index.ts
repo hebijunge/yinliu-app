@@ -1,11 +1,13 @@
 import type { MusicSource } from '@providers/music/types';
 import { Quality } from '@core/types';
-import type { SearchParams, SearchResult } from '@core/types';
+import type { SearchParams, SearchResult, TierSizes } from '@core/types';
 import { sourceRegistry } from '@providers/music/registry';
 import {
   PLATFORM_PRIORITY,
   getPriorityRank,
+  getDisplayRank,
   sortByPriority,
+  sortByDisplayPriority,
 } from '@core/platformPriority';
 
 export interface AggregatedSearchSource {
@@ -15,6 +17,8 @@ export interface AggregatedSearchSource {
   available: boolean;
   /** 该源下该曲的真实 songId（不同源同曲的 id 不同，必须按源记） */
   sourceSongId: string;
+  /** 该源各音质档位文件大小（字节），音质弹窗展示用 */
+  sizes?: TierSizes;
 }
 
 export interface AggregatedSearchResult extends SearchResult {
@@ -39,7 +43,7 @@ export interface SearchEngineOptions {
 const DURATION_TOLERANCE_SEC = 10;
 
 /** 归一化歌曲标题：去空白、小写、移除常见版本/装饰标记 */
-function normalizeTitle(raw: string): string {
+export function normalizeTitle(raw: string): string {
   if (!raw) return '';
   return raw
     .toLowerCase()
@@ -53,7 +57,7 @@ function normalizeTitle(raw: string): string {
 }
 
 /** 归一化歌手：去「/」、「&」、「feat.」、「、」等分隔符，取主歌手 */
-function normalizeArtist(raw: string): string {
+export function normalizeArtist(raw: string): string {
   if (!raw) return '';
   return raw
     .toLowerCase()
@@ -63,7 +67,7 @@ function normalizeArtist(raw: string): string {
 }
 
 /** 构造主键；duration 提供时附加二级 key 用于合并不同录音时长 */
-function makeKey(title: string, artist: string, duration?: number): string {
+export function makeKey(title: string, artist: string, duration?: number): string {
   const t = normalizeTitle(title);
   const a = normalizeArtist(artist);
   const base = `${t}|${a}`;
@@ -76,7 +80,7 @@ function makeKey(title: string, artist: string, duration?: number): string {
 }
 
 /** 同曲不同条目是否可视为「同一首歌」（用于合并：先试无时长 key，再放宽） */
-function isSameSong(a: SearchResult, b: SearchResult): boolean {
+export function isSameSong(a: SearchResult, b: SearchResult): boolean {
   const ta = normalizeTitle(a.title);
   const tb = normalizeTitle(b.title);
   if (ta !== tb) return false;
@@ -164,6 +168,7 @@ export class SearchEngine {
             maxQuality: sr.source.maxQuality,
             available: true,
             sourceSongId: r.sourceSongId,
+            sizes: r.sizes,
           };
           if (!existing.sources.find((s) => s.sourceId === sr.source.id)) {
             existing.sources.push(sourceInfo);
@@ -177,6 +182,7 @@ export class SearchEngine {
               maxQuality: sr.source.maxQuality,
               available: true,
               sourceSongId: r.sourceSongId,
+              sizes: r.sizes,
             }],
           };
           if (resultMap.has(key)) {
@@ -188,35 +194,36 @@ export class SearchEngine {
       }
     }
 
-    // 每个 result 的 sources 按优先级升序排，并把 result.sourceId / sourceSongId
-    // 同步指向最高优先级平台（这样取链时无需再次选源）
+    // 每个 result：
+    // - sources 按展示优先级升序排（汽水在前，列表徽章顺序）
+    // - result.sourceId / sourceSongId 指向播放优先级最高的平台（酷我在前，取链/播放用）
     const results: AggregatedSearchResult[] = [];
     for (const r of resultMap.values()) {
-      r.sources = sortByPriority(r.sources);
-      const best = r.sources[0];
-      if (best) {
-        r.sourceId = best.sourceId;
-        r.sourceSongId = best.sourceSongId;
+      r.sources = sortByDisplayPriority(r.sources);
+      const playBest = sortByPriority(r.sources)[0];
+      if (playBest) {
+        r.sourceId = playBest.sourceId;
+        r.sourceSongId = playBest.sourceSongId;
       }
       results.push(r);
     }
     for (const r of fallbackMap.values()) {
-      r.sources = sortByPriority(r.sources);
-      const best = r.sources[0];
-      if (best) {
-        r.sourceId = best.sourceId;
-        r.sourceSongId = best.sourceSongId;
+      r.sources = sortByDisplayPriority(r.sources);
+      const playBest = sortByPriority(r.sources)[0];
+      if (playBest) {
+        r.sourceId = playBest.sourceId;
+        r.sourceSongId = playBest.sourceSongId;
       }
       results.push(r);
     }
 
     results.sort((a, b) => {
-      // 排序：可用平台数 desc → 优先级（最高优先级的 rank）asc → 码率 desc
+      // 排序（v18 用户要求）：可用平台数 desc → 展示优先级（汽水>酷我>咪咕>网易云>QQ>酷狗）asc → 码率 desc
       const aSources = a.sources.length;
       const bSources = b.sources.length;
       if (bSources !== aSources) return bSources - aSources;
-      const aRank = a.sources[0] ? getPriorityRank(a.sources[0].sourceId) : Number.MAX_SAFE_INTEGER;
-      const bRank = b.sources[0] ? getPriorityRank(b.sources[0].sourceId) : Number.MAX_SAFE_INTEGER;
+      const aRank = a.sources[0] ? getDisplayRank(a.sources[0].sourceId) : Number.MAX_SAFE_INTEGER;
+      const bRank = b.sources[0] ? getDisplayRank(b.sources[0].sourceId) : Number.MAX_SAFE_INTEGER;
       if (aRank !== bRank) return aRank - bRank;
       return (b.bitrate || 0) - (a.bitrate || 0);
     });

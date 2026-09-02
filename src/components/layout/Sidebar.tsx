@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom';
-import { Home, Library, User, Music } from 'lucide-react';
+import { House, Library, User, Search, Download, BookOpen, Settings, Heart, Clock, ListMusic, Music } from 'lucide-react';
 import { usePlaylistStore } from '../../shared/store/playlistStore';
+import { PLATFORM_SHORT_NAMES } from '../../core/platformPriority';
 
 interface SidebarProps {
   onClose?: () => void;
@@ -10,9 +11,15 @@ export default function Sidebar({ onClose }: SidebarProps) {
   const { playlists } = usePlaylistStore();
 
   const navItems = [
-    { to: '/', icon: Home, label: '首页' },
+    { to: '/', icon: House, label: '首页' },
     { to: '/library', icon: Library, label: '曲库' },
-    { to: '/profile', icon: User, label: '我的' },
+    { to: '/mine', icon: User, label: '我的' },
+    { to: '/search', icon: Search, label: '搜索' },
+    { to: '/history', icon: Clock, label: '最近播放' },
+    { to: '/playlists', icon: ListMusic, label: '我的歌单' },
+    { to: '/downloads', icon: Download, label: '下载管理' },
+    { to: '/reading', icon: BookOpen, label: '书架' },
+    { to: '/settings', icon: Settings, label: '设置' },
   ];
 
   return (
@@ -68,6 +75,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
                 }`
               }
             >
+              {pl.id === 'favorites' ? <Heart className="w-4 h-4" /> : <ListMusic className="w-4 h-4" />}
               <span className="truncate">{pl.name}</span>
             </NavLink>
           ))}

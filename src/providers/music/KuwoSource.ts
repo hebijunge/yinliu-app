@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality, YinliuError, ErrorCode } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail, Chart, ChartDetail, PlaylistSummary } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { debugLogger } from '@shared/utils/debugLogger';
@@ -553,7 +553,141 @@ export class KuwoSource extends BaseHttpSource {
     return lines.length > 0 ? lines.join('\n') : null;
   }
 
+  // ===================== 榜单（v18） =====================
+
+  /**
+   * 榜单树：wapi.kuwo.cn/api/pc/bang/list（多级嵌套，递归提取 id/name）
+   */
+  async getCharts(): Promise<Chart[]> {
+    const data = await this.httpGetJson('https://wapi.kuwo.cn/api/pc/bang/list', { Referer: 'https://www.kuwo.cn/' });
+    const charts: Chart[] = [];
+    const seen = new Set<string>();
+
+    const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        node.forEach(walk);
+        return;
+      }
+      // 节点形如 {id, name, pic} 或 {sourceid, name}
+      const id = node.id !== undefined ? String(node.id) : node.sourceid !== undefined ? String(node.sourceid) : null;
+      const name = node.name || node.disname || '';
+      if (id && name && /^\d+$/.test(id) && !seen.has(id)) {
+        seen.add(id);
+        charts.push({ id, name, description: '' });
+      }
+      Object.values(node).forEach((v) => walk(v));
+    };
+    walk(data?.data ?? data);
+
+    return charts;
+  }
+
+  /**
+   * 榜单歌曲：kbangserver.kuwo.cn/ksong.s（Python dict格式，容错解析）
+   * musiclist[] 条目字段为小写 id/name/artist/album/duration
+   */
+  async getChartDetail(chartId: string): Promise<ChartDetail> {
+    const url = `https://kbangserver.kuwo.cn/ksong.s?from=pc&type=bang&id=${chartId}&pn=0&rn=100`;
+    const resp = await this.httpGet(url, { Referer: 'https://www.kuwo.cn/' });
+    if (!resp || !resp.ok) {
+      return { id: String(chartId), name: '酷我榜单', description: '', songs: [] };
+    }
+
+    let text: string;
+    try { text = await resp.text(); } catch { return { id: String(chartId), name: '酷我榜单', description: '', songs: [] }; }
+
+    let data: any;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      // Python dict风格解析（与 searchRs 相同的容错策略）
+      try {
+        const normalized = text
+          .replace(/'/g, '"')
+          .replace(/\bNone\b/g, 'null')
+          .replace(/\bTrue\b/g, 'true')
+          .replace(/\bFalse\b/g, 'false')
+          .replace(/;\s*$/, '');
+        data = JSON.parse(normalized);
+      } catch {
+        return { id: String(chartId), name: '酷我榜单', description: '', songs: [] };
+      }
+    }
+
+    const musiclist = data?.musiclist || [];
+    const songs: SearchResult[] = [];
+    for (const o of musiclist) {
+      const rid = (o.id || o.musicrid || o.MUSICRID || '').toString().replace(/^MUSIC_/, '');
+      const name = (o.name || o.NAME || o.songname || '').toString().replace(/&nbsp;/g, ' ').trim();
+      if (!rid || !name) continue;
+      songs.push({
+        id: `kw_${rid}`,
+        type: 'song',
+        title: name,
+        artist: (o.artist || o.ARTIST || '').toString().replace(/&nbsp;/g, ' ').trim() || '未知歌手',
+        album: (o.album || o.ALBUM || '').toString().trim(),
+        duration: parseInt((o.duration || o.DURATION || '0').toString(), 10) || 0,
+        coverUrl: (o.pic || o.albumpic || '').toString().startsWith('http') ? (o.pic || o.albumpic) : '',
+        sourceId: this.id,
+        sourceSongId: rid,
+        quality: Quality.STANDARD,
+        bitrate: 128,
+      });
+    }
+
+    return { id: String(chartId), name: '酷我榜单', description: '', songs };
+  }
+
   // ===================== 歌单 =====================
+
+  /** 标签列表缓存（getTagList 拉一次复用） */
+  private tagListCache: { id: string; name: string }[] | null = null;
+
+  /**
+   * 按融合固定分类拉取歌单列表：getTagList 匹配标签 → getTagPlayList
+   */
+  async getPlaylistsByCategory(categoryName: string, page = 0): Promise<PlaylistSummary[]> {
+    try {
+      if (!this.tagListCache) {
+        const data = await this.httpGetJson(
+          'https://wapi.kuwo.cn/api/pc/classify/playlist/getTagList',
+          { Referer: 'https://www.kuwo.cn/' }
+        );
+        const tags: { id: string; name: string }[] = [];
+        const walk = (node: any) => {
+          if (!node || typeof node !== 'object') return;
+          if (Array.isArray(node)) { node.forEach(walk); return; }
+          if (node.name && node.id !== undefined) tags.push({ id: String(node.id), name: String(node.name) });
+          for (const v of Object.values(node)) walk(v);
+        };
+        walk(data);
+        this.tagListCache = tags;
+      }
+
+      // 精确匹配 → 包含匹配
+      const tag =
+        this.tagListCache.find((t) => t.name === categoryName) ||
+        this.tagListCache.find((t) => t.name.includes(categoryName) || categoryName.includes(t.name));
+      if (!tag) return [];
+
+      const url = `http://wapi.kuwo.cn/api/pc/classify/playlist/getTagPlayList?loginUid=0&loginSid=0&appUid=38668888&pn=${page}&id=${tag.id}`;
+      const data = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
+      const list = data?.data?.list || data?.data || [];
+      if (!Array.isArray(list)) return [];
+      return list.map((o: any) => ({
+        id: String(o.id || o.playlistid),
+        title: o.name || o.title || '未命名歌单',
+        coverUrl: o.img || o.pic || o.cover || '',
+        playCount: typeof o.listencnt === 'number' ? o.listencnt : undefined,
+        trackCount: typeof o.total === 'number' ? o.total : undefined,
+        creator: o.uname || undefined,
+      }));
+    } catch (err) {
+      debugLogger.warn('network', '酷我分类歌单拉取失败', { categoryName, err: String(err) });
+      return [];
+    }
+  }
 
   /**
    * 获取酷我歌单

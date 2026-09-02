@@ -1,6 +1,5 @@
-import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { Search, Loader2, Filter, Heart, Clock, ListMusic, Plus, Compass, Music } from 'lucide-react';
-import { useSearchParams } from 'react-router-dom';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play } from 'lucide-react';
 import { toast } from '../shared/components/Toast';
 import { useSearchStore } from '../shared/store/searchStore';
 import { searchEngine } from '../core/search';
@@ -8,30 +7,11 @@ import { playerEngine } from '../core/player';
 import { downloadEngine } from '../core/download';
 import { usePlaylistStore } from '../shared/store/playlistStore';
 import { usePlayHistoryStore } from '../shared/store/playHistoryStore';
-import SongListItem from '../components/common/SongListItem';
-import DownloadQualitySheet from '../components/common/DownloadQualitySheet';
 import type { AggregatedSearchResult } from '../core/search';
 import { Quality } from '../core/types';
+import SongRow from '../components/song/SongRow';
+import QualitySizeSheet from '../components/song/QualitySizeSheet';
 
-/** v16 封面加载失败兜底：死链/防盗链图片自动回退占位图标，避免空白块 */
-function CoverImg({ src }: { src: string }) {
-  const [failed, setFailed] = useState(false);
-  if (failed || !src) {
-    return (
-      <div className="w-full h-full flex items-center justify-center">
-        <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
-      </div>
-    );
-  }
-  return (
-    <img
-      src={src}
-      alt=""
-      className="w-full h-full object-cover"
-      onError={() => setFailed(true)}
-    />
-  );
-}
 function formatRelativeTime(ts: number): string {
   const now = Date.now();
   const diff = now - ts;
@@ -44,9 +24,6 @@ function formatRelativeTime(ts: number): string {
 }
 
 export default function SearchPage() {
-  const [urlParams, setUrlParams] = useSearchParams();
-  const qFromUrl = urlParams.get('q') || '';
-
   const {
     keyword, results, isSearching, sourceStats, selectedSources, selectedQuality, searchHistory,
     setKeyword, setResults, setSearching, setSourceStats, addToHistory, setQuality,
@@ -55,15 +32,13 @@ export default function SearchPage() {
   const { playlists, addPlaylist, favorites } = usePlaylistStore();
   const { records: historyRecords } = usePlayHistoryStore();
 
-  const [inputValue, setInputValue] = useState(qFromUrl || keyword);
+  const [inputValue, setInputValue] = useState(keyword);
   const [showFilters, setShowFilters] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
+  // v18：音质弹窗当前歌曲
+  const [qualitySheetSong, setQualitySheetSong] = useState<AggregatedSearchResult | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-
-  // v17: 下载音质弹窗
-  const [downloadSheetOpen, setDownloadSheetOpen] = useState(false);
-  const [downloadSheetSong, setDownloadSheetSong] = useState<AggregatedSearchResult | null>(null);
 
   // v16: 搜索结果分页加载
   const PAGE_SIZE = 15;
@@ -73,20 +48,7 @@ export default function SearchPage() {
   // 搜索后自动滚动到结果
   const resultSectionRef = useRef<HTMLDivElement>(null);
 
-  // URL 携带 q 参数时自动触发搜索
-  useEffect(() => {
-    if (qFromUrl && qFromUrl !== keyword) {
-      setInputValue(qFromUrl);
-      // 延迟执行确保状态已更新
-      const timer = setTimeout(() => {
-        performSearch(qFromUrl);
-      }, 50);
-      return () => clearTimeout(timer);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qFromUrl]);
-
-  // v16: 搜索结果变化时重置分页
+  // v18: 搜索结果变化时重置分页
   useEffect(() => {
     setDisplayCount(PAGE_SIZE);
   }, [keyword, results.length]);
@@ -106,18 +68,19 @@ export default function SearchPage() {
     return () => observer.disconnect();
   }, [displayCount, results.length]);
 
-  const performSearch = useCallback(async (term: string) => {
-    if (!term.trim()) return;
-    setKeyword(term);
+  const handleSearch = useCallback(async () => {
+    if (!inputValue.trim()) return;
+    setKeyword(inputValue);
     setSearching(true);
-    addToHistory(term);
+    addToHistory(inputValue);
     try {
       const { results, sourceStats } = await searchEngine.search(
-        { keyword: term, page: 0, pageSize: 30 },
+        { keyword: inputValue, page: 0, pageSize: 30 },
         { sources: selectedSources, timeout: 10000 }
       );
       setResults(results);
       setSourceStats(sourceStats);
+      // 滚动到结果区域
       setTimeout(() => {
         resultSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 100);
@@ -126,14 +89,7 @@ export default function SearchPage() {
     } finally {
       setSearching(false);
     }
-  }, [selectedSources, setKeyword, setSearching, addToHistory, setResults, setSourceStats]);
-
-  const handleSearch = useCallback(() => {
-    if (!inputValue.trim()) return;
-    // 更新 URL 参数以支持刷新后保留搜索词
-    setUrlParams({ q: inputValue.trim() });
-    performSearch(inputValue.trim());
-  }, [inputValue, performSearch, setUrlParams]);
+  }, [inputValue, selectedSources, setKeyword, setSearching, addToHistory, setResults, setSourceStats]);
 
   const handlePlay = async (result: AggregatedSearchResult) => {
     if (!result.sources || result.sources.length === 0) {
@@ -162,52 +118,30 @@ export default function SearchPage() {
     }
   };
 
-  const handleMore = (result: AggregatedSearchResult) => {
-    setDownloadSheetSong(result);
-    setDownloadSheetOpen(true);
-  };
-
-  // 下载音质弹窗选项
-  const qualityOptions = useMemo<Parameters<typeof DownloadQualitySheet>[0]['options']>(() => {
-    if (!downloadSheetSong) return [];
-    const opts: Parameters<typeof DownloadQualitySheet>[0]['options'] = [];
-    for (const src of downloadSheetSong.sources) {
-      const qualities = ['128K', '192K', '320K', '无损', 'Hi-Res'];
-      for (const q of qualities) {
-        opts.push({
-          sourceId: src.sourceId,
-          sourceName: src.sourceName,
-          quality: q,
-          bitrateLabel: q,
-          fileSize: `${(3 + Math.random() * 48).toFixed(1)}MB`,
-        });
-      }
+  const handleDownload = async (result: AggregatedSearchResult) => {
+    if (!result.sources || result.sources.length === 0) {
+      toast.error('暂无可用音源', '该歌曲在所有平台均无下载链接');
+      return;
     }
-    return opts;
-  }, [downloadSheetSong]);
-
-  const handleDownloadSelected = async (selectedOpts: typeof qualityOptions) => {
-    if (!downloadSheetSong) return;
-    for (const opt of selectedOpts) {
-      try {
-        const task = await downloadEngine.createTask({
-          songId: downloadSheetSong.sourceSongId,
-          sourceId: opt.sourceId,
-          quality: selectedQuality,
-          title: downloadSheetSong.title,
-          artist: downloadSheetSong.artist,
-          availableSources: downloadSheetSong.sources.map((s) => ({
-            sourceId: s.sourceId,
-            sourceSongId: s.sourceSongId,
-          })),
-        });
-        downloadEngine.startDownload(task.id);
-      } catch (err) {
-        console.error('Download failed:', err);
-      }
+    try {
+      // v13: 与播放一致，下载也走优先级最高平台，失败后按 availableSources 降级
+      const task = await downloadEngine.createTask({
+        songId: result.sourceSongId,
+        sourceId: result.sourceId,
+        quality: selectedQuality,
+        title: result.title,
+        artist: result.artist,
+        availableSources: result.sources.map((s) => ({
+          sourceId: s.sourceId,
+          sourceSongId: s.sourceSongId,
+        })),
+      });
+      downloadEngine.startDownload(task.id);
+      toast.success('已加入下载队列', `${result.title}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '下载失败';
+      toast.error('下载失败', msg);
     }
-    toast.success('已加入下载队列', `选中 ${selectedOpts.length} 个音质`);
-    setDownloadSheetOpen(false);
   };
 
   const handlePlayHistory = useCallback(
@@ -241,13 +175,16 @@ export default function SearchPage() {
     }
   }, [newName, addPlaylist]);
 
+  // 收藏歌单
   const favoritesPlaylist = playlists.find((p) => p.id === 'favorites');
+  // 自建歌单（排除 favorites）
   const userPlaylists = playlists.filter((p) => p.id !== 'favorites');
+
   const isFirstVisit = playlists.length === 0 && historyRecords.length === 0;
 
   return (
     <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6 hidden lg:block">搜索</h1>
+      <h1 className="text-2xl font-bold mb-6 hidden lg:block">发现</h1>
 
       {/* Search Box */}
       <div className="flex gap-2 mb-4">
@@ -319,7 +256,7 @@ export default function SearchPage() {
       )}
 
       {/* Empty first-visit state */}
-      {isFirstVisit && !qFromUrl && (
+      {isFirstVisit && (
         <div className="yinliu-card text-center py-12 mb-6">
           <div className="w-16 h-16 mx-auto mb-4 rounded-3xl bg-[var(--accent-soft)] flex items-center justify-center">
             <Compass className="w-7 h-7 text-[var(--accent)]" />
@@ -339,7 +276,7 @@ export default function SearchPage() {
       )}
 
       {/* Recent plays horizontal scroll */}
-      {historyRecords.length > 0 && results.length === 0 && !qFromUrl && (
+      {historyRecords.length > 0 && (
         <section className="mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-[var(--text-primary)] flex items-center gap-2">
@@ -364,7 +301,7 @@ export default function SearchPage() {
                   )}
                   <Music className="w-8 h-8 text-[var(--text-tertiary)]" />
                   <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
-                    <span className="text-white opacity-0 group-hover:opacity-100 transition-opacity text-xs">▶</span>
+                    <Play className="w-8 h-8 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
                   </div>
                 </div>
                 <div className="text-xs font-medium truncate text-[var(--text-primary)]">{record.title}</div>
@@ -379,7 +316,7 @@ export default function SearchPage() {
       )}
 
       {/* Favorites shortcut */}
-      {favoritesPlaylist && results.length === 0 && !qFromUrl && (
+      {favoritesPlaylist && (
         <section className="mb-6">
           <h2 className="text-base font-semibold text-[var(--text-primary)] mb-3 flex items-center gap-2">
             <Heart className="w-4 h-4 text-red-500" />
@@ -410,7 +347,7 @@ export default function SearchPage() {
       )}
 
       {/* User playlists */}
-      {userPlaylists.length > 0 && results.length === 0 && !qFromUrl && (
+      {userPlaylists.length > 0 && (
         <section className="mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-[var(--text-primary)] flex items-center gap-2">
@@ -444,6 +381,19 @@ export default function SearchPage() {
               </a>
             ))}
           </div>
+        </section>
+      )}
+
+      {/* Empty playlists hint */}
+      {playlists.length <= 1 && !showCreate && !isFirstVisit && (
+        <section className="mb-6">
+          <button
+            onClick={() => setShowCreate(true)}
+            className="w-full yinliu-card-hover border-dashed flex items-center justify-center gap-2 py-6 text-sm text-[var(--text-tertiary)] hover:text-[var(--accent)]"
+          >
+            <Plus className="w-4 h-4" />
+            创建第一个歌单
+          </button>
         </section>
       )}
 
@@ -484,14 +434,14 @@ export default function SearchPage() {
       )}
 
       {/* Search history */}
-      {searchHistory.length > 0 && results.length === 0 && !isSearching && !keyword && !qFromUrl && (
+      {searchHistory.length > 0 && results.length === 0 && !isSearching && !keyword && (
         <div className="mb-4">
           <div className="text-sm text-[var(--text-secondary)] mb-2">搜索历史</div>
           <div className="flex gap-2 flex-wrap">
             {searchHistory.map((h) => (
               <button
                 key={h}
-                onClick={() => { setInputValue(h); setUrlParams({ q: h }); performSearch(h); }}
+                onClick={() => { setInputValue(h); }}
                 className="px-3 py-1 rounded-full text-sm bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]"
               >
                 {h}
@@ -514,11 +464,11 @@ export default function SearchPage() {
           </h2>
         )}
         {results.slice(0, displayCount).map((result) => (
-          <SongListItem
+          <SongRow
             key={result.id}
-            result={result}
-            onPlay={handlePlay}
-            onMore={handleMore}
+            song={result}
+            onPlay={() => handlePlay(result)}
+            onMore={() => setQualitySheetSong(result)}
           />
         ))}
 
@@ -538,24 +488,18 @@ export default function SearchPage() {
       </div>
 
       {/* Empty state */}
-      {!isSearching && results.length === 0 && (keyword || qFromUrl) && (
+      {!isSearching && results.length === 0 && keyword && (
         <div className="text-center py-12 text-[var(--text-tertiary)]">
           未找到相关结果，请尝试其他关键词
         </div>
       )}
 
-      {/* 下载音质弹窗 */}
-      {downloadSheetOpen && downloadSheetSong && (
-        <DownloadQualitySheet
-          songTitle={downloadSheetSong.title}
-          songArtist={downloadSheetSong.artist}
-          options={qualityOptions}
-          onClose={() => setDownloadSheetOpen(false)}
-          onDownload={handleDownloadSelected}
-          onPlay={() => {
-            setDownloadSheetOpen(false);
-            handlePlay(downloadSheetSong);
-          }}
+      {/* 音质/大小下载弹窗（⋮ 按钮） */}
+      {qualitySheetSong && (
+        <QualitySizeSheet
+          song={qualitySheetSong}
+          open
+          onClose={() => setQualitySheetSong(null)}
         />
       )}
     </div>

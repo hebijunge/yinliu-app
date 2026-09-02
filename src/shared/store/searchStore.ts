@@ -26,7 +26,7 @@ export const useSearchStore = create<SearchStore>((set) => ({
   results: [],
   isSearching: false,
   sourceStats: {},
-  selectedSources: ['netease', 'qq', 'kuwo', 'kugou', 'migu'],
+  selectedSources: ['qishui', 'netease', 'qq', 'kuwo', 'kugou', 'migu'],
   selectedQuality: Quality.STANDARD,
   searchHistory: [],
 

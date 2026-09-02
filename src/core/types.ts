@@ -27,6 +27,53 @@ export function qualityRank(q: Quality): number {
   return QualityRank[q] ?? 0;
 }
 
+// === 音质弹窗（v18：下载音质多平台弹窗） ===
+export type QualityTier = 'hires' | 'lossless' | '320k' | '192k' | '128k';
+
+export const QUALITY_TIER_LABELS: Record<QualityTier, string> = {
+  hires: 'Hi-Res',
+  lossless: '无损',
+  '320k': '320K',
+  '192k': '192K',
+  '128k': '128K',
+};
+
+/** 音质分组展示顺序（从高到低） */
+export const QUALITY_TIER_ORDER: QualityTier[] = ['hires', 'lossless', '320k', '192k', '128k'];
+
+export function tierToQuality(tier: QualityTier): Quality {
+  switch (tier) {
+    case 'hires': return Quality.HIRES;
+    case 'lossless': return Quality.LOSSLESS;
+    case '320k': return Quality.HIGH;
+    case '192k': return Quality.HIGHER;
+    case '128k': return Quality.STANDARD;
+  }
+}
+
+export function qualityToTier(q: Quality): QualityTier | null {
+  const rank = qualityRank(q);
+  if (rank >= qualityRank(Quality.HIRES)) return 'hires';
+  if (rank >= qualityRank(Quality.LOSSLESS)) return 'lossless';
+  if (rank >= qualityRank(Quality.HIGH)) return '320k';
+  if (rank >= qualityRank(Quality.HIGHER)) return '192k';
+  if (rank >= qualityRank(Quality.STANDARD)) return '128k';
+  return null;
+}
+
+/** 每个音质档位的文件大小（字节） */
+export type TierSizes = Partial<Record<QualityTier, number>>;
+
+/** 弹窗中单个可选块：某个源在某个音质档位下的可选下载项 */
+export interface QualityOption {
+  sourceId: string;
+  sourceName: string;
+  tier: QualityTier;
+  format?: string;
+  sizeBytes?: number;
+  isPreview?: boolean;
+}
+
 // === 搜索相关 ===
 export interface SearchParams {
   keyword: string;
@@ -49,6 +96,8 @@ export interface SearchResult {
   quality?: Quality;
   bitrate?: number;
   availableQualities?: Quality[];
+  /** 各音质档位文件大小（字节），用于音质弹窗展示 */
+  sizes?: TierSizes;
 }
 
 export interface SourceAvailability {
@@ -68,7 +117,6 @@ export interface PlayUrlResult {
   headers?: Record<string, string>;
   expiresAt?: number;
   isEncrypted?: boolean;
-  decryptKey?: string;
   /** 是否为试听片段（VIP歌曲非会员只能试听30秒等） */
   isPreview?: boolean;
   /** 实际音质是否与请求音质一致 */
@@ -106,6 +154,16 @@ export interface ChartDetail extends Chart {
   songs: SearchResult[];
 }
 
+/** 歌单广场列表项（歌单融合分类用） */
+export interface PlaylistSummary {
+  id: string;
+  title: string;
+  coverUrl?: string;
+  playCount?: number;
+  trackCount?: number;
+  creator?: string;
+}
+
 export interface HealthStatus {
   healthy: boolean;
   message: string;
@@ -137,18 +195,9 @@ export interface DownloadTask {
   createdAt: number;
 }
 
-// === 取链平台优先级（聚合多源时的尝试顺序：酷我→咪咕→网易云→酷狗→QQ）===
-export const SourcePlayPriority: Record<string, number> = {
-  kuwo: 1,
-  migu: 2,
-  netease: 3,
-  kugou: 4,
-  qq: 5,
-};
-
-export function getSourcePriority(sourceId: string): number {
-  return SourcePlayPriority[sourceId] ?? 99;
-}
+// === 取链平台优先级 ===
+// v18 起双优先级表统一定义在 platformPriority.ts，此处保留兼容导出（播放优先级：酷我→咪咕→网易云→QQ→酷狗→汽水）
+export { PLATFORM_PRIORITY as SourcePlayPriorityTable, getPriorityRank as getSourcePriority } from './platformPriority';
 
 // === 错误码 ===
 export enum ErrorCode {

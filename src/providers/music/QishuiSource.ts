@@ -1,26 +1,42 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult } from '@core/types';
-import type { EndpointCandidate } from './types';
-import { YinliuError, ErrorCode } from '@core/types';
-import { platformFetch } from '@shared/utils/platformFetch';
-
-const QISHUI_UA = 'LunaPC/3.0.0(290101097)';
-const GOOGLEBOT_UA = 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)';
+import type {
+  SearchParams,
+  SearchResult,
+  PlayUrlResult,
+  SongDetail,
+  PlaylistDetail,
+  Chart,
+  ChartDetail,
+  HealthStatus,
+  QualityOption,
+  TierSizes,
+  PlaylistSummary,
+} from '@core/types';
+import { debugLogger } from '@shared/utils/debugLogger';
 
 /**
- * 汽水音乐音源Provider
- * 源标识：qi
- * 接口：官方免登录搜索/歌单/榜单 + 分享页_ROUTER_DATA明文直链 + 第三方track.php/BugPk-Api竞速
- * 加密：track.php返回CENC+AES-CTR加密流，需decrypt_key解密
+ * 汽水音乐音源Provider（v18 新增）
+ *
+ * 接口依据《汽水音乐接口完整文档_实测整合版》：
+ * - 搜索：GET api.qishui.com/luna/search/track（免登录，PC客户端公共参数）
+ * - 榜单：GET api.qishui.com/luna/pc/charts/{chart_id}（4大官方榜单）
+ * - 歌单：GET api.qishui.com/luna/playlist/detail + /luna/search/playlist
+ * - 取链：分享页 _ROUTER_DATA 明文直链（music.douyin.com/qishui/share/track）
+ * - 歌词：分享页逐字歌词 sentences[] → LRC
  */
 export class QishuiSource extends BaseHttpSource {
   readonly id = 'qishui';
   readonly name = '汽水音乐';
-  readonly maxQuality = Quality.LOSSLESS;
+  /** 分享页直链音质档位不明确（文档5.6），按最高 320K 档注册 */
+  readonly maxQuality = Quality.HIGH;
 
-  // 官方API公共参数（PC客户端伪装）
-  private readonly commonParams = new URLSearchParams({
+  private readonly apiBase = 'https://api.qishui.com';
+  private readonly apiBackupBase = 'https://api5-lf.qishui.com';
+  private readonly shareBase = 'https://music.douyin.com/qishui/share/track';
+
+  /** PC客户端公共参数（文档 2.1） */
+  private readonly commParams: Record<string, string> = {
     aid: '386088',
     app_name: 'luna_pc',
     device_id: '2170852561392692',
@@ -31,357 +47,430 @@ export class QishuiSource extends BaseHttpSource {
     device_platform: 'windows',
     device_type: 'Windows',
     os_version: 'Windows',
-  });
+  };
 
+  private readonly apiHeaders: Record<string, string> = {
+    'User-Agent': 'LunaPC/3.0.0(290101097)',
+    Referer: 'https://api.qishui.com/',
+    Accept: 'application/json',
+  };
+
+  /** 官方4大榜单（文档 9.2） */
+  private static readonly CHARTS: { id: string; name: string; description: string; cover: string }[] = [
+    {
+      id: '7036274230471712007',
+      name: '热歌榜',
+      description: '汽水音乐内每周热度最高的50首歌',
+      cover: 'https://p3-luna.douyinpic.com/img/tos-cn-i-b829550vbb/d0d8d48461a62748e84689cdf049b19a.png~tplv-b829550vbb-resize:960:960.png',
+    },
+    {
+      id: '7060812597884869927',
+      name: '新歌榜',
+      description: '近期发行的热度最高的50首新歌',
+      cover: 'https://p3-luna.douyinpic.com/img/tos-cn-i-b829550vbb/f12f7eb5b54d0899c7c724df009668a8.png~tplv-b829550vbb-resize:960:960.png',
+    },
+    {
+      id: '7061475546400005410',
+      name: '欧美榜',
+      description: '每周热度最高的50首外文歌曲',
+      cover: 'https://p3-luna.douyinpic.com/img/tos-cn-i-b829550vbb/33747550ed5499b58feda42a21748637.png~tplv-b829550vbb-resize:960:960.png',
+    },
+    {
+      id: '7415959718721494311',
+      name: '音乐人歌曲榜',
+      description: '抖音音乐人开放平台上传歌曲，综合站内热度',
+      cover: 'https://p3-luna.douyinpic.com/img/tos-cn-v-2774c002/o8FQKiQQBxHWa2hzsBNAgYOX6iEHEAibADAbfB~tplv-b829550vbb-resize:960:960.png',
+    },
+  ];
+
+  /** 分享页数据缓存：trackId → { url, lrc, fetchedAt }（URL 短时效，10分钟过期） */
+  private shareCache = new Map<string, { url: string; lrc: string | null; fetchedAt: number }>();
+  private static readonly SHARE_CACHE_TTL = 5 * 60 * 1000; // 直链时效约3分钟，缓存5分钟
+
+  /**
+   * 搜索歌曲（文档 3.1）
+   */
   async search(params: SearchParams): Promise<SearchResult[]> {
-    const url = `https://api.qishui.com/luna/search/track?${this.commonParams.toString()}&q=${encodeURIComponent(params.keyword)}&count=${params.pageSize || 20}&search_method=history&cursor=${(params.page || 0) * (params.pageSize || 20)}`;
+    const page = params.page || 0;
+    const pageSize = params.pageSize || 30;
+    const count = Math.min(pageSize, 20);
+    const cursor = page * count;
 
-    const response = await platformFetch(url, {
-      method: 'GET',
-      headers: {
-        'User-Agent': QISHUI_UA,
-        'Referer': 'https://api.qishui.com/',
-      },
+    const qs = new URLSearchParams({
+      ...this.commParams,
+      q: params.keyword,
+      count: String(count),
+      cursor: String(cursor),
+      search_method: 'history',
     });
 
-    if (!response.ok) {
-      throw new Error(`Qishui search failed: ${response.status}`);
-    }
+    const data = await this.httpGetJson(`${this.apiBase}/luna/search/track?${qs.toString()}`, this.apiHeaders);
+    if (!data) return [];
 
-    const data = await response.json();
-    const group = data?.result_groups?.find((g: any) => g.id === 'tracks');
-    const tracks = group?.data || [];
+    const group = (data?.result_groups || []).find((g: any) => g?.id === 'tracks') || data?.result_groups?.[0];
+    const items = group?.data || [];
 
-    return tracks.map((item: any) => this.mapSearchResult(item));
+    return items
+      .map((item: any) => item?.entity?.track)
+      .filter(Boolean)
+      .map((track: any) => this.mapTrack(track));
   }
 
-  private mapSearchResult(item: any): SearchResult {
-    const track = item.entity?.track || item.entity?.track_wrapper?.track || item.entity || {};
-    const artists = Array.isArray(track.artists)
-      ? track.artists.map((a: any) => a.name).filter(Boolean).join(' / ')
-      : '';
-    const album = track.album || {};
-    const duration = typeof track.duration === 'number' ? Math.round(track.duration / 1000) : undefined;
+  /**
+   * 搜索歌单（文档 3.2，用于歌单广场汽水分类的兜底内容）
+   */
+  async searchPlaylists(keyword: string, page = 0, pageSize = 20): Promise<any[]> {
+    const qs = new URLSearchParams({
+      ...this.commParams,
+      q: keyword,
+      count: String(Math.min(pageSize, 20)),
+      cursor: String(page * 20),
+    });
+    const data = await this.httpGetJson(`${this.apiBase}/luna/search/playlist?${qs.toString()}`, this.apiHeaders);
+    if (!data) return [];
+    const group = (data?.result_groups || []).find((g: any) => g?.id === 'playlists') || data?.result_groups?.[0];
+    return (group?.data || []).map((item: any) => item?.entity?.playlist).filter(Boolean);
+  }
 
-    // 汽水音乐默认可用音质：medium/higher/highest/lossless
-    const availableQualities: Quality[] = [Quality.STANDARD, Quality.HIGHER, Quality.HIGH, Quality.LOSSLESS];
+  /**
+   * 按融合固定分类拉取歌单列表
+   * 汽水无分类接口，用分类名做歌单搜索（best-effort）
+   */
+  async getPlaylistsByCategory(categoryName: string, page = 0): Promise<PlaylistSummary[]> {
+    try {
+      const name = categoryName === '热门推荐' ? '热门' : categoryName;
+      const raw = await this.searchPlaylists(name, page, 20);
+      return raw
+        .map((pl: any) => ({
+          id: String(pl?.id || pl?.playlist_id || ''),
+          title: pl?.title || pl?.name || '未命名歌单',
+          coverUrl: pl?.cover_url || pl?.cover || '',
+          playCount: typeof pl?.play_count === 'number' ? pl.play_count : undefined,
+          trackCount: typeof pl?.track_count === 'number' ? pl.track_count : undefined,
+          creator: pl?.owner_name || undefined,
+        }))
+        .filter((p: PlaylistSummary) => p.id);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * 官方4大榜单（文档 9）
+   */
+  async getCharts(): Promise<Chart[]> {
+    return QishuiSource.CHARTS.map((c) => ({ id: c.id, name: c.name, description: c.description }));
+  }
+
+  async getChartDetail(chartId: string): Promise<ChartDetail> {
+    const meta = QishuiSource.CHARTS.find((c) => c.id === chartId);
+    const songs = await this.fetchChartTracks(chartId);
+    return {
+      id: chartId,
+      name: meta?.name || '汽水榜单',
+      description: meta?.description,
+      songs,
+    };
+  }
+
+  private async fetchChartTracks(chartId: string): Promise<SearchResult[]> {
+    // 主域名 + 备用域名（文档 9.1）
+    const urls = [
+      `${this.apiBase}/luna/pc/charts/${chartId}?${new URLSearchParams(this.commParams).toString()}`,
+      `${this.apiBackupBase}/luna/charts/${chartId}?charge=0&${new URLSearchParams(this.commParams).toString()}`,
+    ];
+
+    for (const url of urls) {
+      const data = await this.httpGetJson(url, this.apiHeaders);
+      const ranks = data?.chart?.track_ranks || data?.track_ranks || [];
+      if (ranks.length > 0) {
+        return ranks
+          .map((r: any) => r?.track)
+          .filter(Boolean)
+          .map((track: any) => this.mapTrack(track));
+      }
+    }
+    return [];
+  }
+
+  /**
+   * 歌单详情（文档 3.5；注意 track 多一层 track_wrapper）
+   */
+  async getPlaylist(playlistId: string): Promise<PlaylistDetail> {
+    const qs = new URLSearchParams({
+      ...this.commParams,
+      playlist_id: playlistId,
+      count: '30',
+      cursor: '0',
+    });
+    const data = await this.httpGetJson(`${this.apiBase}/luna/playlist/detail?${qs.toString()}`, this.apiHeaders);
+
+    const tracks: any[] = [];
+    const resources = data?.media_resources || [];
+    for (const res of resources) {
+      const t = res?.entity?.track_wrapper?.track || res?.entity?.track;
+      if (t) tracks.push(t);
+    }
 
     return {
-      id: `qi_${track.id}`,
-      type: 'song',
-      title: String(track.name || ''),
-      artist: artists,
-      album: String(album.name || ''),
-      duration,
-      coverUrl: String(album.url_cover || track.url_cover || ''),
-      sourceId: this.id,
-      sourceSongId: String(track.id || ''),
-      quality: Quality.STANDARD,
-      bitrate: 128,
-      availableQualities,
+      id: playlistId,
+      name: data?.playlist?.title || '汽水歌单',
+      description: data?.playlist?.desc || '',
+      coverUrl: this.buildCoverUrl(data?.playlist?.url_cover) || '',
+      songs: tracks.map((t) => this.mapTrack(t)),
+      total: data?.playlist?.count_tracks || tracks.length,
     };
   }
 
+  /**
+   * 歌曲详情：官方无 track/detail 接口（文档 3.6），用 SEO/H5 接口（文档 10）
+   */
   async getSongDetail(songId: string): Promise<SongDetail> {
-    // 汽水无独立歌曲详情接口，用SEO track或搜索补充
-    const url = `https://beta-luna.douyin.com/luna/h5/seo_track?track_id=${songId}&device_platform=web`;
+    const trackId = this.extractTrackId(songId);
+
     try {
-      const response = await platformFetch(url, {
-        method: 'GET',
-        headers: { 'User-Agent': GOOGLEBOT_UA },
-      });
-      if (!response.ok) {
-        return { id: songId, title: '' };
+      const data = await this.httpGetJson(
+        `https://beta-luna.douyin.com/luna/h5/seo_track?track_id=${trackId}&device_platform=web`,
+        { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+      );
+      const track = data?.seo_track?.track;
+      if (track) {
+        return {
+          id: songId,
+          title: track.name || '未知歌曲',
+          artist: (track.artists || []).map((a: any) => a?.name).filter(Boolean).join('/') || '未知歌手',
+          album: track.album?.name || '',
+          duration: track.duration ? Math.round(track.duration / 1000) : 0,
+          coverUrl: this.buildCoverUrl(track.album?.url_cover) || '',
+        };
       }
-      const data = await response.json();
-      const track = data?.seo_track?.track || {};
-      return {
-        id: songId,
-        title: String(track.name || ''),
-        artist: Array.isArray(track.artists)
-          ? track.artists.map((a: any) => a.name).filter(Boolean).join(' / ')
-          : '',
-        duration: typeof track.duration === 'number' ? Math.round(track.duration / 1000) : undefined,
-      };
     } catch {
-      return { id: songId, title: '' };
+      // ignore, 回退
     }
+
+    return { id: songId, title: '未知歌曲', artist: '', album: '', duration: 0 };
   }
 
   /**
-   * 构建取链候选端点
-   * 包含：分享页_ROUTER_DATA明文直链(官方) + 第三方track.php + BugPk-Api 并发竞速
+   * 取链：分享页 _ROUTER_DATA 明文直链（文档 5）
    */
-  protected buildEndpointCandidates(songId: string, quality: Quality): EndpointCandidate[] {
-    const candidates: EndpointCandidate[] = [];
+  protected buildEndpointCandidates(songId: string, _quality: Quality) {
+    const trackId = this.extractTrackId(songId);
+    const shareUrl = `${this.shareBase}?track_id=${trackId}`;
+    return [
+      {
+        url: shareUrl,
+        method: 'GET' as const,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        timeout: 10000,
+        priority: 1,
+        resolve: async (response: Response): Promise<PlayUrlResult | null> => {
+          try {
+            const html = await response.text();
+            const parsed = this.parseSharePage(html);
+            if (!parsed?.url) return null;
 
-    // 方案1：分享页_ROUTER_DATA明文直链（官方免登录，首选）
-    candidates.push({
-      url: `https://music.douyin.com/qishui/share/track?track_id=${songId}`,
-      method: 'GET',
-      headers: {
-        'User-Agent': GOOGLEBOT_UA,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            // 缓存分享页数据（歌词复用）
+            this.shareCache.set(trackId, {
+              url: parsed.url,
+              lrc: parsed.lrc,
+              fetchedAt: Date.now(),
+            });
+
+            return {
+              url: parsed.url,
+              quality: Quality.HIGH,
+              bitrate: 320,
+              format: 'aac',
+              headers: {},
+              accurate: false, // 音质档位不明确（文档5.6）
+            };
+          } catch (err) {
+            debugLogger.warn('network', '汽水分享页解析失败', { err: String(err) });
+            return null;
+          }
+        },
       },
-      timeout: 15000,
-      priority: 1,
-    });
-
-    // 方案2：第三方track.php（多档含lossless，AES-CBC加密响应）
-    candidates.push({
-      url: `https://qishui.lxmapi.icu/apis/track.php?track_id=${songId}`,
-      method: 'GET',
-      headers: { 'User-Agent': QISHUI_UA },
-      timeout: 15000,
-      priority: 2,
-    });
-
-    // 方案3：BugPk-Api（单档higher明文，免解密备用）
-    const shareLink = encodeURIComponent(`https://music.douyin.com/qishui/share/track?track_id=${songId}`);
-    candidates.push({
-      url: `https://api.bugpk.com/api/qsmusic?url=${shareLink}`,
-      method: 'GET',
-      headers: { 'User-Agent': GOOGLEBOT_UA },
-      timeout: 10000,
-      priority: 3,
-    });
-
-    return candidates;
+    ];
   }
 
   /**
-   * 覆写解析逻辑：处理三种不同方案的响应格式
+   * 分享页直链音质档位不明确，跳过基类码率校验，只要有 URL 即可。
+   * 汽水在播放优先级表中排最后，不会抢其他源的高音质请求。
    */
-  protected async parsePlayUrlResponse(
-    response: Response,
-    candidate: EndpointCandidate,
-    targetQuality: Quality
-  ): Promise<PlayUrlResult | null> {
-    const url = candidate.url;
-
-    // 方案1：分享页_ROUTER_DATA明文直链（HTML响应）
-    if (url.includes('music.douyin.com/qishui/share/track')) {
-      const html = await response.text();
-      const playUrl = this.extractRouterDataUrl(html);
-      if (playUrl) {
-        return {
-          url: playUrl,
-          quality: targetQuality,
-          bitrate: this.estimateBitrateFromUrl(playUrl),
-          format: this.detectFormat('', playUrl),
-          headers: candidate.headers,
-        };
-      }
-      return null;
-    }
-
-    // 方案2：第三方track.php（Base64+AES-CBC加密响应）
-    if (url.includes('track.php')) {
-      try {
-        const encryptedBase64 = await response.text();
-        const decrypted = await this.decryptTrackPhpResponse(encryptedBase64);
-        if (!decrypted) return null;
-
-        const data = JSON.parse(decrypted);
-        if (data.code !== 200 || !data.data?.audios?.length) return null;
-
-        // 按目标音质选择最佳档位
-        const audio = this.selectBestAudio(data.data.audios, targetQuality);
-        if (!audio?.url) return null;
-
-        return {
-          url: audio.url,
-          quality: targetQuality,
-          bitrate: this.mapLevelToBitrate(audio.level),
-          format: audio.url.includes('.mp4') ? 'mp4' : 'aac',
-          headers: candidate.headers,
-          isEncrypted: true,
-          decryptKey: audio.decrypt_key,
-        };
-      } catch {
-        return null;
-      }
-    }
-
-    // 方案3：BugPk-Api（JSON明文响应）
-    if (url.includes('api.bugpk.com')) {
-      try {
-        const data = await response.json();
-        if (data.code !== 200 || !data.data?.url) return null;
-        const meta = data.data.video_meta || {};
-        return {
-          url: data.data.url,
-          quality: Quality.HIGHER,
-          bitrate: Math.round((meta.bitrate || 128000) / 1000),
-          format: meta.vtype || 'm4a',
-          headers: candidate.headers,
-        };
-      } catch {
-        return null;
-      }
-    }
-
-    return null;
+  protected validateQuality(result: PlayUrlResult, _target: Quality): boolean {
+    return !!result.url;
   }
 
   /**
-   * 从分享页HTML中提取_ROUTER_DATA明文播放URL
+   * 歌词：优先复用分享页缓存；否则单独请求分享页
    */
-  private extractRouterDataUrl(html: string): string | null {
-    // 匹配 _ROUTER_DATA = {...};
-    const match = html.match(/_ROUTER_DATA\s*=\s*({[\s\S]*?});\s*<\/script>/);
-    if (!match) {
-      // 更宽松的匹配
-      const looseMatch = html.match(/_ROUTER_DATA\s*=\s*({[\s\S]*?});/);
-      if (!looseMatch) return null;
-      try {
-        const data = JSON.parse(looseMatch[1]);
-        return data?.loaderData?.track_page?.audioWithLyricsOption?.url || null;
-      } catch {
-        return null;
-      }
+  async getLyrics(songId: string): Promise<string | null> {
+    const trackId = this.extractTrackId(songId);
+
+    const cached = this.shareCache.get(trackId);
+    if (cached && Date.now() - cached.fetchedAt < QishuiSource.SHARE_CACHE_TTL) {
+      return cached.lrc;
     }
+
     try {
-      const data = JSON.parse(match[1]);
-      return data?.loaderData?.track_page?.audioWithLyricsOption?.url || null;
+      const shareUrl = `${this.shareBase}?track_id=${trackId}`;
+      const resp = await fetch(shareUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+          Accept: 'text/html',
+        },
+      });
+      if (!resp.ok) return null;
+      const html = await resp.text();
+      const parsed = this.parseSharePage(html);
+      if (parsed?.url) {
+        this.shareCache.set(trackId, { url: parsed.url, lrc: parsed.lrc, fetchedAt: Date.now() });
+      }
+      return parsed?.lrc ?? null;
     } catch {
       return null;
     }
   }
 
   /**
-   * track.php AES-128-CBC解密
-   * 兼容两种密钥：lxmusiclxmusiclx（IV取自密文前16字节）和 seekmusicv260409（固定IV）
+   * 音质选项：分享页直链仅一档（音质不明确，按 320K 档归组），大小通过 Range 探测
    */
-  private async decryptTrackPhpResponse(encryptedBase64: string): Promise<string | null> {
+  async getQualityOptions(songId: string): Promise<QualityOption[]> {
+    const trackId = this.extractTrackId(songId);
+    const option: QualityOption = {
+      sourceId: this.id,
+      sourceName: '汽水',
+      tier: '320k',
+      format: 'aac',
+      isPreview: false,
+    };
+
+    // best-effort 探测文件大小
     try {
-      const cipherText = this.base64ToUint8Array(encryptedBase64.trim());
-      if (!cipherText || cipherText.length < 16) return null;
-
-      // 尝试密钥1：lxmusiclxmusiclx + IV取自密文前16字节
-      const key1 = new TextEncoder().encode('lxmusiclxmusiclx');
-      const iv1 = cipherText.slice(0, 16);
-      const encrypted1 = cipherText.slice(16);
-      const result1 = await this.aesCbcDecrypt(encrypted1, key1, iv1);
-      if (result1) return result1;
-
-      // 尝试密钥2：seekmusicv260409 + 固定IV（去除BOM头）
-      const key2 = new TextEncoder().encode('seekmusicv260409');
-      const iv2 = new TextEncoder().encode('260409seekmusicv');
-      let raw = cipherText;
-      if (raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf) {
-        raw = raw.slice(3);
+      const cached = this.shareCache.get(trackId);
+      let url = cached?.url;
+      if (!url || Date.now() - cached!.fetchedAt >= QishuiSource.SHARE_CACHE_TTL) {
+        const lrc = await this.getLyrics(songId);
+        url = this.shareCache.get(trackId)?.url;
+        if (lrc === null && !url) return [option];
       }
-      return await this.aesCbcDecrypt(raw, key2, iv2);
-    } catch {
-      return null;
-    }
-  }
-
-  private async aesCbcDecrypt(encrypted: Uint8Array, key: Uint8Array, iv: Uint8Array): Promise<string | null> {
-    try {
-      const cryptoKey = await crypto.subtle.importKey(
-        'raw',
-        key as unknown as BufferSource,
-        { name: 'AES-CBC' },
-        false,
-        ['decrypt']
-      );
-      const decrypted = await crypto.subtle.decrypt(
-        { name: 'AES-CBC', iv: iv.buffer as ArrayBuffer },
-        cryptoKey,
-        encrypted.buffer as ArrayBuffer,
-      );
-      // 去除PKCS7填充
-      const padView = new Uint8Array(decrypted);
-      const padLen = padView[padView.length - 1];
-      if (padLen > 0 && padLen <= 16) {
-        const unpadded = padView.slice(0, padView.length - padLen);
-        return new TextDecoder().decode(unpadded);
+      if (url) {
+        const resp = await fetch(url, { method: 'GET', headers: { Range: 'bytes=0-1' } });
+        const range = resp.headers.get('content-range'); // bytes 0-1/12345678
+        if (range) {
+          const total = parseInt(range.split('/')[1] || '0', 10);
+          if (total > 0) option.sizeBytes = total;
+        }
       }
-      return new TextDecoder().decode(decrypted);
     } catch {
-      return null;
+      // 大小探测失败不影响选项本身
     }
-  }
 
-  private base64ToUint8Array(base64: string): Uint8Array {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-  }
-
-  /**
-   * 从track.php的audios数组中选择最佳音质
-   */
-  private selectBestAudio(audios: Array<{ level: string; url: string; decrypt_key?: string; raw_size?: number }>, targetQuality: Quality) {
-    const levelPriority: Record<string, number> = {
-      lossless: 4,
-      highest: 3,
-      higher: 2,
-      medium: 1,
-    };
-
-    // 按优先级排序
-    const sorted = [...audios].sort((a, b) => (levelPriority[b.level] || 0) - (levelPriority[a.level] || 0));
-
-    // 根据目标音质选择
-    const targetMap: Record<Quality, string[]> = {
-      [Quality.LOW]: ['medium'],
-      [Quality.STANDARD]: ['medium'],
-      [Quality.HIGHER]: ['higher', 'medium'],
-      [Quality.HIGH]: ['highest', 'higher', 'medium'],
-      [Quality.LOSSLESS]: ['lossless', 'highest', 'higher'],
-      [Quality.HIRES]: ['lossless', 'highest'],
-      [Quality.SKY]: ['lossless'],
-      [Quality.JYEFFECT]: ['lossless'],
-      [Quality.HIFI]: ['lossless'],
-    };
-
-    const preferred = targetMap[targetQuality] || ['medium'];
-    for (const level of preferred) {
-      const found = sorted.find((a) => a.level === level);
-      if (found) return found;
-    }
-    return sorted[0];
-  }
-
-  private mapLevelToBitrate(level: string): number {
-    const map: Record<string, number> = {
-      medium: 128,
-      higher: 192,
-      highest: 320,
-      lossless: 1000,
-    };
-    return map[level] || 128;
-  }
-
-  private estimateBitrateFromUrl(url: string): number {
-    // v5-luna.douyinvod.com 返回的URL音质不明确，按标准估算
-    return 128;
+    return [option];
   }
 
   async healthCheck(): Promise<HealthStatus> {
+    const start = Date.now();
     try {
-      const start = Date.now();
-      const response = await platformFetch(
-        `https://api.qishui.com/luna/search/track?${this.commonParams.toString()}&q=test&count=1&search_method=history&cursor=0`,
-        {
-          method: 'GET',
-          headers: { 'User-Agent': QISHUI_UA },
-          signal: AbortSignal.timeout(10000),
-        }
-      );
-      return {
-        healthy: response.ok,
-        message: response.ok ? '汽水音乐服务正常' : '汽水音乐服务异常',
-        latency: Date.now() - start,
-      };
-    } catch {
-      return { healthy: false, message: '汽水音乐服务不可用' };
+      const qs = new URLSearchParams({
+        ...this.commParams,
+        q: '音乐',
+        count: '1',
+        cursor: '0',
+      });
+      const resp = await fetch(`${this.apiBase}/luna/search/track?${qs.toString()}`, {
+        headers: this.apiHeaders,
+      });
+      const latency = Date.now() - start;
+      if (resp.ok) {
+        return { healthy: true, message: '汽水音乐连接正常', latency };
+      }
+      return { healthy: false, message: `汽水音乐响应异常 (${resp.status})`, latency };
+    } catch (err) {
+      return { healthy: false, message: `汽水音乐连接失败: ${err instanceof Error ? err.message : String(err)}` };
     }
+  }
+
+  // ===== 内部工具 =====
+
+  /**
+   * 解析分享页 HTML → { url, lrc }（文档 5.2 / 5.5）
+   */
+  private parseSharePage(html: string): { url: string; lrc: string | null } | null {
+    const m = html.match(/_ROUTER_DATA\s*=\s*({[\s\S]*?});\s*<\/script>/) || html.match(/_ROUTER_DATA\s*=\s*({[\s\S]*?});/);
+    if (!m) return null;
+
+    let data: any;
+    try {
+      data = JSON.parse(m[1]);
+    } catch {
+      return null;
+    }
+
+    const audio = data?.loaderData?.track_page?.audioWithLyricsOption || {};
+    const url: string = audio?.url || '';
+
+    // 逐字歌词 → LRC
+    let lrc: string | null = null;
+    const sentences = audio?.lyrics?.sentences;
+    if (Array.isArray(sentences) && sentences.length > 0) {
+      const lines: string[] = [];
+      for (const s of sentences) {
+        const startMs = s?.startMs || 0;
+        const words = (s?.words || []).map((w: any) => w?.text || '').join('');
+        if (!words) continue;
+        const mm = Math.floor(startMs / 60000);
+        const ss = Math.floor((startMs % 60000) / 1000);
+        const cs = startMs % 1000;
+        lines.push(`[${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(cs).padStart(3, '0')}]${words}`);
+      }
+      if (lines.length > 0) lrc = lines.join('\n');
+    }
+
+    return url ? { url, lrc } : null;
+  }
+
+  /**
+   * 搜索/榜单 track 结构 → SearchResult
+   */
+  private mapTrack(track: any): SearchResult {
+    const trackId = String(track?.id || '');
+    const durationMs = track?.duration || 0;
+
+    return {
+      id: `qishui_${trackId}`,
+      type: 'song',
+      title: track?.name || '未知歌曲',
+      artist: (track?.artists || []).map((a: any) => a?.name).filter(Boolean).join('/') || '未知歌手',
+      album: track?.album?.name || '',
+      duration: durationMs ? Math.round(durationMs / 1000) : 0,
+      coverUrl: this.buildCoverUrl(track?.url_cover || track?.album?.url_cover) || '',
+      sourceId: this.id,
+      sourceSongId: trackId,
+      quality: Quality.HIGH,
+      bitrate: 320,
+    };
+  }
+
+  /**
+   * 封面 URL 构造：base + uri + ~noop.image（文档 第8节示例）
+   */
+  private buildCoverUrl(urlCover: any): string | null {
+    if (!urlCover) return null;
+    if (typeof urlCover === 'string') return urlCover;
+    const base = urlCover?.urls?.[0];
+    const uri = urlCover?.uri;
+    if (base && uri) return `${base}${uri}~noop.image`;
+    return null;
+  }
+
+  /** qishui_{trackId} → trackId；兼容裸 trackId */
+  private extractTrackId(songId: string): string {
+    if (songId.startsWith('qishui_')) return songId.slice('qishui_'.length);
+    return songId;
   }
 }
