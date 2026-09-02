@@ -80,6 +80,7 @@ export default function LibraryPage() {
         sourceSongId: song.sourceSongId,
         maxQuality: song.quality || 0,
         available: true,
+        sizes: song.sizes, // v19.1：榜单/歌单条目带上各档大小，音质弹窗首屏可用
       },
     ],
   } as AggregatedSearchResult);

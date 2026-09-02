@@ -14,16 +14,18 @@ import type { AggregatedSearchResult } from '../../core/search';
 import { PLATFORM_SHORT_NAMES } from '../../core/platformPriority';
 
 /**
- * 音质弹窗（v18，按参考图实现）：
+ * 音质弹窗（v19.1，按源取真实音质与大小）：
  * 底部抽屉「下载音质（多平台）」：
  * - 头部：▶ 播放按钮 + 标题 + × 关闭
  * - 按 Hi-Res/无损/320K/192K/128K 分组，每组内为「平台名 + 文件大小」的可选块
  * - 底部：全选 + 「下载选中 (n)」
  *
- * 数据来源：
- * 1. 聚合结果里各源携带的 sizes（搜索/榜单时已抓到）
- * 2. 打开弹窗时对无 sizes 的源 best-effort 调 getQualityOptions 实时补全
- * 3. 兜底：源可用但无任何大小信息 → 按该源最高音质归组，显示为无大小块
+ * 数据来源（v19.1 修正：各源音质/大小必须按源区分）：
+ * 1. 首屏快照：聚合结果里各源自带的 sizes（搜索/榜单时已抓到，仅用于立即展示）
+ * 2. 打开弹窗时对【全部源】并行调 getQualityOptions 实时取真实档位与大小
+ *    （酷我=musicpay MINFO、网易云=v3/song/detail、咪咕=resourceinfo.do、
+ *     酷狗=v3/song/info、QQ=resolve-url level取链、汽水=分享页Range探测）
+ * 3. 实时结果按源整块替换快照；取不到的源保留快照；两者皆无的源不显示（不编造数据）
  */
 
 /** 弹窗内单个可选块 */
@@ -65,74 +67,88 @@ export default function QualitySizeSheet({ song, open, onClose, onPlay }: Qualit
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
 
-  // 打开时构建选项（先用聚合携带的 sizes，再实时补全）
+  // 打开时构建选项（先用聚合携带的 sizes 做首屏快照，再对全部源实时取真实数据）
   useEffect(() => {
     if (!open || !song) return;
 
     setSelected(new Set());
 
-    const initial: OptionBlock[] = [];
-    for (const s of song.sources) {
-      if (!s.sizes) continue;
+    const buildFromSizes = (
+      sourceId: string,
+      sourceName: string,
+      sizes?: Partial<Record<QualityTier, number>>
+    ): OptionBlock[] => {
+      const blocks: OptionBlock[] = [];
       for (const tier of QUALITY_TIER_ORDER) {
-        const size = s.sizes[tier];
+        const size = sizes?.[tier];
         if (size) {
-          initial.push({
-            key: `${s.sourceId}:${tier}`,
-            sourceId: s.sourceId,
-            sourceName: PLATFORM_SHORT_NAMES[s.sourceId] || s.sourceName,
-            tier,
-            sizeBytes: size,
-          });
+          blocks.push({ key: `${sourceId}:${tier}`, sourceId, sourceName, tier, sizeBytes: size });
         }
       }
-      // 源没有任何 sizes → 兜底按其最高音质归一个无大小块
-      if (!Object.keys(s.sizes).length) {
+      return blocks;
+    };
+
+    const initial: OptionBlock[] = [];
+    for (const s of song.sources) {
+      const name = PLATFORM_SHORT_NAMES[s.sourceId] || s.sourceName;
+      const blocks = buildFromSizes(s.sourceId, name, s.sizes);
+      if (blocks.length > 0) {
+        initial.push(...blocks);
+      } else {
+        // 快照兜底：无任何大小信息 → 按该源最高音质归一个无大小块（实时结果返回后整块替换）
         const tier = qualityToTier(s.maxQuality) || '128k';
-        initial.push({
-          key: `${s.sourceId}:${tier}`,
-          sourceId: s.sourceId,
-          sourceName: PLATFORM_SHORT_NAMES[s.sourceId] || s.sourceName,
-          tier,
-        });
+        initial.push({ key: `${s.sourceId}:${tier}`, sourceId: s.sourceId, sourceName: name, tier });
       }
     }
     setBlocks(initial);
 
-    // 实时补全（best-effort，静默失败）
-    const sourcesNeedingFetch = song.sources.filter((s) => !s.sizes || Object.keys(s.sizes).length === 0);
-    if (sourcesNeedingFetch.length === 0) return;
-
+    // v19.1：对全部源实时取真实音质/大小（并行、best-effort），成功则按源整块替换快照
     let cancelled = false;
     setLoading(true);
     (async () => {
-      const fetched: OptionBlock[] = [];
+      const fetchedBySource = new Map<string, OptionBlock[]>();
       await Promise.allSettled(
-        sourcesNeedingFetch.map(async (s) => {
+        song.sources.map(async (s) => {
           const source = sourceRegistry.get(s.sourceId);
           if (!source || typeof source.getQualityOptions !== 'function') return;
           try {
             const options: QualityOption[] = await source.getQualityOptions(s.sourceSongId);
+            if (!options || options.length === 0) return;
+            const name = PLATFORM_SHORT_NAMES[s.sourceId] || s.sourceName;
+            const seen = new Set<QualityTier>();
+            const blocks: OptionBlock[] = [];
             for (const opt of options) {
-              fetched.push({
-                key: `${opt.sourceId}:${opt.tier}`,
-                sourceId: opt.sourceId,
-                sourceName: PLATFORM_SHORT_NAMES[opt.sourceId] || opt.sourceName,
+              if (seen.has(opt.tier)) continue;
+              seen.add(opt.tier);
+              blocks.push({
+                key: `${s.sourceId}:${opt.tier}`,
+                sourceId: s.sourceId,
+                sourceName: name,
                 tier: opt.tier,
                 sizeBytes: opt.sizeBytes,
               });
             }
+            if (blocks.length > 0) fetchedBySource.set(s.sourceId, blocks);
           } catch {
-            // 静默失败：保留兜底块
+            // 静默失败：该源保留快照数据
           }
         })
       );
       if (cancelled) return;
       setBlocks((prev) => {
-        // 已有兜底块的源，用实时结果替换；新源则追加
-        const fetchedSources = new Set(fetched.map((f) => f.sourceId));
-        const kept = prev.filter((b) => !fetchedSources.has(b.sourceId));
-        return [...kept, ...fetched];
+        const pending = new Map(fetchedBySource);
+        const out: OptionBlock[] = [];
+        for (const b of prev) {
+          const replacement = pending.get(b.sourceId);
+          if (replacement) {
+            out.push(...replacement);
+            pending.delete(b.sourceId);
+          } else {
+            out.push(b);
+          }
+        }
+        for (const replacement of pending.values()) out.push(...replacement);
+        return out;
       });
       setLoading(false);
     })();

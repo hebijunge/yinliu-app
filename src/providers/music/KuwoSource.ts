@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality, YinliuError, ErrorCode } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail, Chart, ChartDetail, PlaylistSummary } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail, Chart, ChartDetail, PlaylistSummary, QualityOption, QualityTier, TierSizes } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { debugLogger } from '@shared/utils/debugLogger';
@@ -152,6 +152,9 @@ export class KuwoSource extends BaseHttpSource {
     this.songMetaCache.set(rid, { name, artist });
     this.durationCache.set(rid, dur);
 
+    // v19.1：搜索结果的音质大小（MINFO 各档 bitrate+size）——音质弹窗展示用
+    const { sizes } = this.parseMinfoSizes(minfo);
+
     return {
       id: `kw_${rid}`,
       type: 'song',
@@ -164,7 +167,63 @@ export class KuwoSource extends BaseHttpSource {
       sourceSongId: rid,
       quality: this.inferQuality(minfo),
       bitrate: this.inferBitrate(minfo),
+      sizes: Object.keys(sizes).length > 0 ? sizes : undefined,
     };
+  }
+
+  /**
+   * v19.1 解析酷我 MINFO/N_MINFO 音质信息串。
+   * 格式（分号分隔各档，逗号分隔 key:value）：
+   *   level:ff,bitrate:2000,format:flac,size:52.83Mb;level:p,bitrate:320,format:mp3,size:10.29Mb;...
+   * size 带 Mb 后缀，实测为 MiB（29.72Mb ↔ 31168013 字节）。
+   */
+  private parseMinfoSizes(minfo: string): { sizes: TierSizes } {
+    const sizes: TierSizes = {};
+    if (!minfo) return { sizes };
+    for (const seg of minfo.split(';')) {
+      const kv: Record<string, string> = {};
+      for (const part of seg.split(',')) {
+        const i = part.indexOf(':');
+        if (i > 0) kv[part.slice(0, i).trim().toLowerCase()] = part.slice(i + 1).trim();
+      }
+      const br = parseInt((kv.bitrate || '').replace(/[^\d]/g, ''), 10) || 0;
+      const szMb = parseFloat((kv.size || '').replace(/[^\d.]/g, '')) || 0;
+      if (br <= 0 || szMb <= 0) continue;
+      let tier: QualityTier;
+      if (br >= 10000) tier = 'hires';        // zpga* 母带（mflac 20201 等）
+      else if (br >= 900) tier = 'lossless';  // ff=2000 flac
+      else if (br >= 320) tier = '320k';      // p=320
+      else if (br >= 192) tier = '192k';
+      else tier = '128k';                     // h=128
+      if (!sizes[tier]) sizes[tier] = Math.round(szMb * 1048576);
+    }
+    return { sizes };
+  }
+
+  /**
+   * v19.1 音质弹窗实时查询：musicpay 免登录详情，返回各档 MINFO（bitrate+size）。
+   * 文档：酷我接口完整文档 §6.1 musicpay 免登录详情（免登录，200 实测可用）。
+   */
+  async getQualityOptions(songId: string): Promise<QualityOption[]> {
+    const rid = songId.replace(/^kw_/, '');
+    if (!rid || !/^\d+$/.test(rid)) return [];
+    const url = `https://musicpay.kuwo.cn/music.pay?src=kwplayer_ar_11.3.0.0_40.apk&op=query&action=play&ids=${rid}`;
+    try {
+      const resp = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!resp.ok) return [];
+      const data = await resp.json().catch(() => null);
+      const song = data?.songs?.[0];
+      const minfo = (song?.N_MINFO || song?.MINFO || '').toString();
+      const { sizes } = this.parseMinfoSizes(minfo);
+      return Object.entries(sizes).map(([tier, sizeBytes]) => ({
+        sourceId: this.id,
+        sourceName: this.name,
+        tier: tier as QualityTier,
+        sizeBytes,
+      }));
+    } catch {
+      return [];
+    }
   }
 
   private inferQuality(minfo: string): Quality {

@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality, YinliuError, ErrorCode } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, TierSizes, PlaylistSummary } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, TierSizes, PlaylistSummary, QualityOption } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 
@@ -82,10 +82,14 @@ export class NeteaseSource extends BaseHttpSource {
       ['hMusic', '320k'], ['h', '320k'],
       ['mMusic', '128k'], ['m', '128k'],
     ];
-    for (const [key, tier] of musicPairs) {
+    // v19.1：档位按实际码率归组（m 档实测 192kbps，此前一律归 128k 不准确）
+    for (const [key] of musicPairs) {
       const m = o[key];
       const sz = parseInt((m?.size || '0').toString(), 10) || 0;
-      if (sz > 0 && !sizes[tier]) sizes[tier] = sz;
+      if (sz <= 0) continue;
+      const br = parseInt((m?.br || m?.bitrate || '0').toString(), 10) || 0;
+      const tier = this.brToTier(br);
+      if (tier && !sizes[tier]) sizes[tier] = sz;
     }
     if (o.hrMusic?.bitrate || o.hr?.br) { quality = Quality.HIRES; bitrate = parseInt((o.hrMusic?.bitrate || o.hr?.br) as any, 10); }
     else if (o.sqMusic?.bitrate || o.sq?.br) { quality = Quality.LOSSLESS; bitrate = parseInt((o.sqMusic?.bitrate || o.sq?.br) as any, 10); }
@@ -107,6 +111,47 @@ export class NeteaseSource extends BaseHttpSource {
       bitrate,
       sizes: Object.keys(sizes).length > 0 ? sizes : undefined,
     };
+  }
+
+  /** v19.1 码率(kbps) → 音质档位（网易云 br 字段为 128000/192000/320000/999000/2000000） */
+  private brToTier(br: number): 'hires' | 'lossless' | '320k' | '192k' | '128k' | null {
+    if (!br || br <= 0) return null;
+    if (br >= 1000000) return 'hires';
+    if (br >= 900000) return 'lossless';
+    if (br >= 320000) return '320k';
+    if (br >= 192000) return '192k';
+    return '128k';
+  }
+
+  /**
+   * v19.1 音质弹窗实时查询：/api/v3/song/detail 返回 hr/sq/h/m/l 各档 br+size。
+   * 文档：网易云音乐接口完整文档 §3 歌曲详情（明文 api，免登录）。
+   */
+  async getQualityOptions(songId: string): Promise<QualityOption[]> {
+    const id = songId.replace(/^ne_/, '');
+    if (!id || !/^\d+$/.test(id)) return [];
+    try {
+      const url = `${this.HOST}/api/v3/song/detail?c=${encodeURIComponent(`[{"id":${id}}]`)}`;
+      const data = await this.httpGetJson(url, { Referer: this.REF });
+      const song = data?.songs?.[0];
+      if (!song) return [];
+      const sizes: TierSizes = {};
+      for (const m of [song.hr, song.sq, song.h, song.m, song.l]) {
+        const sz = parseInt((m?.size || '0').toString(), 10) || 0;
+        if (sz <= 0) continue;
+        const br = parseInt((m?.br || '0').toString(), 10) || 0;
+        const tier = this.brToTier(br);
+        if (tier && !sizes[tier]) sizes[tier] = sz;
+      }
+      return Object.entries(sizes).map(([tier, sizeBytes]) => ({
+        sourceId: this.id,
+        sourceName: this.name,
+        tier: tier as any,
+        sizeBytes,
+      }));
+    } catch {
+      return [];
+    }
   }
 
   // ===================== 歌曲详情 =====================

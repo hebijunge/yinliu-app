@@ -1,7 +1,7 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import type { EndpointCandidate } from './types';
 import { Quality } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistSummary } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistSummary, TierSizes, QualityOption, QualityTier } from '@core/types';
 import { YinliuError, ErrorCode } from '@core/types';
 
 /**
@@ -81,6 +81,14 @@ export class QqSource extends BaseHttpSource {
   }
 
   private mapSearchResult(item: any): SearchResult {
+    // v19.1：各档文件大小（item.file.size_128mp3/size_320mp3/size_flac/size_hires，字节）
+    const f = item.file || {};
+    const sizes: TierSizes = {};
+    if (parseInt(f.size_128mp3 || '0', 10) > 0) sizes['128k'] = parseInt(f.size_128mp3, 10);
+    if (parseInt(f.size_320mp3 || '0', 10) > 0) sizes['320k'] = parseInt(f.size_320mp3, 10);
+    if (parseInt(f.size_flac || '0', 10) > 0) sizes['lossless'] = parseInt(f.size_flac, 10);
+    if (parseInt(f.size_hires || '0', 10) > 0) sizes['hires'] = parseInt(f.size_hires, 10);
+
     return {
       id: `qq_${item.mid || item.songmid}`,
       type: 'song',
@@ -95,13 +103,92 @@ export class QqSource extends BaseHttpSource {
       sourceSongId: item.mid || item.songmid || item.id,
       quality: this.inferQuality(item),
       bitrate: item.size128 ? 128 : item.size320 ? 320 : item.sizeflac ? 1000 : 128,
+      sizes: Object.keys(sizes).length > 0 ? sizes : undefined,
     };
   }
 
+  /**
+   * v19.1 音质弹窗实时查询：海棠 resolve-url 按 level 取直链（实测无 size 字段），
+   * 再对直链 Range 探测真实文件大小；档位按 URL 文件前缀判定（防降级错归组）。
+   * 前缀：M500=128K mp3，M800=320K mp3，F000/A000=无损，RS01=Hi-Res。
+   * 文档：QQ音乐接口完整文档 §3.4 海棠resolve-url（实测可用）。
+   */
+  async getQualityOptions(songId: string): Promise<QualityOption[]> {
+    const mid = songId.replace(/^qq_/, '');
+    if (!mid) return [];
+    const levels: Array<{ level: string; fallback: QualityTier }> = [
+      { level: 'standard', fallback: '128k' },
+      { level: 'exhigh', fallback: '320k' },
+      { level: 'lossless', fallback: 'lossless' },
+      { level: 'hires', fallback: 'hires' },
+    ];
+
+    const settled = await Promise.allSettled(
+      levels.map(async ({ level, fallback }) => {
+        const resp = await fetch('https://musicserver.haitangw.cc/v1/music/resolve-url', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Referer': 'https://musicserver.haitangw.cc/',
+          },
+          body: JSON.stringify({ source: 'tx', rid: mid, level }),
+        });
+        if (!resp.ok) return null;
+        const body = await resp.json().catch(() => null);
+        const url: string | undefined = body?.data?.url || body?.url;
+        if (!url) return null;
+
+        // 档位按直链文件前缀判定（比请求 level 更真实，能识别降级）
+        let tier: QualityTier = fallback;
+        const m = url.match(/\/([A-Z]?\d{4}|RS01|AIM0|Q0M1|Q0M0)[A-Za-z0-9]*\.(mp3|flac|m4a|ape|ogg|mgg|mflac)/i);
+        const prefix = m?.[1]?.toUpperCase() || '';
+        if (prefix === 'RS01' || prefix === 'AIM0') tier = 'hires';
+        else if (prefix === 'F000' || prefix === 'A000') tier = 'lossless';
+        else if (prefix === 'M800') tier = '320k';
+        else if (prefix === 'M500') tier = '128k';
+
+        // Range 探测真实大小（best-effort）
+        let sizeBytes: number | undefined;
+        try {
+          const probe = await fetch(url, {
+            method: 'GET',
+            headers: { Range: 'bytes=0-1', Referer: 'https://y.qq.com' },
+            signal: AbortSignal.timeout(8000),
+          });
+          // 仅接受 206（Range 成功）或 200（整文件）响应；404/403 等错误体不采信
+          const valid = probe.status === 206 || probe.status === 200;
+          const range = probe.headers.get('content-range') || probe.headers.get('content-length');
+          if (valid && range?.startsWith('bytes')) {
+            const total = parseInt(range.split('/')[1] || '0', 10) || 0;
+            if (total > 65536) sizeBytes = total;
+          } else if (valid && range) {
+            const total = parseInt(range, 10) || 0;
+            if (total > 65536) sizeBytes = total;
+          }
+          probe.body?.cancel().catch(() => {});
+        } catch {
+          // 大小探测失败不影响选项本身（无大小块）
+        }
+        return { sourceId: this.id, sourceName: this.name, tier, format: m?.[2], sizeBytes };
+      })
+    );
+
+    const seen = new Set<string>();
+    const options: QualityOption[] = [];
+    for (const r of settled) {
+      if (r.status !== 'fulfilled' || !r.value) continue;
+      if (seen.has(r.value.tier)) continue;
+      seen.add(r.value.tier);
+      options.push(r.value);
+    }
+    return options;
+  }
+
   private inferQuality(item: any): Quality {
-    if (item.sizehires || item.sizeatmos) return Quality.HIFI;
-    if (item.sizeflac) return Quality.LOSSLESS;
-    if (item.size320) return Quality.HIGH;
+    const f = item.file || {};
+    if (item.sizehires || item.sizeatmos || f.size_hires) return Quality.HIFI;
+    if (item.sizeflac || f.size_flac) return Quality.LOSSLESS;
+    if (item.size320 || f.size_320mp3) return Quality.HIGH;
     return Quality.STANDARD;
   }
 
