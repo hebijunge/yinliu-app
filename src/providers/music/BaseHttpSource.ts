@@ -244,6 +244,58 @@ export abstract class BaseHttpSource implements MusicSource {
     return true;
   }
 
+  /**
+   * 解析播放URL响应，子类可覆写以处理平台特定的响应格式
+   */
+  protected async parsePlayUrlResponse(
+    response: Response,
+    candidate: EndpointCandidate,
+    targetQuality: Quality
+  ): Promise<PlayUrlResult | null> {
+    const contentType = response.headers.get('content-type') || '';
+    const contentLength = response.headers.get('content-length');
+
+    // 如果是直接返回音频流（302重定向后的响应）
+    if (contentType.includes('audio/') || contentType.includes('application/octet-stream')) {
+      return {
+        url: candidate.url,
+        quality: targetQuality,
+        bitrate: this.estimateBitrate(contentLength, targetQuality),
+        format: this.detectFormat(contentType, candidate.url),
+        headers: candidate.headers,
+      };
+    }
+
+    // 默认尝试JSON解析
+    try {
+      const data = await response.json();
+      const url = data?.url || data?.data?.url || data?.data;
+      if (url && typeof url === 'string') {
+        return {
+          url,
+          quality: targetQuality,
+          bitrate: this.estimateBitrate(contentLength, targetQuality),
+          format: this.detectFormat(contentType, candidate.url),
+          headers: candidate.headers,
+        };
+      }
+    } catch {
+      // 非JSON响应，尝试文本解析
+      const text = await response.text();
+      if (text.startsWith('http')) {
+        return {
+          url: text.trim(),
+          quality: targetQuality,
+          bitrate: this.estimateBitrate(contentLength, targetQuality),
+          format: this.detectFormat(contentType, candidate.url),
+          headers: candidate.headers,
+        };
+      }
+    }
+
+    return null;
+  }
+
   protected validateQuality(result: PlayUrlResult, target: Quality): boolean {
     if (!result.url) return false;
     // 音质等级校验
@@ -312,7 +364,21 @@ export abstract class BaseHttpSource implements MusicSource {
 
   protected estimateBitrate(contentLength: string | null, quality: Quality): number {
     const size = parseInt(contentLength || '0', 10);
-    if (size === 0) return 128;
+    if (size === 0) {
+      // 无content-length时按quality估算
+      const map: Record<Quality, number> = {
+        [Quality.LOW]: 48,
+        [Quality.STANDARD]: 128,
+        [Quality.HIGHER]: 192,
+        [Quality.HIGH]: 320,
+        [Quality.LOSSLESS]: 1000,
+        [Quality.HIRES]: 1800,
+        [Quality.SKY]: 2400,
+        [Quality.JYEFFECT]: 2400,
+        [Quality.HIFI]: 3000,
+      };
+      return map[quality] || 128;
+    }
     const kbps = Math.round((size * 8) / (3 * 60 * 1000));
     return kbps;
   }
@@ -323,8 +389,9 @@ export abstract class BaseHttpSource implements MusicSource {
     if (contentType.includes('aac')) return 'aac';
     if (contentType.includes('ogg')) return 'ogg';
     if (contentType.includes('m4a')) return 'm4a';
+    if (contentType.includes('mp4')) return 'mp4';
     const ext = url.split('?')[0].split('.').pop()?.toLowerCase();
-    const extMap: Record<string, string> = { flac: 'flac', mp3: 'mp3', aac: 'aac', m4a: 'm4a', ogg: 'ogg' };
+    const extMap: Record<string, string> = { flac: 'flac', mp3: 'mp3', aac: 'aac', m4a: 'm4a', ogg: 'ogg', mp4: 'mp4' };
     return extMap[ext || ''] || 'mp3';
   }
 

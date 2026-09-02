@@ -8,40 +8,84 @@ import { useSearchStore } from '../shared/store/searchStore';
 import SongListItem from '../components/common/SongListItem';
 import DownloadQualitySheet from '../components/common/DownloadQualitySheet';
 import type { AggregatedSearchResult } from '../core/search';
+import {
+  RANK_CATEGORIES,
+  PLAYLIST_CATEGORIES,
+  PLATFORM_DISPLAY_ORDER,
+  PLATFORM_META,
+} from '../shared/data';
 
-/** 20 个合并榜单分类（来自《6平台音乐榜单名称与分类完整梳理.md》第四章） */
-const CHART_CATEGORIES = [
-  { id: 'hot', name: '热歌榜', icon: '🔥' },
-  { id: 'new', name: '新歌榜', icon: '🆕' },
-  { id: 'soaring', name: '飙升榜', icon: '📈' },
-  { id: 'original', name: '原创榜', icon: '✨' },
-  { id: 'viral', name: '网络热歌榜', icon: '🌐' },
-  { id: 'western', name: '欧美榜', icon: '🌍' },
-  { id: 'jpk', name: '日韩榜', icon: '🇯🇵' },
-  { id: 'chinese', name: '华语榜', icon: '🇨🇳' },
-  { id: 'cantonese', name: '粤语榜', icon: '🎤' },
-  { id: 'guofeng', name: '国风榜', icon: '🏮' },
-  { id: 'dj', name: 'DJ电音榜', icon: '🎧' },
-  { id: 'rap', name: '说唱榜', icon: '🎤' },
-  { id: 'rock', name: '摇滚民谣榜', icon: '🎸' },
-  { id: 'movie', name: '影视综艺榜', icon: '🎬' },
-  { id: 'acg', name: 'ACG游戏榜', icon: '🎮' },
-  { id: 'global', name: '全球榜', icon: '🌎' },
-  { id: 'classic', name: '经典怀旧榜', icon: '📻' },
-  { id: 'vip', name: '会员榜', icon: '👑' },
-  { id: 'scene', name: '场景榜', icon: '🚗' },
-  { id: 'others', name: '其他特色榜', icon: '🎁' },
-];
+/** 榜单分类图标映射（无 icon 字段时兜底） */
+const CATEGORY_ICONS: Record<string, string> = {
+  hot: '🔥',
+  new: '🆕',
+  rising: '📈',
+  original: '✨',
+  viral: '🌐',
+  western: '🌍',
+  jpkorean: '🇯🇵',
+  chinese: '🇨🇳',
+  cantonese: '🎤',
+  chineseStyle: '🏮',
+  dj: '🎧',
+  rap: '🎤',
+  rockFolk: '🎸',
+  ost: '🎬',
+  acg: '🎮',
+  global: '🌎',
+  retro: '📻',
+  vip: '👑',
+  scene: '🚗',
+  other: '🎁',
+};
 
-/** 歌单平台分类（按 汽水→酷我→咪咕→网易云→QQ→酷狗） */
-const PLAYLIST_PLATFORM_ORDER = [
-  { id: 'qishui', name: '汽水', abbrev: 'qi' },
-  { id: 'kuwo', name: '酷我', abbrev: 'kw' },
-  { id: 'migu', name: '咪咕', abbrev: 'mg' },
-  { id: 'netease', name: '网易云', abbrev: 'wy' },
-  { id: 'qq', name: 'QQ', abbrev: 'qq' },
-  { id: 'kugou', name: '酷狗', abbrev: 'kg' },
-];
+/** 歌单分类图标映射 */
+const PLAYLIST_ICONS: Record<string, string> = {
+  pop: '🎵',
+  rock: '🎸',
+  folk: '🍃',
+  electronic: '⚡',
+  rap: '🎤',
+  rnb: '🎷',
+  chineseStyle: '🏮',
+  western: '🌍',
+  jpkorean: '🇯🇵',
+  chinese: '🇨🇳',
+  dj: '🎧',
+  ost: '🎬',
+  acg: '🎮',
+  retro: '📻',
+  light: '☁️',
+  healing: '💆',
+  study: '📚',
+  workout: '💪',
+  sleep: '🌙',
+  other: '🎁',
+};
+
+/** 分类关键词 → 搜索词（模拟榜单内容） */
+const KEYWORD_MAP: Record<string, string> = {
+  hot: '热门',
+  new: '新歌',
+  rising: '飙升',
+  original: '原创',
+  viral: '网络歌曲',
+  western: '欧美',
+  jpkorean: '日韩',
+  chinese: '华语',
+  cantonese: '粤语',
+  chineseStyle: '国风',
+  dj: 'DJ',
+  rap: '说唱',
+  rockFolk: '摇滚',
+  ost: '影视',
+  acg: 'ACG',
+  global: '全球',
+  retro: '经典',
+  vip: 'VIP',
+  scene: '车载',
+  other: '轻音乐',
+};
 
 type LibraryTab = 'charts' | 'playlists';
 
@@ -62,35 +106,10 @@ export default function LibraryPage() {
     setIsLoadingCategory(true);
     setCategoryResults([]);
 
-    // v17: 分类占位 — 真实数据待「分类数据」子任务接入各平台 chart API
-    // 目前用搜索对应关键词模拟榜单内容
-    const keywordMap: Record<string, string> = {
-      hot: '热门',
-      new: '新歌',
-      soaring: '飙升',
-      original: '原创',
-      viral: '网络歌曲',
-      western: '欧美',
-      jpk: '日韩',
-      chinese: '华语',
-      cantonese: '粤语',
-      guofeng: '国风',
-      dj: 'DJ',
-      rap: '说唱',
-      rock: '摇滚',
-      movie: '影视',
-      acg: 'ACG',
-      global: '全球',
-      classic: '经典',
-      vip: 'VIP',
-      scene: '车载',
-      others: '轻音乐',
-    };
-
     try {
       const { searchEngine } = await import('../core/search');
       const { results } = await searchEngine.search(
-        { keyword: keywordMap[categoryId] || '热门', page: 0, pageSize: 30 },
+        { keyword: KEYWORD_MAP[categoryId] || '热门', page: 0, pageSize: 30 },
         { timeout: 12000 }
       );
       setCategoryResults(results.slice(0, 30));
@@ -183,7 +202,7 @@ export default function LibraryPage() {
 
   // 榜单详情视图
   if (selectedCategory && activeTab === 'charts') {
-    const category = CHART_CATEGORIES.find((c) => c.id === selectedCategory);
+    const category = RANK_CATEGORIES.find((c) => c.id === selectedCategory);
     return (
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center gap-3 mb-6">
@@ -194,7 +213,7 @@ export default function LibraryPage() {
             ← 返回
           </button>
           <h1 className="text-xl font-bold text-[var(--text-primary)]">
-            {category?.icon} {category?.name}
+            {CATEGORY_ICONS[selectedCategory] || '🎵'} {category?.name}
           </h1>
         </div>
 
@@ -283,13 +302,13 @@ export default function LibraryPage() {
       {/* 榜单 Tab */}
       {activeTab === 'charts' && (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-          {CHART_CATEGORIES.map((cat) => (
+          {RANK_CATEGORIES.map((cat) => (
             <button
               key={cat.id}
               onClick={() => handleCategoryClick(cat.id)}
               className="yinliu-card-hover text-left p-4 group"
             >
-              <div className="text-2xl mb-2">{cat.icon}</div>
+              <div className="text-2xl mb-2">{CATEGORY_ICONS[cat.id] || '🎵'}</div>
               <div className="text-sm font-medium text-[var(--text-primary)]">{cat.name}</div>
               <div className="text-[10px] text-[var(--text-tertiary)] mt-1 group-hover:text-[var(--accent)] transition-colors">
                 点击查看 →
@@ -301,45 +320,52 @@ export default function LibraryPage() {
 
       {/* 歌单 Tab */}
       {activeTab === 'playlists' && (
-        <div className="space-y-4">
-          <p className="text-xs text-[var(--text-tertiary)]">
-            按平台浏览歌单分类（汽水 → 酷我 → 咪咕 → 网易云 → QQ → 酷狗）
-          </p>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {PLAYLIST_PLATFORM_ORDER.map((plat) => (
-              <button
-                key={plat.id}
-                onClick={() => {
-                  toast.info('歌单分类', `${plat.name} 歌单分类待「分类数据」子任务接入`);
-                }}
-                className="yinliu-card-hover text-left p-4 group"
-              >
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)] font-mono">
-                    {plat.abbrev}
-                  </span>
-                </div>
-                <div className="text-sm font-medium text-[var(--text-primary)]">{plat.name}歌单</div>
-                <div className="text-[10px] text-[var(--text-tertiary)] mt-1">
-                  待接入
-                </div>
-              </button>
-            ))}
+        <div className="space-y-6">
+          {/* 平台列表 */}
+          <div>
+            <p className="text-xs text-[var(--text-tertiary)] mb-3">
+              按平台浏览歌单分类（汽水 → 酷我 → 咪咕 → 网易云 → QQ → 酷狗）
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {PLATFORM_DISPLAY_ORDER.map((plat) => {
+                const meta = PLATFORM_META[plat];
+                return (
+                  <button
+                    key={plat}
+                    onClick={() => {
+                      toast.info('歌单分类', `${meta.name} 歌单分类待「分类数据」子任务接入`);
+                    }}
+                    className="yinliu-card-hover text-left p-4 group"
+                  >
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)] font-mono">
+                        {plat}
+                      </span>
+                    </div>
+                    <div className="text-sm font-medium text-[var(--text-primary)]">{meta.name}歌单</div>
+                    <div className="text-[10px] text-[var(--text-tertiary)] mt-1">
+                      待接入
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          {/* 固定融合分类占位 */}
-          <div className="mt-6">
+          {/* 融合分类 */}
+          <div>
             <h3 className="text-sm font-semibold text-[var(--text-secondary)] mb-3">融合分类</h3>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {['流行', '摇滚', '民谣', '电子', '说唱', '国风', '轻音乐', '影视原声'].map((tag) => (
+              {PLAYLIST_CATEGORIES.map((cat) => (
                 <button
-                  key={tag}
+                  key={cat.id}
                   onClick={() => {
-                    navigate(`/search?q=${encodeURIComponent(tag)}`);
+                    navigate(`/search?q=${encodeURIComponent(cat.name)}`);
                   }}
                   className="yinliu-card-hover text-left p-3 text-sm text-[var(--text-primary)]"
                 >
-                  {tag}
+                  <span className="mr-1">{PLAYLIST_ICONS[cat.id] || '🎵'}</span>
+                  {cat.name}
                 </button>
               ))}
             </div>

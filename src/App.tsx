@@ -44,7 +44,7 @@ function App() {
     if (!Capacitor.isNativePlatform()) return;
     let handle: PluginListenerHandle | null = null;
     let disposed = false;
-    // @ts-expect-error @capacitor/app is externalized in build
+    // @ts-ignore @capacitor/app is externalized in build
     import('@capacitor/app').then(({ App: CapApp }) => {
       if (disposed) return;
       CapApp.addListener('backButton', (event: { canGoBack: boolean }) => {

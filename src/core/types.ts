@@ -68,6 +68,7 @@ export interface PlayUrlResult {
   headers?: Record<string, string>;
   expiresAt?: number;
   isEncrypted?: boolean;
+  decryptKey?: string;
   /** 是否为试听片段（VIP歌曲非会员只能试听30秒等） */
   isPreview?: boolean;
   /** 实际音质是否与请求音质一致 */

@@ -6,9 +6,10 @@ import { YinliuError, ErrorCode } from '@core/types';
 
 /**
  * QQ音乐音源Provider
+ * 源标识：qq
  * 接口：u.y.qq.com/cgi-bin/musicu.fcg (统一网关)
- * 音质：13档降级链（母带→杜比→Hi-Res→FLAC→320k→128k...）
- * 并发：官方端点 + 5个第三方代理竞速
+ * 音质：13档降级链
+ * 并发：官方Vkey端点 + 海棠resolve-url + 多个第三方代理竞速
  */
 export class QqSource extends BaseHttpSource {
   readonly id = 'qq';
@@ -16,24 +17,21 @@ export class QqSource extends BaseHttpSource {
   readonly maxQuality = Quality.HIFI;
   private readonly baseUrl = 'https://u.y.qq.com/cgi-bin/musicu.fcg';
 
-  // 13档音质降级链（从高到低）
+  // 13档音质降级链
   private readonly qualityChain: Array<{ quality: Quality; format: string; bitrate: number }> = [
-    { quality: Quality.HIFI, format: 'AIM0.mflac', bitrate: 3000 },    // 至臻母带
-    { quality: Quality.JYEFFECT, format: 'Q0M1.mflac', bitrate: 2400 }, // 全景声
-    { quality: Quality.SKY, format: 'Q0M0.mflac', bitrate: 2400 },     // 杜比
-    { quality: Quality.HIRES, format: 'RSM1.mflac', bitrate: 1800 },   // Hi-Res
-    { quality: Quality.LOSSLESS, format: 'F0M0.mflac', bitrate: 1000 }, // FLAC
-    { quality: Quality.LOSSLESS, format: 'A000.ape', bitrate: 1000 },   // APE
-    { quality: Quality.HIGH, format: 'M800.mp3', bitrate: 320 },        // 320K
-    { quality: Quality.HIGH, format: 'C600.mp3', bitrate: 320 },        // 320K(备用)
-    { quality: Quality.STANDARD, format: 'M500.mp3', bitrate: 128 },    // 128K
-    { quality: Quality.STANDARD, format: 'C400.mp3', bitrate: 128 },    // 128K(备用)
-    { quality: Quality.LOW, format: 'C200.mp3', bitrate: 48 },          // 48K
+    { quality: Quality.HIFI, format: 'AIM0.mflac', bitrate: 3000 },
+    { quality: Quality.JYEFFECT, format: 'Q0M1.mflac', bitrate: 2400 },
+    { quality: Quality.SKY, format: 'Q0M0.mflac', bitrate: 2400 },
+    { quality: Quality.HIRES, format: 'RSM1.mflac', bitrate: 1800 },
+    { quality: Quality.LOSSLESS, format: 'F0M0.mflac', bitrate: 1000 },
+    { quality: Quality.LOSSLESS, format: 'A000.ape', bitrate: 1000 },
+    { quality: Quality.HIGH, format: 'M800.mp3', bitrate: 320 },
+    { quality: Quality.HIGH, format: 'C600.mp3', bitrate: 320 },
+    { quality: Quality.STANDARD, format: 'M500.mp3', bitrate: 128 },
+    { quality: Quality.STANDARD, format: 'C400.mp3', bitrate: 128 },
+    { quality: Quality.LOW, format: 'C200.mp3', bitrate: 48 },
   ];
 
-  /**
-   * 搜索歌曲
-   */
   async search(params: SearchParams): Promise<SearchResult[]> {
     const page = params.page || 0;
     const pageSize = params.pageSize || 30;
@@ -68,7 +66,6 @@ export class QqSource extends BaseHttpSource {
 
       const data = await response.json();
       const list = data?.req_1?.data?.body?.song?.list || [];
-
       return list.map((item: any) => this.mapSearchResult(item));
     } catch {
       return this.fallbackSearch(params);
@@ -76,7 +73,6 @@ export class QqSource extends BaseHttpSource {
   }
 
   private fallbackSearch(params: SearchParams): SearchResult[] {
-    // 当官方API不可用时，尝试第三方代理搜索
     return [];
   }
 
@@ -105,9 +101,6 @@ export class QqSource extends BaseHttpSource {
     return Quality.STANDARD;
   }
 
-  /**
-   * 获取歌曲详情
-   */
   async getSongDetail(songId: string): Promise<SongDetail> {
     const reqBody = {
       req_1: {
@@ -166,9 +159,6 @@ export class QqSource extends BaseHttpSource {
     };
   }
 
-  /**
-   * 获取歌词
-   */
   async getLyrics(songId: string): Promise<string | null> {
     const reqBody = {
       req_1: {
@@ -200,9 +190,6 @@ export class QqSource extends BaseHttpSource {
     }
   }
 
-  /**
-   * 获取歌单详情
-   */
   async getPlaylist(playlistId: string) {
     const reqBody = {
       req_1: {
@@ -247,13 +234,7 @@ export class QqSource extends BaseHttpSource {
     }
   }
 
-  /**
-   * 解析歌单URL
-   */
   async parsePlaylistUrl(url: string) {
-    // QQ音乐歌单URL格式：
-    // https://y.qq.com/n/ryqq/playlist/1234567890
-    // https://i.y.qq.com/n2/m/share/details/taoge.html?platform=11&appshare=android&appversion=11040008&hosteuin=...&id=1234567890
     const match = url.match(/(?:playlist|id)[/=](\d+)/);
     if (!match) {
       throw new YinliuError(ErrorCode.VALIDATION_ERROR, '无法解析QQ音乐歌单URL', 400);
@@ -263,7 +244,7 @@ export class QqSource extends BaseHttpSource {
 
   /**
    * 构建取链候选端点
-   * 包含：官方Vkey端点 + 5个第三方代理
+   * 包含：官方Vkey端点 + 海棠resolve-url + 多个第三方代理 并发竞速
    */
   protected buildEndpointCandidates(songId: string, quality: Quality): EndpointCandidate[] {
     const candidates: EndpointCandidate[] = this.buildOfficialEndpoints(songId, quality);
@@ -276,7 +257,6 @@ export class QqSource extends BaseHttpSource {
     const targetFormats = this.getFormatsForQuality(quality);
 
     for (const fmt of targetFormats) {
-      // GetVkeyServer 明文档取链
       const vkeyUrl = this.buildVkeyUrl(songId, fmt.format);
       endpoints.push({
         url: vkeyUrl,
@@ -293,25 +273,38 @@ export class QqSource extends BaseHttpSource {
   }
 
   private buildProxyEndpoints(songId: string, quality: Quality) {
-    const proxyUrls = [
-      // 海棠代理
-      `https://musicapi.haitangw.net/music/qq.php?id=${songId}`,
-      // kgqq1代理
-      `https://175.27.166.236/kgqq1/qq.php?id=${songId}`,
+    const level = this.mapQualityToHaitangLevel(quality);
+
+    const proxyUrls: EndpointCandidate[] = [
+      // 海棠resolve-url POST（最稳定）
+      {
+        url: 'https://musicserver.haitangw.cc/v1/music/resolve-url',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        body: JSON.stringify({ source: 'tx', rid: songId, level }),
+        timeout: 15000,
+        priority: 2,
+      },
       // metingapi代理
-      `https://metingapi.nanorocky.top/?server=tencent&type=url&id=${songId}`,
+      {
+        url: `https://metingapi.nanorocky.top/?server=tencent&type=url&id=${songId}`,
+        method: 'GET',
+        timeout: 10000,
+        priority: 3,
+      },
       // vkeys代理
-      `https://api.vkeys.cn/?server=tencent&type=url&id=${songId}`,
-      // 海棠resolve-url
-      `https://musicserver.haitangw.cc/v1/music/resolve-url?source=qq&id=${songId}`,
+      {
+        url: `https://api.vkeys.cn/?server=tencent&type=url&id=${songId}`,
+        method: 'GET',
+        timeout: 10000,
+        priority: 3,
+      },
     ];
 
-    return proxyUrls.map((url): EndpointCandidate => ({
-      url,
-      method: 'GET',
-      timeout: 10000,
-      priority: 2,
-    }));
+    return proxyUrls;
   }
 
   private buildVkeyUrl(songId: string, format: string): string {
@@ -345,6 +338,84 @@ export class QqSource extends BaseHttpSource {
     return `${this.baseUrl}?format=json&data=${encodeURIComponent(JSON.stringify(reqBody))}`;
   }
 
+  protected async parsePlayUrlResponse(
+    response: Response,
+    candidate: EndpointCandidate,
+    targetQuality: Quality
+  ): Promise<PlayUrlResult | null> {
+    // 官方Vkey接口
+    if (candidate.url.includes('musicu.fcg') && candidate.method === 'GET') {
+      const data = await response.json();
+      const req2 = data?.req_2?.data;
+      const midUrlInfo = req2?.midurlinfo?.[0];
+      if (!midUrlInfo?.purl) return null;
+
+      const sip = req2?.sip?.[0] || 'https://ws.stream.qqmusic.qq.com/';
+      const url = `${sip}${midUrlInfo.purl}`;
+      return {
+        url,
+        quality: targetQuality,
+        bitrate: this.inferBitrateFromFormat(midUrlInfo.purl),
+        format: this.inferFormatFromFilename(midUrlInfo.purl),
+        headers: candidate.headers,
+      };
+    }
+
+    // 海棠resolve-url POST
+    if (candidate.url.includes('haitangw.cc') && candidate.method === 'POST') {
+      try {
+        const data = await response.json();
+        const url = data?.url || data?.data?.url;
+        if (!url || typeof url !== 'string') return null;
+        const ct = response.headers.get('content-type') || '';
+        return {
+          url,
+          quality: targetQuality,
+          bitrate: ct.includes('flac') ? 1000 : 320,
+          format: ct.includes('flac') ? 'flac' : 'mp3',
+          headers: candidate.headers,
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    // 其他第三方代理（metingapi/vkeys等）
+    if (candidate.method === 'GET' && !candidate.url.includes('musicu.fcg')) {
+      try {
+        // 可能直接返回JSON {url} 或 302重定向
+        const ct = response.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          const data = await response.json();
+          const url = data?.url || data;
+          if (url && typeof url === 'string') {
+            return {
+              url,
+              quality: targetQuality,
+              bitrate: 128,
+              format: 'mp3',
+              headers: candidate.headers,
+            };
+          }
+        }
+        // 可能直接是音频流（302后的）
+        if (ct.includes('audio/') || ct.includes('application/octet-stream')) {
+          return {
+            url: candidate.url,
+            quality: targetQuality,
+            bitrate: 128,
+            format: this.detectFormat(ct, candidate.url),
+            headers: candidate.headers,
+          };
+        }
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
+  }
+
   private getFormatsForQuality(quality: Quality): Array<{ format: string; bitrate: number }> {
     const rank = this.getQualityRank(quality);
     return this.qualityChain.filter((q) => this.getQualityRank(q.quality) <= rank);
@@ -365,9 +436,44 @@ export class QqSource extends BaseHttpSource {
     return map[q] || 2;
   }
 
-  /**
-   * 获取排行榜列表
-   */
+  private mapQualityToHaitangLevel(quality: Quality): string {
+    switch (quality) {
+      case Quality.HIFI:
+        return 'jymaster';
+      case Quality.JYEFFECT:
+      case Quality.SKY:
+        return 'sky';
+      case Quality.HIRES:
+        return 'hires';
+      case Quality.LOSSLESS:
+        return 'lossless';
+      case Quality.HIGH:
+      case Quality.HIGHER:
+        return 'exhigh';
+      case Quality.STANDARD:
+      case Quality.LOW:
+      default:
+        return 'standard';
+    }
+  }
+
+  private inferBitrateFromFormat(purl: string): number {
+    if (purl.includes('M800') || purl.includes('C600')) return 320;
+    if (purl.includes('M500') || purl.includes('C400')) return 128;
+    if (purl.includes('F0M0') || purl.includes('A000')) return 1000;
+    if (purl.includes('RSM1')) return 1800;
+    if (purl.includes('AIM0')) return 3000;
+    return 128;
+  }
+
+  private inferFormatFromFilename(purl: string): string {
+    if (purl.endsWith('.mflac')) return 'mflac';
+    if (purl.endsWith('.flac')) return 'flac';
+    if (purl.endsWith('.ape')) return 'ape';
+    if (purl.endsWith('.mp3')) return 'mp3';
+    return 'mp3';
+  }
+
   async getCharts() {
     try {
       const reqBody = {
@@ -406,9 +512,6 @@ export class QqSource extends BaseHttpSource {
     }
   }
 
-  /**
-   * 获取排行榜详情
-   */
   async getChartDetail(chartId: string) {
     const reqBody = {
       req_1: {
@@ -447,9 +550,6 @@ export class QqSource extends BaseHttpSource {
     }
   }
 
-  /**
-   * 健康检查
-   */
   async healthCheck(): Promise<HealthStatus> {
     try {
       const response = await fetch('https://y.qq.com', {
