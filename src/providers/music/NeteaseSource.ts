@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality, YinliuError, ErrorCode } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, TierSizes, PlaylistSummary } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, TierSizes, PlaylistSummary, QualityOption } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 
@@ -82,10 +82,14 @@ export class NeteaseSource extends BaseHttpSource {
       ['hMusic', '320k'], ['h', '320k'],
       ['mMusic', '128k'], ['m', '128k'],
     ];
-    for (const [key, tier] of musicPairs) {
+    // v19.1：档位按实际码率归组（m 档实测 192kbps，此前一律归 128k 不准确）
+    for (const [key] of musicPairs) {
       const m = o[key];
       const sz = parseInt((m?.size || '0').toString(), 10) || 0;
-      if (sz > 0 && !sizes[tier]) sizes[tier] = sz;
+      if (sz <= 0) continue;
+      const br = parseInt((m?.br || m?.bitrate || '0').toString(), 10) || 0;
+      const tier = this.brToTier(br);
+      if (tier && !sizes[tier]) sizes[tier] = sz;
     }
     if (o.hrMusic?.bitrate || o.hr?.br) { quality = Quality.HIRES; bitrate = parseInt((o.hrMusic?.bitrate || o.hr?.br) as any, 10); }
     else if (o.sqMusic?.bitrate || o.sq?.br) { quality = Quality.LOSSLESS; bitrate = parseInt((o.sqMusic?.bitrate || o.sq?.br) as any, 10); }
@@ -107,6 +111,47 @@ export class NeteaseSource extends BaseHttpSource {
       bitrate,
       sizes: Object.keys(sizes).length > 0 ? sizes : undefined,
     };
+  }
+
+  /** v19.1 码率(kbps) → 音质档位（网易云 br 字段为 128000/192000/320000/999000/2000000） */
+  private brToTier(br: number): 'hires' | 'lossless' | '320k' | '192k' | '128k' | null {
+    if (!br || br <= 0) return null;
+    if (br >= 1000000) return 'hires';
+    if (br >= 900000) return 'lossless';
+    if (br >= 320000) return '320k';
+    if (br >= 192000) return '192k';
+    return '128k';
+  }
+
+  /**
+   * v19.1 音质弹窗实时查询：/api/v3/song/detail 返回 hr/sq/h/m/l 各档 br+size。
+   * 文档：网易云音乐接口完整文档 §3 歌曲详情（明文 api，免登录）。
+   */
+  async getQualityOptions(songId: string): Promise<QualityOption[]> {
+    const id = songId.replace(/^ne_/, '');
+    if (!id || !/^\d+$/.test(id)) return [];
+    try {
+      const url = `${this.HOST}/api/v3/song/detail?c=${encodeURIComponent(`[{"id":${id}}]`)}`;
+      const data = await this.httpGetJson(url, { Referer: this.REF });
+      const song = data?.songs?.[0];
+      if (!song) return [];
+      const sizes: TierSizes = {};
+      for (const m of [song.hr, song.sq, song.h, song.m, song.l]) {
+        const sz = parseInt((m?.size || '0').toString(), 10) || 0;
+        if (sz <= 0) continue;
+        const br = parseInt((m?.br || '0').toString(), 10) || 0;
+        const tier = this.brToTier(br);
+        if (tier && !sizes[tier]) sizes[tier] = sz;
+      }
+      return Object.entries(sizes).map(([tier, sizeBytes]) => ({
+        sourceId: this.id,
+        sourceName: this.name,
+        tier: tier as any,
+        sizeBytes,
+      }));
+    } catch {
+      return [];
+    }
   }
 
   // ===================== 歌曲详情 =====================
@@ -324,46 +369,27 @@ export class NeteaseSource extends BaseHttpSource {
     const data = await this.httpGetJson(`${this.HOST}/api/toplist/detail?id=${chartId}`, { Referer: this.REF });
     const pl = data?.playlist;
     const tracks = pl?.tracks || [];
-    if (tracks.length > 0) {
-      return {
-        id: String(chartId),
-        name: pl?.name || '网易榜单',
-        description: pl?.description || '',
-        songs: tracks.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[],
-      };
-    }
-    // 兜底：/api/toplist/detail 对部分榜单（如电音榜）返回全量 list 且 tracks 为空，
-    // 改走老版歌单详情接口（/api/playlist/detail 返回 result.tracks，实测可用）
-    try {
-      const d2 = await this.httpGetJson(`${this.HOST}/api/playlist/detail?id=${chartId}`, { Referer: this.REF });
-      const tracks2 = d2?.result?.tracks || d2?.playlist?.tracks || [];
-      if (tracks2.length > 0) {
-        return {
-          id: String(chartId),
-          name: d2?.playlist?.name || d2?.result?.name || '网易榜单',
-          description: d2?.playlist?.description || d2?.result?.description || '',
-          songs: tracks2.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[],
-        };
-      }
-    } catch {
-      /* 兜底失败按空榜单返回 */
-    }
     return {
       id: String(chartId),
       name: pl?.name || '网易榜单',
       description: pl?.description || '',
-      songs: [],
+      songs: tracks.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[],
     };
   }
 
   // ===================== 歌单 =====================
 
   /**
-   * 按融合固定分类拉取歌单列表（分类名直接映射网易云 cat 标签）
+   * 按融合固定分类拉取歌单列表（v19.1）：
+   * /api/playlist/list 即网易云官方歌单广场接口（cat=分类名）。
+   * 热门推荐不带 cat 参数（order=hot 即官方热门歌单）；
+   * 融合「日韩」在网易云对应「日语」分类。
    */
   async getPlaylistsByCategory(categoryName: string, page = 0): Promise<PlaylistSummary[]> {
     const offset = page * 30;
-    const url = `${this.HOST}/api/playlist/list?cat=${encodeURIComponent(categoryName)}&order=hot&limit=30&offset=${offset}`;
+    const catParam =
+      categoryName === '热门推荐' ? '' : `cat=${encodeURIComponent(categoryName === '日韩' ? '日语' : categoryName)}&`;
+    const url = `${this.HOST}/api/playlist/list?${catParam}order=hot&limit=30&offset=${offset}`;
     const data = await this.httpGetJson(url, { Referer: this.REF });
     const list = data?.playlists || [];
     return list.map((o: any) => ({
