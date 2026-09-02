@@ -21,7 +21,8 @@ import { debugLogger } from '@shared/utils/debugLogger';
  * 接口依据《汽水音乐接口完整文档_实测整合版》：
  * - 搜索：GET api.qishui.com/luna/search/track（免登录，PC客户端公共参数）
  * - 榜单：GET api.qishui.com/luna/pc/charts/{chart_id}（4大官方榜单）
- * - 歌单：GET api.qishui.com/luna/playlist/detail + /luna/search/playlist
+ * - 歌单：GET api.qishui.com/luna/playlist/detail（歌单详情）
+ *   分类歌单：discover/mix 需登录态，实测免登录返回 EMPTY_RESULT，故不提供分类歌单（见下方说明）
  * - 取链：分享页 _ROUTER_DATA 明文直链（music.douyin.com/qishui/share/track）
  * - 歌词：分享页逐字歌词 sentences[] → LRC
  */
@@ -117,43 +118,13 @@ export class QishuiSource extends BaseHttpSource {
   }
 
   /**
-   * 搜索歌单（文档 3.2，用于歌单广场汽水分类的兜底内容）
+   * 汽水歌单分类说明（v19.1）：
+   * 汽水的分类-歌单接口为 POST /luna/pc/discover/mix（sub_channel_id 标签），
+   * 实测免登录态返回 ERR_DISCOVER_PLAYLIST_MIX_EMPTY_RESULT（文档 8.5 亦标注"可能需要登录态"），
+   * 因此不提供按分类取歌单能力，也不再用歌单搜索结果冒充分类数据。
+   * 若未来拿到登录态，可在此实现 getPlaylistsByCategory。
    */
-  async searchPlaylists(keyword: string, page = 0, pageSize = 20): Promise<any[]> {
-    const qs = new URLSearchParams({
-      ...this.commParams,
-      q: keyword,
-      count: String(Math.min(pageSize, 20)),
-      cursor: String(page * 20),
-    });
-    const data = await this.httpGetJson(`${this.apiBase}/luna/search/playlist?${qs.toString()}`, this.apiHeaders);
-    if (!data) return [];
-    const group = (data?.result_groups || []).find((g: any) => g?.id === 'playlists') || data?.result_groups?.[0];
-    return (group?.data || []).map((item: any) => item?.entity?.playlist).filter(Boolean);
-  }
 
-  /**
-   * 按融合固定分类拉取歌单列表
-   * 汽水无分类接口，用分类名做歌单搜索（best-effort）
-   */
-  async getPlaylistsByCategory(categoryName: string, page = 0): Promise<PlaylistSummary[]> {
-    try {
-      const name = categoryName === '热门推荐' ? '热门' : categoryName;
-      const raw = await this.searchPlaylists(name, page, 20);
-      return raw
-        .map((pl: any) => ({
-          id: String(pl?.id || pl?.playlist_id || ''),
-          title: pl?.title || pl?.name || '未命名歌单',
-          coverUrl: pl?.cover_url || pl?.cover || '',
-          playCount: typeof pl?.play_count === 'number' ? pl.play_count : undefined,
-          trackCount: typeof pl?.track_count === 'number' ? pl.track_count : undefined,
-          creator: pl?.owner_name || undefined,
-        }))
-        .filter((p: PlaylistSummary) => p.id);
-    } catch {
-      return [];
-    }
-  }
 
   /**
    * 官方4大榜单（文档 9）

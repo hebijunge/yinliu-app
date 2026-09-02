@@ -80,7 +80,6 @@ export default function LibraryPage() {
         sourceSongId: song.sourceSongId,
         maxQuality: song.quality || 0,
         available: true,
-        sizes: song.sizes, // v19.1：榜单/歌单条目带上各档大小，音质弹窗首屏可用
       },
     ],
   } as AggregatedSearchResult);
@@ -234,6 +233,10 @@ export default function LibraryPage() {
           {playlistsLoading ? (
             <div className="flex justify-center py-16 text-[var(--text-tertiary)]">
               <Loader2 className="w-6 h-6 animate-spin" />
+            </div>
+          ) : playlistGroups.length === 0 ? (
+            <div className="py-10 text-center text-sm text-[var(--text-tertiary)]">
+              该分类下暂无各源歌单数据（部分音源未提供此分类）
             </div>
           ) : (
             playlistGroups.map((g) => (

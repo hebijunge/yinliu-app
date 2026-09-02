@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality, YinliuError, ErrorCode } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail, Chart, ChartDetail, PlaylistSummary, QualityOption, QualityTier, TierSizes } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail, Chart, ChartDetail, PlaylistSummary } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { debugLogger } from '@shared/utils/debugLogger';
@@ -152,9 +152,6 @@ export class KuwoSource extends BaseHttpSource {
     this.songMetaCache.set(rid, { name, artist });
     this.durationCache.set(rid, dur);
 
-    // v19.1：搜索结果的音质大小（MINFO 各档 bitrate+size）——音质弹窗展示用
-    const { sizes } = this.parseMinfoSizes(minfo);
-
     return {
       id: `kw_${rid}`,
       type: 'song',
@@ -167,63 +164,7 @@ export class KuwoSource extends BaseHttpSource {
       sourceSongId: rid,
       quality: this.inferQuality(minfo),
       bitrate: this.inferBitrate(minfo),
-      sizes: Object.keys(sizes).length > 0 ? sizes : undefined,
     };
-  }
-
-  /**
-   * v19.1 解析酷我 MINFO/N_MINFO 音质信息串。
-   * 格式（分号分隔各档，逗号分隔 key:value）：
-   *   level:ff,bitrate:2000,format:flac,size:52.83Mb;level:p,bitrate:320,format:mp3,size:10.29Mb;...
-   * size 带 Mb 后缀，实测为 MiB（29.72Mb ↔ 31168013 字节）。
-   */
-  private parseMinfoSizes(minfo: string): { sizes: TierSizes } {
-    const sizes: TierSizes = {};
-    if (!minfo) return { sizes };
-    for (const seg of minfo.split(';')) {
-      const kv: Record<string, string> = {};
-      for (const part of seg.split(',')) {
-        const i = part.indexOf(':');
-        if (i > 0) kv[part.slice(0, i).trim().toLowerCase()] = part.slice(i + 1).trim();
-      }
-      const br = parseInt((kv.bitrate || '').replace(/[^\d]/g, ''), 10) || 0;
-      const szMb = parseFloat((kv.size || '').replace(/[^\d.]/g, '')) || 0;
-      if (br <= 0 || szMb <= 0) continue;
-      let tier: QualityTier;
-      if (br >= 10000) tier = 'hires';        // zpga* 母带（mflac 20201 等）
-      else if (br >= 900) tier = 'lossless';  // ff=2000 flac
-      else if (br >= 320) tier = '320k';      // p=320
-      else if (br >= 192) tier = '192k';
-      else tier = '128k';                     // h=128
-      if (!sizes[tier]) sizes[tier] = Math.round(szMb * 1048576);
-    }
-    return { sizes };
-  }
-
-  /**
-   * v19.1 音质弹窗实时查询：musicpay 免登录详情，返回各档 MINFO（bitrate+size）。
-   * 文档：酷我接口完整文档 §6.1 musicpay 免登录详情（免登录，200 实测可用）。
-   */
-  async getQualityOptions(songId: string): Promise<QualityOption[]> {
-    const rid = songId.replace(/^kw_/, '');
-    if (!rid || !/^\d+$/.test(rid)) return [];
-    const url = `https://musicpay.kuwo.cn/music.pay?src=kwplayer_ar_11.3.0.0_40.apk&op=query&action=play&ids=${rid}`;
-    try {
-      const resp = await fetch(url, { headers: { Accept: 'application/json' } });
-      if (!resp.ok) return [];
-      const data = await resp.json().catch(() => null);
-      const song = data?.songs?.[0];
-      const minfo = (song?.N_MINFO || song?.MINFO || '').toString();
-      const { sizes } = this.parseMinfoSizes(minfo);
-      return Object.entries(sizes).map(([tier, sizeBytes]) => ({
-        sourceId: this.id,
-        sourceName: this.name,
-        tier: tier as QualityTier,
-        sizeBytes,
-      }));
-    } catch {
-      return [];
-    }
   }
 
   private inferQuality(minfo: string): Quality {
@@ -704,10 +645,40 @@ export class KuwoSource extends BaseHttpSource {
   private tagListCache: { id: string; name: string }[] | null = null;
 
   /**
-   * 按融合固定分类拉取歌单列表：getTagList 匹配标签 → getTagPlayList
+   * 融合分类名 → 酷我标签名的别名映射（酷我标签树里没有同名的分类）
+   */
+  private static readonly KW_TAG_ALIASES: Record<string, string> = {
+    日韩: '日语',
+    说唱: '嘻哈',
+    影视原声: '影视',
+  };
+
+  /**
+   * 按融合固定分类拉取歌单列表（v19.1 全部走酷我歌单广场真实接口，不再用搜索）：
+   * - 热门推荐：getRcmPlayList?id=37（酷我歌单广场"热门推荐"，实测 total 9000+）
+   * - 其他分类：getTagList 匹配标签 → getTagPlayList（酷我官方分类-歌单列表）
+   * 注意：getTagPlayList / getRcmPlayList 的 pn 从 1 开始（pn=0 实测返回空列表）
    */
   async getPlaylistsByCategory(categoryName: string, page = 0): Promise<PlaylistSummary[]> {
     try {
+      const pn = page + 1;
+      if (categoryName === '热门推荐') {
+        const url = `https://wapi.kuwo.cn/api/pc/classify/playlist/getRcmPlayList?id=37&pn=${pn}&rn=30`;
+        const data = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
+        const list = data?.data?.data || [];
+        if (!Array.isArray(list)) return [];
+        return list
+          .map((o: any) => ({
+            id: String(o.id || ''),
+            title: o.name || o.title || '未命名歌单',
+            coverUrl: o.img || o.pic || o.cover || '',
+            playCount: Number(o.listencnt) > 0 ? Number(o.listencnt) : undefined,
+            trackCount: Number(o.total) > 0 ? Number(o.total) : undefined,
+            creator: o.uname || undefined,
+          }))
+          .filter((p: PlaylistSummary) => p.id);
+      }
+
       if (!this.tagListCache) {
         const data = await this.httpGetJson(
           'https://wapi.kuwo.cn/api/pc/classify/playlist/getTagList',
@@ -724,22 +695,23 @@ export class KuwoSource extends BaseHttpSource {
         this.tagListCache = tags;
       }
 
+      const wanted = KuwoSource.KW_TAG_ALIASES[categoryName] || categoryName;
       // 精确匹配 → 包含匹配
       const tag =
-        this.tagListCache.find((t) => t.name === categoryName) ||
-        this.tagListCache.find((t) => t.name.includes(categoryName) || categoryName.includes(t.name));
+        this.tagListCache.find((t) => t.name === wanted) ||
+        this.tagListCache.find((t) => t.name.includes(wanted) || wanted.includes(t.name));
       if (!tag) return [];
 
-      const url = `http://wapi.kuwo.cn/api/pc/classify/playlist/getTagPlayList?loginUid=0&loginSid=0&appUid=38668888&pn=${page}&id=${tag.id}`;
+      const url = `http://wapi.kuwo.cn/api/pc/classify/playlist/getTagPlayList?loginUid=0&loginSid=0&appUid=38668888&pn=${pn}&id=${tag.id}`;
       const data = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
-      const list = data?.data?.list || data?.data || [];
+      const list = data?.data?.list || (Array.isArray(data?.data) ? data.data : []);
       if (!Array.isArray(list)) return [];
       return list.map((o: any) => ({
         id: String(o.id || o.playlistid),
         title: o.name || o.title || '未命名歌单',
         coverUrl: o.img || o.pic || o.cover || '',
-        playCount: typeof o.listencnt === 'number' ? o.listencnt : undefined,
-        trackCount: typeof o.total === 'number' ? o.total : undefined,
+        playCount: Number(o.listencnt) > 0 ? Number(o.listencnt) : undefined,
+        trackCount: Number(o.total) > 0 ? Number(o.total) : undefined,
         creator: o.uname || undefined,
       }));
     } catch (err) {

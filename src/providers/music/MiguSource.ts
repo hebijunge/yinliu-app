@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, TierSizes, PlaylistSummary, QualityOption, QualityTier } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, TierSizes, PlaylistSummary } from '@core/types';
 import { YinliuError, ErrorCode } from '@core/types';
 import { debugLogger } from '@shared/utils/debugLogger';
 
@@ -74,9 +74,6 @@ export class MiguSource extends BaseHttpSource {
       }
     }
 
-    // v19.1：搜索结果的音质大小（best-effort，newRateFormats/rateFormats/audioFormats 任一携带即取）
-    const sizes = this.extractSizes(item);
-
     return {
       id: `migu_${contentId}`,
       type: 'song',
@@ -89,72 +86,7 @@ export class MiguSource extends BaseHttpSource {
       sourceSongId: contentId,
       quality: maxQuality,
       bitrate: maxBitrate,
-      sizes: Object.keys(sizes).length > 0 ? sizes : undefined,
     };
-  }
-
-  /**
-   * v19.1 从咪咕各形态响应中提取每档文件大小（字节）：
-   * - newRateFormats: {formatType(PQ/HQ/SQ/ZQ24), size, androidSize}
-   * - rateFormats:    {formatType(LQ/PQ/HQ/SQ), size, androidSize}
-   * - audioFormats:   {formatType, isize, resourceType}
-   * 档位映射：ZQ24/ZQ/Hires→Hi-Res，SQ→无损，HQ→320K，PQ→128K（LQ 48K 不展示）。
-   */
-  private extractSizes(item: any): TierSizes {
-    const sizes: TierSizes = {};
-    if (!item) return sizes;
-    const put = (formatType: string, bytes: number) => {
-      const ft = (formatType || '').toString();
-      let tier: QualityTier | null = null;
-      if (/ZQ24|ZQ(?!2)|hires/i.test(ft)) tier = 'hires';
-      else if (ft === 'SQ') tier = 'lossless';
-      else if (ft === 'HQ') tier = '320k';
-      else if (ft === 'PQ') tier = '128k';
-      if (tier && bytes > 0 && !sizes[tier]) sizes[tier] = bytes;
-    };
-    for (const fmt of item.newRateFormats || []) {
-      put(fmt?.formatType, parseInt((fmt?.androidSize || fmt?.size || '0').toString(), 10) || 0);
-    }
-    for (const fmt of item.rateFormats || []) {
-      put(fmt?.formatType, parseInt((fmt?.androidSize || fmt?.size || '0').toString(), 10) || 0);
-    }
-    for (const fmt of item.audioFormats || []) {
-      put(fmt?.formatType, parseInt((fmt?.isize || '0').toString(), 10) || 0);
-    }
-    return sizes;
-  }
-
-  /**
-   * v19.1 音质弹窗实时查询：resourceinfo.do 歌曲详情（resourceType=2），
-   * 返回 rateFormats/newRateFormats 各档文件大小。
-   * 文档：咪咕音乐接口完整文档 §4.1 歌曲详情 resourceType=2（实测可用）。
-   */
-  async getQualityOptions(songId: string): Promise<QualityOption[]> {
-    const contentId = this.extractContentId(songId);
-    if (!contentId) return [];
-    const url = `https://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?resourceId=${contentId}&resourceType=2`;
-    try {
-      const resp = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36',
-          'Accept': 'application/json',
-          'Referer': 'https://y.migu.cn/',
-        },
-      });
-      if (!resp.ok) return [];
-      const data = await resp.json().catch(() => null);
-      const res = data?.resource?.[0];
-      if (!res) return [];
-      const sizes = this.extractSizes(res);
-      return Object.entries(sizes).map(([tier, sizeBytes]) => ({
-        sourceId: this.id,
-        sourceName: this.name,
-        tier: tier as QualityTier,
-        sizeBytes,
-      }));
-    } catch {
-      return [];
-    }
   }
 
   /**
@@ -227,7 +159,19 @@ export class MiguSource extends BaseHttpSource {
   }
 
   /**
-   * 按融合固定分类拉取歌单列表：taglist 匹配标签 → listbytag
+   * 融合分类名 → 咪咕标签名别名映射（咪咕标签树里没有同名的分类）
+   */
+  private static readonly MIGU_TAG_ALIASES: Record<string, string> = {
+    华语: '国语',
+    日韩: '日语',
+    说唱: '嘻哈',
+    古风: '国风',
+    轻音乐: '纯音乐',
+    影视原声: '电影',
+  };
+
+  /**
+   * 按融合固定分类拉取歌单列表：taglist 匹配标签 → listbytag（咪咕歌单广场真实分类接口）
    */
   async getPlaylistsByCategory(categoryName: string, page = 0): Promise<PlaylistSummary[]> {
     try {
@@ -280,7 +224,13 @@ export class MiguSource extends BaseHttpSource {
         /* 缓存留空，匹配不到时返回空列表 */
       }
     }
-    return this.miguTagCache.get(categoryName) || this.miguTagCache.get(categoryName.replace(/榜单|歌单/g, '')) || '';
+    const alias = MiguSource.MIGU_TAG_ALIASES[categoryName];
+    return (
+      this.miguTagCache.get(categoryName) ||
+      (alias ? this.miguTagCache.get(alias) : undefined) ||
+      this.miguTagCache.get(categoryName.replace(/榜单|歌单/g, '')) ||
+      ''
+    );
   }
 
   /**

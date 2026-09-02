@@ -1,14 +1,14 @@
 /**
- * 歌单融合固定分类（v18）
+ * 歌单融合固定分类（v19.1）
  *
  * 用户要求：歌单与榜单一样做融合固定分类，展示顺序按 汽水 > 酷我 > 咪咕 > 网易云 > QQ > 酷狗。
- * 各源能力（接口文档实测）：
- *  - 汽水：无分类接口，用分类名做歌单搜索（best-effort）
- *  - 酷我：getTagList + getTagPlayList（完整分类）
+ * 各源能力（接口文档实测，v19.1 全部走各源歌单广场真实接口，不用搜索凑数）：
+ *  - 汽水：discover/mix 分类接口需登录态（实测免登录返回 EMPTY_RESULT），如实不提供分类歌单
+ *  - 酷我：热门 getRcmPlayList + getTagList/getTagPlayList（完整分类）
  *  - 咪咕：musiclistplaza-taglist + listbytag（完整分类）
  *  - 网易云：/api/playlist/list?cat=（70 类，直接映射）
- *  - QQ：仅推荐歌单（GetRecommendFeed），仅「热门推荐」
- *  - 酷狗：仅热门歌单（plist/index），仅「热门推荐」
+ *  - QQ：fcg_get_diss_tag_conf 分类树 + fcg_get_diss_by_tag 按分类取歌单（官方歌单广场接口）
+ *  - 酷狗：仅热门歌单（plist/index），其他分类如实为空
  */
 
 import { sourceRegistry } from '@providers/music/registry';
