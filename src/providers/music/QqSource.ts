@@ -287,7 +287,12 @@ export class QqSource extends BaseHttpSource {
     }
   }
 
-  /** 融合固定分类名 → QQ 音乐官方分类名（对应官方歌单广场分类树） */
+  /**
+   * QQ 歌单广场分类标签树缓存：分类名 → categoryId（fcg_get_diss_tag_conf 拉一次复用）
+   */
+  private qqTagIdCache: Map<string, number> | null = null;
+
+  /** QQ 标签树里没有同名的融合分类 → QQ 官方分类名 */
   private static readonly QQ_TAG_ALIASES: Record<string, string> = {
     热门推荐: '全部',
     华语: '国语',
@@ -297,65 +302,76 @@ export class QqSource extends BaseHttpSource {
     影视原声: '影视',
   };
 
-  /** QQ 分类树缓存（fcg_get_diss_tag_conf.fcg）：分类名 → categoryId */
-  private qqTagIdCache: Map<string, string> | null = null;
-
-  /** 拉取 QQ 官方歌单广场分类树，建立「分类名 → categoryId」映射 */
-  private async resolveQqTagIds(): Promise<Map<string, string>> {
+  private async resolveQqTagIds(): Promise<Map<string, number>> {
     if (this.qqTagIdCache) return this.qqTagIdCache;
-    const map = new Map<string, string>();
+    const map = new Map<string, number>();
     try {
-      const url =
-        'https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_tag_conf.fcg?picmid=1&rnd=0.1&g_tk=5381&loginUin=0&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq.json&needNewCode=0';
-      const response = await fetch(url, { headers: { Referer: 'https://c.y.qq.com' } });
+      const qs =
+        'picmid=1&g_tk=5381&loginUin=0&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq&needNewCode=0';
+      const response = await fetch(`https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_tag_conf.fcg?${qs}`, {
+        headers: { Referer: 'https://c.y.qq.com/' },
+      });
       if (response.ok) {
         const data = await response.json();
-        const categories = data?.data?.categories || [];
-        for (const cat of categories) {
-          const items = cat?.items || [];
-          for (const it of items) {
-            const name = String(it?.name || '').trim();
-            const id = it?.id;
-            if (name && id !== undefined && id !== null && !map.has(name)) {
-              map.set(name, String(id));
+        for (const group of data?.data?.categories || []) {
+          for (const item of group?.items || []) {
+            if (item?.categoryName && item?.categoryId != null) {
+              map.set(String(item.categoryName), Number(item.categoryId));
             }
           }
         }
       }
     } catch {
-      // 分类树拉取失败时留空，调用方按无分类处理
+      /* 缓存留空，匹配不到时返回空列表 */
     }
     this.qqTagIdCache = map;
     return map;
   }
 
   /**
-   * 按融合固定分类拉取 QQ 歌单广场真实歌单（fcg_get_diss_by_tag.fcg，非搜索接口）
-   * 分类名先映射为 QQ 官方分类（如 热门推荐→全部、欧美→英语），再查官方分类树取 categoryId
+   * 按融合固定分类拉取歌单列表（v19.1 走 QQ 官方歌单广场接口，不再只有推荐Feed）：
+   * - 分类树：fcg_get_diss_tag_conf.fcg（语种/流派/主题/心情/场景 全量官方分类）
+   * - 分类-歌单列表：fcg_get_diss_by_tag.fcg?categoryId=&sortId=5（官方歌单广场按分类取歌单）
+   * 注意：QQ 无「日韩」合并分类，只有日语/韩语两个独立分类，此处按相近原则映射到「日语」。
    */
   async getPlaylistsByCategory(categoryName: string, page = 0): Promise<PlaylistSummary[]> {
-    const tagMap = await this.resolveQqTagIds();
-    if (tagMap.size === 0) return [];
-    const qqName = QqSource.QQ_TAG_ALIASES[categoryName] || categoryName;
-    const categoryId = tagMap.get(qqName);
-    if (!categoryId) return [];
-    const sin = page * 30;
-    const ein = page * 30 + 29;
-    const url =
-      `https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg?picmid=1&rnd=0.2&g_tk=5381&loginUin=0&hostUin=0` +
-      `&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq&needNewCode=0&categoryId=${categoryId}&sortId=5&sin=${sin}&ein=${ein}`;
     try {
-      const response = await fetch(url, { headers: { Referer: 'https://c.y.qq.com' } });
+      const tagMap = await this.resolveQqTagIds();
+      const wanted = QqSource.QQ_TAG_ALIASES[categoryName] || categoryName;
+      const categoryId = tagMap.get(wanted);
+      if (!categoryId) return [];
+
+      const sin = page * 30;
+      const qs = new URLSearchParams({
+        picmid: '1',
+        rnd: String(Math.random()),
+        g_tk: '5381',
+        loginUin: '0',
+        hostUin: '0',
+        format: 'json',
+        inCharset: 'utf8',
+        outCharset: 'utf-8',
+        notice: '0',
+        platform: 'yqq',
+        needNewCode: '0',
+        categoryId: String(categoryId),
+        sortId: '5',
+        sin: String(sin),
+        ein: String(sin + 29),
+      });
+      const response = await fetch(`https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg?${qs.toString()}`, {
+        headers: { Referer: 'https://c.y.qq.com/' },
+      });
       if (!response.ok) return [];
       const data = await response.json();
       const list = data?.data?.list || [];
       return list
         .map((item: any) => ({
-          id: String(item?.dissid || ''),
-          title: item?.dissname || '未命名歌单',
-          coverUrl: item?.imgurl || '',
-          playCount: Number(item?.listennum) > 0 ? Number(item.listennum) : undefined,
-          creator: item?.nickname || undefined,
+          id: String(item.dissid || ''),
+          title: item.dissname || item.diss_name || '未命名歌单',
+          coverUrl: item.imgurl || item.logo || '',
+          playCount: Number(item.listennum) > 0 ? Number(item.listennum) : undefined,
+          creator: item.nickname || item.creator?.nick || undefined,
         }))
         .filter((p: PlaylistSummary) => p.id);
     } catch {

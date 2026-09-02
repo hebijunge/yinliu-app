@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality, YinliuError, ErrorCode } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail, QualityOption, PlaylistSummary } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail, PlaylistSummary, QualityOption } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { debugLogger } from '@shared/utils/debugLogger';
@@ -340,6 +340,12 @@ export class KugouSource extends BaseHttpSource {
   // ===================== 歌单 =====================
 
   /**
+   * 获取酷狗歌单
+   * - 纯数字ID：走 m.kugou.com/plist/list/{id}?json=true（老接口）
+   * - 字母数字混合ID：走 m.kugou.com/songlist/gcid_{id}（HTML 页提取 window.$output）
+   * - 全程带 ERROR 日志，杜绝静默失败
+   */
+  /**
    * 按融合固定分类拉取歌单列表（v19.1）
    * 酷狗移动端实测只有热门歌单列表（plist/index，600+ 官方精选歌单）可用；
    * 酷狗未提供免登录的分类-歌单接口（tag/list 仅年龄标签，与歌单广场分类无关），
@@ -368,12 +374,6 @@ export class KugouSource extends BaseHttpSource {
     }
   }
 
-  /**
-   * 获取酷狗歌单
-   * - 纯数字ID：走 m.kugou.com/plist/list/{id}?json=true（老接口）
-   * - 字母数字混合ID：走 m.kugou.com/songlist/gcid_{id}（HTML 页提取 window.$output）
-   * - 全程带 ERROR 日志，杜绝静默失败
-   */
   async getPlaylist(playlistId: string): Promise<PlaylistDetail> {
     const isAlphanumeric = !/^\d+$/.test(playlistId);
 
