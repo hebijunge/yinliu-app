@@ -249,7 +249,8 @@ export default function SearchPage() {
         <div className="flex gap-3 mb-4 flex-wrap">
           {Object.entries(sourceStats).map(([id, stat]) => (
             <div key={id} className="text-xs px-2 py-1 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
-              {id}: {stat.total}条 {stat.latency}ms {stat.error && <span className="text-red-500">(错误)</span>}
+              {/* v19.2：搜索结果不再显示各源请求用时（latency），仅保留条数与错误标记 */}
+              {id}: {stat.total}条 {stat.error && <span className="text-red-500">(错误)</span>}
             </div>
           ))}
         </div>
