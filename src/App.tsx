@@ -8,6 +8,7 @@ import SearchPage from './pages/SearchPage';
 // v16: 非核心页面懒加载，减少首屏 bundle
 const PlaylistPage = lazy(() => import('./pages/PlaylistPage'));
 const HomePage = lazy(() => import('./pages/HomePage'));
+const ZonePage = lazy(() => import('./pages/ZonePage'));
 const LibraryPage = lazy(() => import('./pages/LibraryPage'));
 const MinePage = lazy(() => import('./pages/MinePage'));
 const LocalMusicPage = lazy(() => import('./pages/LocalMusicPage'));
@@ -170,6 +171,7 @@ function App() {
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/library" element={<LibraryPage />} />
+          <Route path="/zone" element={<ZonePage />} />
           <Route path="/mine" element={<MinePage />} />
           <Route path="/local" element={<LocalMusicPage />} />
           <Route path="/search" element={<SearchPage />} />

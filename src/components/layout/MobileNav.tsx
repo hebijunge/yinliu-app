@@ -1,10 +1,11 @@
 import { NavLink } from 'react-router-dom';
-import { House, Library, User } from 'lucide-react';
+import { House, Library, Compass, User } from 'lucide-react';
 
 export default function MobileNav() {
   const items = [
     { to: '/', icon: House, label: '首页' },
     { to: '/library', icon: Library, label: '曲库' },
+    { to: '/zone', icon: Compass, label: '专区' },
     { to: '/mine', icon: User, label: '我的' },
   ];
 

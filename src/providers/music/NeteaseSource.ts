@@ -324,27 +324,46 @@ export class NeteaseSource extends BaseHttpSource {
     const data = await this.httpGetJson(`${this.HOST}/api/toplist/detail?id=${chartId}`, { Referer: this.REF });
     const pl = data?.playlist;
     const tracks = pl?.tracks || [];
+    if (tracks.length > 0) {
+      return {
+        id: String(chartId),
+        name: pl?.name || '网易榜单',
+        description: pl?.description || '',
+        songs: tracks.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[],
+      };
+    }
+    // 兜底：/api/toplist/detail 对部分榜单（如电音榜）返回全量 list 且 tracks 为空，
+    // 改走老版歌单详情接口（/api/playlist/detail 返回 result.tracks，实测可用）
+    try {
+      const d2 = await this.httpGetJson(`${this.HOST}/api/playlist/detail?id=${chartId}`, { Referer: this.REF });
+      const tracks2 = d2?.result?.tracks || d2?.playlist?.tracks || [];
+      if (tracks2.length > 0) {
+        return {
+          id: String(chartId),
+          name: d2?.playlist?.name || d2?.result?.name || '网易榜单',
+          description: d2?.playlist?.description || d2?.result?.description || '',
+          songs: tracks2.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[],
+        };
+      }
+    } catch {
+      /* 兜底失败按空榜单返回 */
+    }
     return {
       id: String(chartId),
       name: pl?.name || '网易榜单',
       description: pl?.description || '',
-      songs: tracks.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[],
+      songs: [],
     };
   }
 
   // ===================== 歌单 =====================
 
   /**
-   * 按融合固定分类拉取歌单列表（v19.1）：
-   * /api/playlist/list 即网易云官方歌单广场接口（cat=分类名）。
-   * 热门推荐不带 cat 参数（order=hot 即官方热门歌单）；
-   * 融合「日韩」在网易云对应「日语」分类。
+   * 按融合固定分类拉取歌单列表（分类名直接映射网易云 cat 标签）
    */
   async getPlaylistsByCategory(categoryName: string, page = 0): Promise<PlaylistSummary[]> {
     const offset = page * 30;
-    const catParam =
-      categoryName === '热门推荐' ? '' : `cat=${encodeURIComponent(categoryName === '日韩' ? '日语' : categoryName)}&`;
-    const url = `${this.HOST}/api/playlist/list?${catParam}order=hot&limit=30&offset=${offset}`;
+    const url = `${this.HOST}/api/playlist/list?cat=${encodeURIComponent(categoryName)}&order=hot&limit=30&offset=${offset}`;
     const data = await this.httpGetJson(url, { Referer: this.REF });
     const list = data?.playlists || [];
     return list.map((o: any) => ({
