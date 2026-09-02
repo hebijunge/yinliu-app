@@ -1,6 +1,9 @@
 import { Routes, Route } from 'react-router-dom';
 import { useEffect, lazy, Suspense } from 'react';
 import Layout from './components/layout/Layout';
+import HomePage from './pages/HomePage';
+import LibraryPage from './pages/LibraryPage';
+import ProfilePage from './pages/ProfilePage';
 import SearchPage from './pages/SearchPage';
 
 // v16: 非核心页面懒加载，减少首屏 bundle
@@ -10,6 +13,8 @@ const ReadingPage = lazy(() => import('./pages/ReadingPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const HistoryPage = lazy(() => import('./pages/HistoryPage'));
 const DebugLogPage = lazy(() => import('./pages/DebugLogPage'));
+const LocalMusicPage = lazy(() => import('./pages/LocalMusicPage'));
+
 import { playerEngine } from './core/player';
 import { downloadEngine } from './core/download';
 import { usePlayerStore } from './shared/store/playerStore';
@@ -78,8 +83,6 @@ function App() {
 
     // 绑定下载事件到 Store
     const unsub4 = downloadEngine.on('stateChange', ({ task }) => {
-      // engine 的 task 不带 speed（speed 只在 progress 事件里），如果直接 upsertTask(task)
-      // 会把 store 里前一次 progress 写入的 speed 抹成 undefined。保留 speed 让 UI 还能显示。
       const prev = useDownloadStore.getState().tasks.find((t) => t.id === task.id);
       useDownloadStore.getState().upsertTask({
         ...task,
@@ -94,7 +97,6 @@ function App() {
       });
     });
     const unsub6 = downloadEngine.on('completed', ({ taskId }) => {
-      // 显式把 progress 置 1，兜底某些时序下 stateChange 的 progress 还没刷到 store
       useDownloadStore.getState().updateTaskStatus(taskId, 'completed', { progress: 1 });
     });
     const unsub7 = downloadEngine.on('failed', ({ taskId, error }) => {
@@ -121,14 +123,17 @@ function App() {
     <Layout>
       <Suspense fallback={<div className="flex-1 flex items-center justify-center min-h-[50vh]"><div className="w-8 h-8 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" /></div>}>
         <Routes>
-          <Route path="/" element={<SearchPage />} />
+          <Route path="/" element={<HomePage />} />
           <Route path="/search" element={<SearchPage />} />
+          <Route path="/library" element={<LibraryPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/playlists" element={<PlaylistPage />} />
           <Route path="/downloads" element={<DownloadPage />} />
           <Route path="/reading" element={<ReadingPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/debug" element={<DebugLogPage />} />
+          <Route path="/local" element={<LocalMusicPage />} />
         </Routes>
       </Suspense>
     </Layout>

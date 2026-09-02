@@ -1,13 +1,11 @@
 import { NavLink } from 'react-router-dom';
-import { Search, PlayCircle, Download, BookOpen, Settings } from 'lucide-react';
+import { Home, Library, User } from 'lucide-react';
 
 export default function MobileNav() {
   const items = [
-    { to: '/', icon: Search, label: '发现' },
-    { to: '/playlists', icon: PlayCircle, label: '歌单' },
-    { to: '/downloads', icon: Download, label: '下载' },
-    { to: '/reading', icon: BookOpen, label: '书架' },
-    { to: '/settings', icon: Settings, label: '设置' },
+    { to: '/', icon: Home, label: '首页' },
+    { to: '/library', icon: Library, label: '曲库' },
+    { to: '/profile', icon: User, label: '我的' },
   ];
 
   return (

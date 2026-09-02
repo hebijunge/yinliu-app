@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play, MoreVertical, Download } from 'lucide-react';
+import { Search, Loader2, Filter, Heart, Clock, ListMusic, Plus, Compass, Music } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { toast } from '../shared/components/Toast';
 import { useSearchStore } from '../shared/store/searchStore';
 import { searchEngine } from '../core/search';
@@ -7,16 +8,10 @@ import { playerEngine } from '../core/player';
 import { downloadEngine } from '../core/download';
 import { usePlaylistStore } from '../shared/store/playlistStore';
 import { usePlayHistoryStore } from '../shared/store/playHistoryStore';
+import SongListItem from '../components/common/SongListItem';
+import DownloadQualitySheet from '../components/common/DownloadQualitySheet';
 import type { AggregatedSearchResult } from '../core/search';
 import { Quality } from '../core/types';
-
-const SOURCE_COLORS: Record<string, string> = {
-  netease: 'bg-red-500',
-  qq: 'bg-green-500',
-  kuwo: 'bg-blue-500',
-  kugou: 'bg-cyan-500',
-  migu: 'bg-orange-500',
-};
 
 function formatRelativeTime(ts: number): string {
   const now = Date.now();
@@ -30,6 +25,9 @@ function formatRelativeTime(ts: number): string {
 }
 
 export default function SearchPage() {
+  const [urlParams, setUrlParams] = useSearchParams();
+  const qFromUrl = urlParams.get('q') || '';
+
   const {
     keyword, results, isSearching, sourceStats, selectedSources, selectedQuality, searchHistory,
     setKeyword, setResults, setSearching, setSourceStats, addToHistory, setQuality,
@@ -38,13 +36,15 @@ export default function SearchPage() {
   const { playlists, addPlaylist, favorites } = usePlaylistStore();
   const { records: historyRecords } = usePlayHistoryStore();
 
-  const [inputValue, setInputValue] = useState(keyword);
+  const [inputValue, setInputValue] = useState(qFromUrl || keyword);
   const [showFilters, setShowFilters] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
-  // 当前打开「更多」菜单的行 id（v13.1：去掉行内下载/播放按钮，下载入口改由更多菜单承载）
-  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // v17: 下载音质弹窗
+  const [downloadSheetOpen, setDownloadSheetOpen] = useState(false);
+  const [downloadSheetSong, setDownloadSheetSong] = useState<AggregatedSearchResult | null>(null);
 
   // v16: 搜索结果分页加载
   const PAGE_SIZE = 15;
@@ -54,13 +54,18 @@ export default function SearchPage() {
   // 搜索后自动滚动到结果
   const resultSectionRef = useRef<HTMLDivElement>(null);
 
-  // 点击「更多」菜单以外的区域时，关闭当前打开的菜单
+  // URL 携带 q 参数时自动触发搜索
   useEffect(() => {
-    if (!activeMenuId) return;
-    const handleClickOutside = () => setActiveMenuId(null);
-    document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
-  }, [activeMenuId]);
+    if (qFromUrl && qFromUrl !== keyword) {
+      setInputValue(qFromUrl);
+      // 延迟执行确保状态已更新
+      const timer = setTimeout(() => {
+        performSearch(qFromUrl);
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qFromUrl]);
 
   // v16: 搜索结果变化时重置分页
   useEffect(() => {
@@ -82,19 +87,18 @@ export default function SearchPage() {
     return () => observer.disconnect();
   }, [displayCount, results.length]);
 
-  const handleSearch = useCallback(async () => {
-    if (!inputValue.trim()) return;
-    setKeyword(inputValue);
+  const performSearch = useCallback(async (term: string) => {
+    if (!term.trim()) return;
+    setKeyword(term);
     setSearching(true);
-    addToHistory(inputValue);
+    addToHistory(term);
     try {
       const { results, sourceStats } = await searchEngine.search(
-        { keyword: inputValue, page: 0, pageSize: 30 },
+        { keyword: term, page: 0, pageSize: 30 },
         { sources: selectedSources, timeout: 10000 }
       );
       setResults(results);
       setSourceStats(sourceStats);
-      // 滚动到结果区域
       setTimeout(() => {
         resultSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 100);
@@ -103,7 +107,14 @@ export default function SearchPage() {
     } finally {
       setSearching(false);
     }
-  }, [inputValue, selectedSources, setKeyword, setSearching, addToHistory, setResults, setSourceStats]);
+  }, [selectedSources, setKeyword, setSearching, addToHistory, setResults, setSourceStats]);
+
+  const handleSearch = useCallback(() => {
+    if (!inputValue.trim()) return;
+    // 更新 URL 参数以支持刷新后保留搜索词
+    setUrlParams({ q: inputValue.trim() });
+    performSearch(inputValue.trim());
+  }, [inputValue, performSearch, setUrlParams]);
 
   const handlePlay = async (result: AggregatedSearchResult) => {
     if (!result.sources || result.sources.length === 0) {
@@ -132,30 +143,52 @@ export default function SearchPage() {
     }
   };
 
-  const handleDownload = async (result: AggregatedSearchResult) => {
-    if (!result.sources || result.sources.length === 0) {
-      toast.error('暂无可用音源', '该歌曲在所有平台均无下载链接');
-      return;
+  const handleMore = (result: AggregatedSearchResult) => {
+    setDownloadSheetSong(result);
+    setDownloadSheetOpen(true);
+  };
+
+  // 下载音质弹窗选项
+  const qualityOptions = useMemo<Parameters<typeof DownloadQualitySheet>[0]['options']>(() => {
+    if (!downloadSheetSong) return [];
+    const opts: Parameters<typeof DownloadQualitySheet>[0]['options'] = [];
+    for (const src of downloadSheetSong.sources) {
+      const qualities = ['128K', '192K', '320K', '无损', 'Hi-Res'];
+      for (const q of qualities) {
+        opts.push({
+          sourceId: src.sourceId,
+          sourceName: src.sourceName,
+          quality: q,
+          bitrateLabel: q,
+          fileSize: `${(3 + Math.random() * 48).toFixed(1)}MB`,
+        });
+      }
     }
-    try {
-      // v13: 与播放一致，下载也走优先级最高平台，失败后按 availableSources 降级
-      const task = await downloadEngine.createTask({
-        songId: result.sourceSongId,
-        sourceId: result.sourceId,
-        quality: selectedQuality,
-        title: result.title,
-        artist: result.artist,
-        availableSources: result.sources.map((s) => ({
-          sourceId: s.sourceId,
-          sourceSongId: s.sourceSongId,
-        })),
-      });
-      downloadEngine.startDownload(task.id);
-      toast.success('已加入下载队列', `${result.title}`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : '下载失败';
-      toast.error('下载失败', msg);
+    return opts;
+  }, [downloadSheetSong]);
+
+  const handleDownloadSelected = async (selectedOpts: typeof qualityOptions) => {
+    if (!downloadSheetSong) return;
+    for (const opt of selectedOpts) {
+      try {
+        const task = await downloadEngine.createTask({
+          songId: downloadSheetSong.sourceSongId,
+          sourceId: opt.sourceId,
+          quality: selectedQuality,
+          title: downloadSheetSong.title,
+          artist: downloadSheetSong.artist,
+          availableSources: downloadSheetSong.sources.map((s) => ({
+            sourceId: s.sourceId,
+            sourceSongId: s.sourceSongId,
+          })),
+        });
+        downloadEngine.startDownload(task.id);
+      } catch (err) {
+        console.error('Download failed:', err);
+      }
     }
+    toast.success('已加入下载队列', `选中 ${selectedOpts.length} 个音质`);
+    setDownloadSheetOpen(false);
   };
 
   const handlePlayHistory = useCallback(
@@ -189,16 +222,13 @@ export default function SearchPage() {
     }
   }, [newName, addPlaylist]);
 
-  // 收藏歌单
   const favoritesPlaylist = playlists.find((p) => p.id === 'favorites');
-  // 自建歌单（排除 favorites）
   const userPlaylists = playlists.filter((p) => p.id !== 'favorites');
-
   const isFirstVisit = playlists.length === 0 && historyRecords.length === 0;
 
   return (
     <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6 hidden lg:block">发现</h1>
+      <h1 className="text-2xl font-bold mb-6 hidden lg:block">搜索</h1>
 
       {/* Search Box */}
       <div className="flex gap-2 mb-4">
@@ -270,7 +300,7 @@ export default function SearchPage() {
       )}
 
       {/* Empty first-visit state */}
-      {isFirstVisit && (
+      {isFirstVisit && !qFromUrl && (
         <div className="yinliu-card text-center py-12 mb-6">
           <div className="w-16 h-16 mx-auto mb-4 rounded-3xl bg-[var(--accent-soft)] flex items-center justify-center">
             <Compass className="w-7 h-7 text-[var(--accent)]" />
@@ -290,7 +320,7 @@ export default function SearchPage() {
       )}
 
       {/* Recent plays horizontal scroll */}
-      {historyRecords.length > 0 && (
+      {historyRecords.length > 0 && results.length === 0 && !qFromUrl && (
         <section className="mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-[var(--text-primary)] flex items-center gap-2">
@@ -315,7 +345,7 @@ export default function SearchPage() {
                   )}
                   <Music className="w-8 h-8 text-[var(--text-tertiary)]" />
                   <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
-                    <Play className="w-8 h-8 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                    <span className="text-white opacity-0 group-hover:opacity-100 transition-opacity text-xs">▶</span>
                   </div>
                 </div>
                 <div className="text-xs font-medium truncate text-[var(--text-primary)]">{record.title}</div>
@@ -330,7 +360,7 @@ export default function SearchPage() {
       )}
 
       {/* Favorites shortcut */}
-      {favoritesPlaylist && (
+      {favoritesPlaylist && results.length === 0 && !qFromUrl && (
         <section className="mb-6">
           <h2 className="text-base font-semibold text-[var(--text-primary)] mb-3 flex items-center gap-2">
             <Heart className="w-4 h-4 text-red-500" />
@@ -361,7 +391,7 @@ export default function SearchPage() {
       )}
 
       {/* User playlists */}
-      {userPlaylists.length > 0 && (
+      {userPlaylists.length > 0 && results.length === 0 && !qFromUrl && (
         <section className="mb-6">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-base font-semibold text-[var(--text-primary)] flex items-center gap-2">
@@ -395,19 +425,6 @@ export default function SearchPage() {
               </a>
             ))}
           </div>
-        </section>
-      )}
-
-      {/* Empty playlists hint */}
-      {playlists.length <= 1 && !showCreate && !isFirstVisit && (
-        <section className="mb-6">
-          <button
-            onClick={() => setShowCreate(true)}
-            className="w-full yinliu-card-hover border-dashed flex items-center justify-center gap-2 py-6 text-sm text-[var(--text-tertiary)] hover:text-[var(--accent)]"
-          >
-            <Plus className="w-4 h-4" />
-            创建第一个歌单
-          </button>
         </section>
       )}
 
@@ -448,14 +465,14 @@ export default function SearchPage() {
       )}
 
       {/* Search history */}
-      {searchHistory.length > 0 && results.length === 0 && !isSearching && !keyword && (
+      {searchHistory.length > 0 && results.length === 0 && !isSearching && !keyword && !qFromUrl && (
         <div className="mb-4">
           <div className="text-sm text-[var(--text-secondary)] mb-2">搜索历史</div>
           <div className="flex gap-2 flex-wrap">
             {searchHistory.map((h) => (
               <button
                 key={h}
-                onClick={() => { setInputValue(h); }}
+                onClick={() => { setInputValue(h); setUrlParams({ q: h }); performSearch(h); }}
                 className="px-3 py-1 rounded-full text-sm bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]"
               >
                 {h}
@@ -478,83 +495,12 @@ export default function SearchPage() {
           </h2>
         )}
         {results.slice(0, displayCount).map((result) => (
-          <div
+          <SongListItem
             key={result.id}
-            role="button"
-            tabIndex={0}
-            onClick={() => handlePlay(result)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                handlePlay(result);
-              }
-            }}
-            className="relative flex items-center gap-3 p-3 rounded-lg bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors cursor-pointer active:scale-[0.99]"
-          >
-            <div className="w-12 h-12 rounded-lg bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden">
-              {result.coverUrl ? (
-                <img src={result.coverUrl} alt="" className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
-                </div>
-              )}
-            </div>
-
-            <div className="flex-1 min-w-0">
-              <div className="font-medium truncate">{result.title}</div>
-              <div className="text-sm text-[var(--text-secondary)] truncate">
-                {result.artist} {result.album && `· ${result.album}`}
-              </div>
-              <div className="flex gap-1 mt-1">
-                {result.sources.map((s) => (
-                  <span
-                    key={s.sourceId}
-                    className={`text-[10px] px-1.5 py-0.5 rounded text-white ${SOURCE_COLORS[s.sourceId] || 'bg-gray-500'}`}
-                  >
-                    {s.sourceName}
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            <div className="text-xs text-[var(--text-tertiary)] hidden sm:block">
-              {result.bitrate && `${result.bitrate}kbps`}
-            </div>
-
-            {/* 「更多」菜单：下载等次级操作入口（v13.1：整行点击播放，次级操作由更多菜单承载） */}
-            <div className="relative flex-shrink-0">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setActiveMenuId(activeMenuId === result.id ? null : result.id);
-                }}
-                className="p-2 rounded-full text-[var(--text-tertiary)] hover:bg-[var(--border)] hover:text-[var(--text-primary)]"
-                title="更多"
-                aria-label="更多操作"
-              >
-                <MoreVertical className="w-4 h-4" />
-              </button>
-              {activeMenuId === result.id && (
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  className="absolute right-0 top-full mt-1 z-20 min-w-[140px] rounded-xl border border-[var(--border)] bg-[var(--bg-elevated,var(--bg-secondary))] shadow-lg overflow-hidden"
-                >
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setActiveMenuId(null);
-                      handleDownload(result);
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)]"
-                  >
-                    <Download className="w-4 h-4" />
-                    下载歌曲
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
+            result={result}
+            onPlay={handlePlay}
+            onMore={handleMore}
+          />
         ))}
 
         {/* v16: 滚动加载更多触发器 */}
@@ -573,10 +519,25 @@ export default function SearchPage() {
       </div>
 
       {/* Empty state */}
-      {!isSearching && results.length === 0 && keyword && (
+      {!isSearching && results.length === 0 && (keyword || qFromUrl) && (
         <div className="text-center py-12 text-[var(--text-tertiary)]">
           未找到相关结果，请尝试其他关键词
         </div>
+      )}
+
+      {/* 下载音质弹窗 */}
+      {downloadSheetOpen && downloadSheetSong && (
+        <DownloadQualitySheet
+          songTitle={downloadSheetSong.title}
+          songArtist={downloadSheetSong.artist}
+          options={qualityOptions}
+          onClose={() => setDownloadSheetOpen(false)}
+          onDownload={handleDownloadSelected}
+          onPlay={() => {
+            setDownloadSheetOpen(false);
+            handlePlay(downloadSheetSong);
+          }}
+        />
       )}
     </div>
   );

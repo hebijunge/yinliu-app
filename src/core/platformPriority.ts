@@ -20,6 +20,17 @@ export const PLATFORM_DISPLAY_NAMES: Record<string, string> = {
   netease: '网易云音乐',
   kugou: '酷狗音乐',
   qq: 'QQ音乐',
+  qishui: '汽水音乐',
+};
+
+/** 平台两字母缩写（UI 列表标签、弹窗音质块、代码内源标识统一） */
+export const PLATFORM_ABBREVS: Record<string, string> = {
+  kuwo: 'kw',
+  migu: 'mg',
+  netease: 'wy',
+  kugou: 'kg',
+  qq: 'qq',
+  qishui: 'qi',
 };
 
 /** 平台品牌色（搜索结果徽章、设置页徽标复用） */
@@ -29,6 +40,7 @@ export const PLATFORM_COLORS: Record<string, string> = {
   netease: 'bg-red-500',
   kugou: 'bg-cyan-500',
   qq: 'bg-green-500',
+  qishui: 'bg-purple-500',
 };
 
 /** 取某平台的优先级序号（0 = 最高；不存在于表内则返回 Number.MAX_SAFE_INTEGER） */
