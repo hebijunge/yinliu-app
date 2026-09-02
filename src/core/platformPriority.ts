@@ -33,7 +33,7 @@ export const PLATFORM_DISPLAY_NAMES: Record<string, string> = {
   kugou: '酷狗音乐',
 };
 
-/** 平台短名（音质弹窗等空间紧张处复用） */
+/** 平台短名（音质弹窗等空间紧张处复用；v18 用户指定缩写：咪咕=mg QQ=qq 汽水=qi 酷狗=kg 酷我=kw 网易云=wy） */
 export const PLATFORM_SHORT_NAMES: Record<string, string> = {
   qishui: 'qi',
   kuwo: 'kw',
@@ -42,6 +42,9 @@ export const PLATFORM_SHORT_NAMES: Record<string, string> = {
   qq: 'qq',
   kugou: 'kg',
 };
+
+/** 平台缩写别名（components/common 等处复用） */
+export const PLATFORM_ABBREVS: Record<string, string> = PLATFORM_SHORT_NAMES;
 
 /** 平台品牌色（搜索结果徽章、设置页徽标复用） */
 export const PLATFORM_COLORS: Record<string, string> = {
