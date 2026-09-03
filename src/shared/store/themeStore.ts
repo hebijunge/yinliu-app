@@ -51,3 +51,21 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
     get().setMode(newMode);
   },
 }));
+
+// v23：「跟随系统」模式下监听系统主题运行时切换（用户在系统设置里切深色/浅色时实时生效）
+if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  const onSystemChange = (e: MediaQueryListEvent) => {
+    const { mode } = useThemeStore.getState();
+    if (mode !== 'system') return;
+    useThemeStore.getState().setMode('system');
+    // setMode('system') 内部已按 getSystemDark() 重算 isDark，这里再兜底同步一次 class
+    document.documentElement.classList.toggle('dark', e.matches);
+  };
+  if (mq.addEventListener) {
+    mq.addEventListener('change', onSystemChange);
+  } else if ((mq as unknown as { addListener?: (cb: (e: MediaQueryListEvent) => void) => void }).addListener) {
+    // 兼容旧版 Safari / Android WebView
+    (mq as unknown as { addListener: (cb: (e: MediaQueryListEvent) => void) => void }).addListener(onSystemChange);
+  }
+}

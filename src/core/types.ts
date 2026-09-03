@@ -280,6 +280,8 @@ export interface DownloadTask {
   localPath?: string;
   errorMessage?: string;
   isFallback?: boolean;
+  /** 音源不支持 Range 时整包回退：进度无法实时统计，UI 显示不确定态进度条 */
+  indeterminate?: boolean;
   createdAt: number;
 }
 

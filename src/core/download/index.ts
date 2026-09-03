@@ -82,6 +82,8 @@ export class DownloadEngine {
   private pendingQueue: string[] = [];
   /** 默认下载音质 */
   private defaultQuality: Quality = Quality.STANDARD;
+  /** 下载目录（应用私有数据目录下的相对路径，可在设置页修改） */
+  private downloadDir = 'yinliu/downloads';
   /** 防止 scheduleNext 重入 */
   private scheduling = false;
 
@@ -118,6 +120,7 @@ export class DownloadEngine {
           title: row.title ? String(row.title) : undefined,
           artist: row.artist ? String(row.artist) : undefined,
           errorMessage: row.error_message ? String(row.error_message) : undefined,
+          downloadedSize: row.downloaded_size != null ? Number(row.downloaded_size) : undefined,
           createdAt: Number(row.created_at || Date.now()),
         };
         this.tasks.set(task.id, task);
@@ -225,9 +228,17 @@ export class DownloadEngine {
       return;
     }
 
+    // 断点续传：从 paused/failed 恢复时保留已下载进度（.part 文件仍在磁盘上）；
+    // 全新任务（pending）从头开始
+    const priorStatus = task.status;
     task.status = 'downloading';
     task.errorMessage = undefined;
-    task.downloadedSize = 0;
+    task.indeterminate = false;
+    const resuming = priorStatus !== 'pending' && (task.downloadedSize ?? 0) > 0;
+    if (!resuming) {
+      task.downloadedSize = 0;
+      task.progress = 0;
+    }
     await this.persistTask(task);
     this.emit('stateChange', { taskId, status: 'downloading', task });
 
@@ -245,7 +256,7 @@ export class DownloadEngine {
       const chain = buildFallbackChain(task.sourceId, availableIds);
 
       // 2. 确保下载目录存在
-      const dir = 'yinliu/downloads';
+      const dir = this.downloadDir;
       try {
         await Filesystem.mkdir({ path: dir, directory: Directory.Data, recursive: true });
       } catch {
@@ -263,6 +274,14 @@ export class DownloadEngine {
         const source = sourceRegistry.get(trySourceId);
         if (!source || !source.enabled) continue;
         const trySongId = songIdMap.get(trySourceId) || task.songId;
+
+        // 降级切换到新源：前一个源的 partial 数据不可复用，重置断点从头下载
+        if (i > 0) {
+          task.downloadedSize = 0;
+          task.progress = 0;
+          task.indeterminate = false;
+          await this.deletePartialFile(taskId);
+        }
 
         const abortCtrl = new AbortController();
         this.abortControllers.set(taskId, abortCtrl);
@@ -376,11 +395,14 @@ export class DownloadEngine {
             directory: Directory.Data,
             recursive: true,
           });
+          // 下载完成：清理断点续传临时文件
+          await this.deletePartialFile(taskId);
 
           saved = true;
           task.totalSize = bytes.length;
           task.downloadedSize = bytes.length;
           task.progress = 1;
+          task.indeterminate = false;
           break;
         } catch (err) {
           lastError = err;
@@ -438,7 +460,25 @@ export class DownloadEngine {
    * response.body 的流只在结尾吐一个大块，旧实现下载全程进度恒 0%（显示「计算中...」），
    * 大文件还有整包 base64 过桥的内存峰值。这里改为 HEAD 探测大小后按 1MiB Range 分块拉取，
    * 每块落地即发 progress 事件，块间检查暂停/取消；服务器不支持 Range 时回退整包 GET。
+   *
+   * v23 断点续传：每个分块即时以 base64 追加写入 `<downloadDir>/.part_<taskId>` 临时文件，
+   * downloadedSize 同步持久化到 DB。暂停/失败后重新下载时：
+   * - .part 存在 且 服务器支持 Range 且 已下载 < totalSize → 从已下载偏移继续（Range: bytes=offset-）
+   * - 否则清空 .part 从头下载（降级换源时由 startDownload 重置 downloadedSize）
+   * 下载完成后一次性读回 .part 全量内容交给解密/校验链路，并删除临时文件。
    */
+  private partialPathFor(taskId: string): string {
+    return `${this.downloadDir}/.part_${taskId}`;
+  }
+
+  private async deletePartialFile(taskId: string): Promise<void> {
+    try {
+      await Filesystem.deleteFile({ path: this.partialPathFor(taskId), directory: Directory.Data });
+    } catch {
+      // 临时文件可能不存在
+    }
+  }
+
   private async fetchBinary(
     taskId: string,
     url: string,
@@ -448,6 +488,7 @@ export class DownloadEngine {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
     const CHUNK = 1 << 20; // 1 MiB
+    const partialPath = this.partialPathFor(taskId);
 
     // HEAD 探测 content-length 与 Range 支持（失败不阻塞，走整包回退）
     let totalSize = 0;
@@ -466,10 +507,32 @@ export class DownloadEngine {
     }
     task.totalSize = totalSize;
 
+    // 断点续传判定：.part 存在且 downloadedSize 与其一致（避免 DB 与文件错位）时从断点继续
+    let resumeOffset = 0;
+    let partialExists = false;
+    try {
+      const stat = await Filesystem.stat({ path: partialPath, directory: Directory.Data });
+      partialExists = Number(stat.size || 0) === (task.downloadedSize ?? 0);
+    } catch {
+      partialExists = false;
+    }
+    if (partialExists && acceptRanges && totalSize > 0 && (task.downloadedSize ?? 0) > 0 && (task.downloadedSize ?? 0) < totalSize) {
+      resumeOffset = task.downloadedSize ?? 0;
+      console.log(`[DownloadEngine] resuming ${taskId} from byte ${resumeOffset}/${totalSize}`);
+    } else {
+      // 断点不可用（首次下载 / .part 缺失或错位 / 不支持 Range）：清掉旧临时文件从头开始
+      if (partialExists || (task.downloadedSize ?? 0) > 0) {
+        await this.deletePartialFile(taskId);
+      }
+      await Filesystem.writeFile({ path: partialPath, data: '', directory: Directory.Data, recursive: true });
+      resumeOffset = 0;
+      task.downloadedSize = 0;
+    }
+
     const chunks: Uint8Array[] = [];
-    let downloaded = 0;
+    let downloaded = resumeOffset;
     let lastTime = Date.now();
-    let lastDownloaded = 0;
+    let lastDownloaded = downloaded;
 
     const emitProgress = () => {
       task.downloadedSize = downloaded;
@@ -492,8 +555,17 @@ export class DownloadEngine {
       });
     };
 
+    /** 分块落盘到 .part 文件（追加 base64），保证暂停/失败后可从断点恢复 */
+    const appendChunkToPartial = async (buf: Uint8Array): Promise<void> => {
+      await Filesystem.appendFile({
+        path: partialPath,
+        data: arrayBufferToBase64(buf),
+        directory: Directory.Data,
+      });
+    };
+
     if (acceptRanges && totalSize > 0) {
-      for (let start = 0; start < totalSize; start += CHUNK) {
+      for (let start = resumeOffset; start < totalSize; start += CHUNK) {
         if (signal.aborted || task.status !== 'downloading') {
           throw new DOMException('Aborted', 'AbortError');
         }
@@ -507,13 +579,16 @@ export class DownloadEngine {
         if (resp.status === 206) {
           const buf = new Uint8Array(await resp.arrayBuffer());
           chunks.push(buf);
+          await appendChunkToPartial(buf);
           downloaded += buf.length;
           emitProgress();
         } else if (resp.status === 200) {
-          // 服务器忽略 Range 返回整包：首块直接收下整个文件
-          if (start === 0) {
+          // 服务器忽略 Range 返回整包：仅允许发生在起点，收下整个文件并覆盖 .part
+          if (start === 0 || start === resumeOffset) {
             const buf = new Uint8Array(await resp.arrayBuffer());
+            chunks.length = 0;
             chunks.push(buf);
+            await Filesystem.writeFile({ path: partialPath, data: arrayBufferToBase64(buf), directory: Directory.Data });
             downloaded = buf.length;
             totalSize = buf.length;
             emitProgress();
@@ -525,7 +600,15 @@ export class DownloadEngine {
         }
       }
     } else {
-      // 整包 GET（不支持 Range 或大小未知）：无法流式，但至少接收后立即给出完整进度
+      // 整包 GET（不支持 Range 或大小未知）：无法流式也无法断点，标记不确定态进度
+      task.indeterminate = true;
+      this.emit('progress', {
+        taskId,
+        progress: task.progress,
+        downloadedSize: 0,
+        totalSize,
+        speed: 0,
+      });
       const resp = await platformFetch(url, {
         method: 'GET',
         headers,
@@ -540,13 +623,27 @@ export class DownloadEngine {
       downloaded = buf.length;
       if (totalSize <= 0) totalSize = buf.length;
       emitProgress();
+      task.indeterminate = false;
     }
 
-    const merged = new Uint8Array(downloaded);
-    let offset = 0;
-    for (const chunk of chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.length;
+    // 合并：续传场景内存里只有本轮新增块 → 直接从 .part 读回全量
+    let merged: Uint8Array;
+    if (resumeOffset > 0) {
+      const result = await Filesystem.readFile({ path: partialPath, directory: Directory.Data });
+      const base64 = typeof result.data === 'string' ? result.data : '';
+      const binary = atob(base64);
+      merged = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) merged[i] = binary.charCodeAt(i);
+      if (merged.length !== downloaded) {
+        throw new Error(`Partial file size mismatch: file=${merged.length} expected=${downloaded}`);
+      }
+    } else {
+      merged = new Uint8Array(downloaded);
+      let offset = 0;
+      for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
     }
     return merged;
   }
@@ -569,10 +666,12 @@ export class DownloadEngine {
     this.scheduleNext();
   }
 
-  // === 继续下载（paused → downloading）===
+  // === 继续/重试下载（paused/failed → downloading）===
   async resumeDownload(taskId: string): Promise<void> {
     const task = this.tasks.get(taskId);
-    if (!task || task.status !== 'paused') return;
+    if (!task) return;
+    // failed 也走同一入口：重试时若存在有效断点则从断点续传，否则从头下载
+    if (task.status !== 'paused' && task.status !== 'failed') return;
     await this.startDownload(taskId);
   }
 
@@ -598,6 +697,8 @@ export class DownloadEngine {
         // 文件可能不存在
       }
     }
+    // 清理断点续传临时文件
+    await this.deletePartialFile(taskId);
 
     // 从调度队列中移除（如果还在等待中）
     const queueIdx = this.pendingQueue.indexOf(taskId);
@@ -648,6 +749,18 @@ export class DownloadEngine {
   setDefaultQuality(quality: Quality): void {
     this.defaultQuality = quality;
     console.log('[DownloadEngine] setDefaultQuality:', quality);
+  }
+
+  /** 设置下载目录（应用私有数据目录下的相对路径；设置页修改后实时生效） */
+  setDownloadDir(dir: string): void {
+    const trimmed = (dir || '').trim().replace(/^\/+|\/+$/g, '');
+    if (!trimmed) return;
+    this.downloadDir = trimmed;
+    console.log('[DownloadEngine] setDownloadDir:', this.downloadDir);
+  }
+
+  getDownloadDir(): string {
+    return this.downloadDir;
   }
 
   // === 播放本地已下载文件 ===

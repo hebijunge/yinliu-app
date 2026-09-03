@@ -227,6 +227,15 @@ html.dark {
   }
 }
 
+/* ===== v23: 不确定态进度条（音源不支持 Range 时） ===== */
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+.animate-indeterminate {
+  animation: indeterminate 1.4s ease-in-out infinite;
+}
+
 /* ===== v16: Play/Pause button transition ===== */
 .play-btn-transition {
   transition: transform var(--transition-fast), background-color var(--transition-base);
@@ -481,6 +490,7 @@ html.dark {
   .animate-loading-bar,
   .animate-pulse-slow,
   .animate-spin-slow,
+  .animate-indeterminate,
   .page-enter {
     animation: none !important;
   }

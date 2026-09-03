@@ -7,9 +7,10 @@ import type { RepeatMode } from './playerStore';
 const STORAGE_KEY = 'yinliu.settings.v1';
 
 /** 将下载设置应用到下载引擎，保证设置真实生效 */
-function applyDownloadSettings(quality: Quality, concurrency: number): void {
+function applyDownloadSettings(quality: Quality, concurrency: number, dir?: string): void {
   downloadEngine.setMaxConcurrent(concurrency);
   downloadEngine.setDefaultQuality(quality);
+  if (dir) downloadEngine.setDownloadDir(dir);
 }
 
 export interface SettingsPersisted {
@@ -31,6 +32,8 @@ export interface SettingsPersisted {
   enableFloatingLyrics?: boolean;
   /** 播放模式：顺序/列表循环/单曲循环/随机 */
   repeatMode?: RepeatMode;
+  /** 下载目录（应用私有数据目录下的相对路径） */
+  downloadDir?: string;
 }
 
 function loadPersisted(): SettingsPersisted {
@@ -73,8 +76,8 @@ interface SettingsState {
   downloadQuality: Quality;
   /** 最大并发下载数 */
   maxConcurrentDownloads: number;
-  /** 下载目录（Android 外部存储，只读展示） */
-  readonly downloadDir: string;
+  /** 下载目录（应用私有数据目录下的相对路径，可在设置页修改） */
+  downloadDir: string;
   /** 系统媒体焦点恢复后是否自动续播（默认 true） */
   autoResumeOnAudioFocus: boolean;
   /** 是否在系统通知栏 / 锁屏显示媒体控制（默认 true） */
@@ -101,6 +104,7 @@ interface SettingsState {
   setCarMode: (enabled: boolean) => void;
   setFloatingLyricsEnabled: (enabled: boolean) => void;
   setRepeatMode: (mode: RepeatMode) => void;
+  setDownloadDir: (dir: string) => void;
   clearAllSettings: () => void;
 }
 
@@ -111,7 +115,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   enabledSources: persisted.enabledSources ?? {},
   downloadQuality: persisted.downloadQuality ?? Quality.STANDARD,
   maxConcurrentDownloads: persisted.maxConcurrentDownloads ?? 3,
-  downloadDir: '/storage/emulated/0/YinliuDownloads/',
+  downloadDir: persisted.downloadDir ?? 'yinliu/downloads',
   autoResumeOnAudioFocus: persisted.autoResumeOnAudioFocus ?? true,
   enableNotificationControls: persisted.enableNotificationControls ?? true,
   dismissNotificationOnPause: persisted.dismissNotificationOnPause ?? false,
@@ -178,6 +182,14 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     persist(get());
   },
 
+  setDownloadDir: (downloadDir: string) => {
+    const trimmed = (downloadDir || '').trim().replace(/^\/+|\/+$/g, '');
+    if (!trimmed) return;
+    set({ downloadDir: trimmed });
+    downloadEngine.setDownloadDir(trimmed);
+    persist(get());
+  },
+
   clearAllSettings: () => {
     try {
       localStorage.removeItem(STORAGE_KEY);
@@ -189,6 +201,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       enabledSources: {},
       downloadQuality: Quality.STANDARD,
       maxConcurrentDownloads: 3,
+      downloadDir: 'yinliu/downloads',
       autoResumeOnAudioFocus: true,
       enableNotificationControls: true,
       dismissNotificationOnPause: false,
@@ -197,6 +210,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       enableFloatingLyrics: false,
       repeatMode: 'sequence',
     });
+    downloadEngine.setDownloadDir('yinliu/downloads');
     debugLogger.setEnabled(false);
   },
 }));
@@ -210,6 +224,6 @@ export function isSourceEnabled(enabledSources: Record<string, boolean>, sourceI
 // 同时同步调试模式开关到日志服务——修复 v13.2 重启后调试日志不记录的根因
 if (typeof window !== 'undefined') {
   const s = useSettingsStore.getState();
-  applyDownloadSettings(s.downloadQuality, s.maxConcurrentDownloads);
+  applyDownloadSettings(s.downloadQuality, s.maxConcurrentDownloads, s.downloadDir);
   debugLogger.setEnabled(s.debugMode);
 }

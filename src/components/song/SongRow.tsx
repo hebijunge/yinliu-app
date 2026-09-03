@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Music, MoreVertical } from 'lucide-react';
 import { SOURCE_COLORS } from './sourceColors';
 import { PLATFORM_SHORT_NAMES } from '../../core/platformPriority';
+import { usePlayerStore } from '@shared/store/playerStore';
 
 /** v16 封面加载失败兜底：死链/防盗链图片自动回退占位图标，避免空白块 */
 function CoverImg({ src }: { src: string }) {
@@ -25,6 +26,9 @@ function CoverImg({ src }: { src: string }) {
 
 export interface SongRowData {
   id: string;
+  /** 当前播放判定：聚合结果带 sourceSongId/sourceId，优先用二者与播放器当前曲目比对 */
+  sourceSongId?: string;
+  sourceId?: string;
   title: string;
   artist?: string;
   album?: string;
@@ -47,6 +51,15 @@ interface SongRowProps {
  * 整行点击播放；右侧 ⋮ 打开音质弹窗。
  */
 export default function SongRow({ song, onPlay, onMore }: SongRowProps) {
+  // v23：标识「正在播放」曲目 —— 与播放器当前曲目按 sourceSongId+sourceId（兜底 id）比对
+  const currentTrack = usePlayerStore((s) => s.currentTrack);
+  const isCurrentTrack = !!currentTrack && (
+    song.sourceSongId
+      ? currentTrack.sourceSongId === song.sourceSongId
+        && (!song.sourceId || currentTrack.sourceId === song.sourceId)
+      : currentTrack.id === song.id
+  );
+
   return (
     <div
       role="button"
@@ -58,14 +71,27 @@ export default function SongRow({ song, onPlay, onMore }: SongRowProps) {
           onPlay(song);
         }
       }}
-      className="relative flex items-center gap-3 p-3 rounded-lg bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] transition-all duration-150 cursor-pointer active:scale-[0.97] active:bg-[var(--bg-tertiary)]"
+      className={`relative flex items-center gap-3 p-3 rounded-lg hover:bg-[var(--bg-tertiary)] transition-all duration-150 cursor-pointer active:scale-[0.97] active:bg-[var(--bg-tertiary)] ${
+        isCurrentTrack
+          ? 'bg-[var(--accent-soft)] ring-1 ring-[var(--accent)]/40'
+          : 'bg-[var(--bg-secondary)]'
+      }`}
     >
       <div className="w-12 h-12 rounded-lg bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden">
         <CoverImg src={song.coverUrl || ''} />
       </div>
 
       <div className="flex-1 min-w-0">
-        <div className="font-medium truncate">{song.title}</div>
+        <div className={`font-medium truncate flex items-center gap-1.5 ${isCurrentTrack ? 'text-[var(--accent)]' : ''}`}>
+          {isCurrentTrack && (
+            <svg className="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 16 16" fill="currentColor" aria-label="正在播放">
+              <rect x="1" y="6" width="2.5" height="4" rx="1"><animate attributeName="height" values="2;7;2" dur="0.9s" repeatCount="indefinite"/><animate attributeName="y" values="7;4.5;7" dur="0.9s" repeatCount="indefinite"/></rect>
+              <rect x="6.5" y="4" width="2.5" height="8" rx="1"><animate attributeName="height" values="8;3;8" dur="0.9s" repeatCount="indefinite"/><animate attributeName="y" values="4;6.5;4" dur="0.9s" repeatCount="indefinite"/></rect>
+              <rect x="12" y="6" width="2.5" height="4" rx="1"><animate attributeName="height" values="3;7;3" dur="0.9s" repeatCount="indefinite"/><animate attributeName="y" values="6.5;4.5;6.5" dur="0.9s" repeatCount="indefinite"/></rect>
+            </svg>
+          )}
+          <span className="truncate">{song.title}</span>
+        </div>
         <div className="text-sm text-[var(--text-secondary)] truncate">
           {song.artist} {song.album && `· ${song.album}`}
         </div>

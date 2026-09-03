@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Menu } from 'lucide-react';
 import Sidebar from './Sidebar';
 import PlayerBar from '../player/PlayerBar';
@@ -6,15 +7,32 @@ import MobileNav from './MobileNav';
 import ToastContainer from '@shared/components/Toast';
 import { useResponsiveLayout } from '@shared/hooks/useResponsiveLayout';
 import { useSettingsStore } from '@shared/store/settingsStore';
+import { useUiStore } from '@shared/store/uiStore';
 
 interface LayoutProps {
   children: React.ReactNode;
 }
 
 export default function Layout({ children }: LayoutProps) {
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const sidebarOpen = useUiStore((s) => s.sidebarOpen);
+  const setSidebarOpen = useUiStore((s) => s.setSidebarOpen);
   const { isMobile, isMobileLandscape, isTablet, isDesktop } = useResponsiveLayout();
   const carMode = useSettingsStore((s) => s.carMode);
+  const location = useLocation();
+  const mainRef = useRef<HTMLElement>(null);
+
+  // v23 修复走查 #6/#7：路由切换时主滚动容器回到顶部，并重新触发页面过渡动画
+  // （main 是唯一滚动容器，此前从不 scrollTo；page-enter 动画只播一次不再重放）
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0 });
+    const el = mainRef.current;
+    if (el) {
+      el.classList.remove('page-enter');
+      // 强制 reflow 后重加 class，确保动画每次路由切换都重新播放
+      void el.offsetWidth;
+      el.classList.add('page-enter');
+    }
+  }, [location.pathname]);
 
   // 车机模式自动检测时同步body class
   useEffect(() => {
@@ -70,7 +88,7 @@ export default function Layout({ children }: LayoutProps) {
         )}
 
         {/* Main Content */}
-        <main className="flex-1 overflow-y-auto overflow-x-hidden page-enter">
+        <main ref={mainRef} className="flex-1 overflow-y-auto overflow-x-hidden page-enter">
           {/* 移动端顶部标题栏（无sidebar时显示） */}
           {mobileHeaderVisible && (
             <div

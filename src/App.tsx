@@ -1,5 +1,5 @@
 import { Routes, Route } from 'react-router-dom';
-import { useEffect, lazy, Suspense } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import { Capacitor, type PluginListenerHandle } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 import Layout from './components/layout/Layout';
@@ -26,6 +26,8 @@ const VideoPlayerPage = lazy(() => import('./pages/VideoPlayerPage'));
 const FavoritePlaylistsPage = lazy(() => import('./pages/FavoritePlaylistsPage'));
 import { playerEngine } from './core/player';
 import { downloadEngine } from './core/download';
+import { useUiStore } from './shared/store/uiStore';
+import { notifyDownloadDone, notifyDownloadFailed } from './shared/utils/notify';
 import { usePlayerStore } from './shared/store/playerStore';
 import { useDownloadStore } from './shared/store/downloadStore';
 import { usePlaylistStore } from './shared/store/playlistStore';
@@ -36,7 +38,42 @@ import { configureAudioFocus, updateAudioFocusOptions } from './core/player/audi
 import { floatingLyricsBridge } from './core/player/floatingLyricsBridge';
 import { initDatabase } from './shared/database';
 
+/**
+ * v23 修复走查 #7：启动遮罩。
+ * 旧实现（main.tsx LoadingScreen）固定 1400ms 才开始淡出 —— 冷启动人为等待约 2 秒。
+ * 现在遮罩跟随 App 内部数据库初始化：initDatabase 完成（成功或失败）后立即淡出 500ms。
+ */
+function BootOverlay({ visible }: { visible: boolean }) {
+  const [render, setRender] = useState(visible);
+  useEffect(() => {
+    if (!visible) {
+      const tm = window.setTimeout(() => setRender(false), 500);
+      return () => window.clearTimeout(tm);
+    }
+    setRender(true);
+  }, [visible]);
+  if (!render) return null;
+  return (
+    <div
+      className={`fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[var(--bg-primary)] transition-opacity duration-500 ${
+        visible ? 'opacity-100' : 'opacity-0 pointer-events-none'
+      }`}
+    >
+      <svg className="w-14 h-14 mb-8 text-[var(--accent)]" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="6" y="6" width="52" height="52" rx="18" stroke="currentColor" strokeWidth="2" opacity="0.2" />
+        <path d="M24 46V22l20-4v20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        <circle cx="20" cy="46" r="5" stroke="currentColor" strokeWidth="2" fill="none" />
+        <circle cx="40" cy="42" r="5" stroke="currentColor" strokeWidth="2" fill="none" />
+      </svg>
+      <h1 className="text-3xl font-light tracking-[0.2em] mb-3 text-[var(--text-primary)]">音流</h1>
+      <p className="text-sm text-[var(--text-tertiary)] tracking-widest font-light">多音源聚合音乐播放器</p>
+    </div>
+  );
+}
+
 function App() {
+  const [booting, setBooting] = useState(true);
+
   // 启动时同步车机模式到 body class
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -53,17 +90,22 @@ function App() {
     let handle: PluginListenerHandle | null = null;
     let disposed = false;
     CapApp.addListener('backButton', (event) => {
-      // 1) 全屏播放页打开时：收起播放页回到主界面（收起为迷你条），不退出应用
+      // 1) 侧边抽屉打开时：先关闭抽屉（v23 修复走查 #17）
+      if (useUiStore.getState().sidebarOpen) {
+        useUiStore.getState().setSidebarOpen(false);
+        return;
+      }
+      // 2) 全屏播放页打开时：收起播放页回到主界面（收起为迷你条），不退出应用
       if (usePlayerStore.getState().fullscreenOpen) {
         usePlayerStore.getState().setFullscreenOpen(false);
         return;
       }
-      // 2) 处于子页面且有路由历史：正常回退上一页
+      // 3) 处于子页面且有路由历史：正常回退上一页
       if (event.canGoBack) {
         window.history.back();
         return;
       }
-      // 3) 已在主界面且无历史：遵循系统默认行为（退出应用）
+      // 4) 已在主界面且无历史：遵循系统默认行为（退出应用）
       void CapApp.exitApp();
     })
       .then((h) => {
@@ -78,7 +120,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    // 初始化数据库（支持从 IndexedDB 恢复）
+    // 初始化数据库（支持从 IndexedDB 恢复）；无论成败，完成后立即淡出启动遮罩
     initDatabase().then(async () => {
       console.log('[App] Database initialized');
 
@@ -96,6 +138,10 @@ function App() {
 
       // 加载收藏歌单
       await useFavoritePlaylistStore.getState().loadItems();
+    }).catch((err) => {
+      console.error('[App] Database initialization failed, falling back to memory mode:', err);
+    }).finally(() => {
+      setBooting(false);
     });
 
     // 初始化媒体会话（通知栏 / 锁屏 / 硬件按键控制）
@@ -156,11 +202,17 @@ function App() {
     const unsub6 = downloadEngine.on('completed', ({ taskId }) => {
       // 显式把 progress 置 1，兜底某些时序下 stateChange 的 progress 还没刷到 store
       useDownloadStore.getState().updateTaskStatus(taskId, 'completed', { progress: 1 });
+      // v23 修复走查 #5：下载完成发系统通知（Web/Android 自适应，见 shared/utils/notify）
+      const doneTask = useDownloadStore.getState().tasks.find((t) => t.id === taskId);
+      void notifyDownloadDone(doneTask?.title || '新歌曲', doneTask?.artist);
     });
     const unsub7 = downloadEngine.on('failed', ({ taskId, error }) => {
       useDownloadStore.getState().updateTaskStatus(taskId, 'failed', {
         errorMessage: error,
       });
+      // v23 修复走查 #5：下载失败发系统通知
+      const failTask = useDownloadStore.getState().tasks.find((t) => t.id === taskId);
+      void notifyDownloadFailed(failTask?.title || '歌曲', error);
     });
 
     return () => {
@@ -180,6 +232,7 @@ function App() {
 
   return (
     <Layout>
+      <BootOverlay visible={booting} />
       <Suspense fallback={<div className="flex-1 flex items-center justify-center min-h-[50vh]"><div className="w-8 h-8 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" /></div>}>
         <Routes>
           <Route path="/" element={<HomePage />} />

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Settings, Music, Info, Trash2, Check, ListOrdered, Bug, Download, FileText, Moon, SlidersHorizontal, ChevronRight } from 'lucide-react';
 import { useThemeStore } from '../shared/store/themeStore';
@@ -19,15 +19,85 @@ import SleepTimerPanel from '../components/player/SleepTimerPanel';
 
 type TabId = 'general' | 'music' | 'about';
 
+// v23 修复走查 #12：不再向用户透出内部码率字段（如 20900k），只保留面向用户的档位名
 const QUALITY_OPTIONS: Array<{ value: Quality; label: string }> = [
-  { value: Quality.MASTER, label: '超无损母带 (20900k)' },
-  { value: Quality.DOLBY, label: '至臻全景声 (20501k)' },
-  { value: Quality.ZHIZHEN, label: '至臻音质 2.0 (20201k)' },
-  { value: Quality.STANDARD, label: '标准 (128K)' },
-  { value: Quality.HIGH, label: '高品 (320K)' },
-  { value: Quality.LOSSLESS, label: '无损 (FLAC)' },
+  { value: Quality.MASTER, label: '超无损母带' },
+  { value: Quality.DOLBY, label: '至臻全景声' },
+  { value: Quality.ZHIZHEN, label: '至臻音质 2.0' },
+  { value: Quality.STANDARD, label: '标准 128K' },
+  { value: Quality.HIGH, label: '高品 320K' },
+  { value: Quality.LOSSLESS, label: '无损 FLAC' },
   { value: Quality.HIRES, label: 'Hi-Res' },
 ];
+
+/**
+ * v23 修复走查 #13：自定义下拉组件，替代原生 <select>，与整体视觉风格统一。
+ * 点击展开选项浮层；点击外部或选项后收起。
+ */
+function SettingsSelect<T extends string | number>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: Array<{ value: T; label: string }>;
+  onChange: (v: T) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const current = options.find((o) => o.value === value);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="min-w-[9rem] flex items-center justify-between gap-2 px-3 py-1.5 rounded-xl text-sm bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] text-[var(--text-primary)] hover:border-[var(--accent)]/40 transition-colors focus-ring"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className="truncate">{current?.label ?? String(value)}</span>
+        <svg className={`w-3.5 h-3.5 text-[var(--text-tertiary)] transition-transform flex-shrink-0 ${open ? 'rotate-180' : ''}`} fill="currentColor" viewBox="0 0 24 24">
+          <path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z" />
+        </svg>
+      </button>
+      {open && (
+        <div
+          className="absolute right-0 z-50 mt-1.5 min-w-[11rem] max-h-56 overflow-y-auto rounded-xl bg-[var(--bg-secondary)] border border-[var(--border)] shadow-xl py-1"
+          role="listbox"
+        >
+          {options.map((o) => (
+            <button
+              key={String(o.value)}
+              onClick={() => {
+                onChange(o.value);
+                setOpen(false);
+              }}
+              className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between gap-2 transition-colors ${
+                o.value === value
+                  ? 'text-[var(--accent)] bg-[var(--accent-soft)]'
+                  : 'text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+              }`}
+              role="option"
+              aria-selected={o.value === value}
+            >
+              <span className="truncate">{o.label}</span>
+              {o.value === value && <Check className="w-3.5 h-3.5 flex-shrink-0" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function SettingsPage() {
   const { mode, setMode } = useThemeStore();
@@ -40,8 +110,11 @@ export default function SettingsPage() {
   const { preferredQuality, enabledSources, downloadQuality, maxConcurrentDownloads, downloadDir,
     autoResumeOnAudioFocus, enableNotificationControls, dismissNotificationOnPause, debugMode, enableFloatingLyrics,
     setPreferredQuality, setSourceEnabled, setDownloadQuality, setMaxConcurrentDownloads,
-    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause, setDebugMode, setFloatingLyricsEnabled, clearAllSettings } =
+    setAutoResumeOnAudioFocus, setEnableNotificationControls, setDismissNotificationOnPause, setDebugMode, setFloatingLyricsEnabled, clearAllSettings, setDownloadDir } =
     useSettingsStore();
+
+  // v23 修复走查 #11：下载目录编辑草稿（跟随持久化值同步）
+  const [downloadDirDraft, setDownloadDirDraft] = useState(downloadDir);
 
   const sources = sourceRegistry.getAll();
 
@@ -68,7 +141,9 @@ export default function SettingsPage() {
     setTimeout(() => setCleanDone(null), 2000);
   };
 
+  // v23 修复走查 #9：恢复默认设置前二次确认（不可逆，会重置音源开关/音质偏好/下载设置）
   const handleClearAll = () => {
+    if (!window.confirm('确定要恢复默认设置吗？音源开关、音质偏好、下载设置等都会被重置。')) return;
     clearAllSettings();
     useSearchStore.getState().clearHistory();
     setCleanDone('all');
@@ -332,33 +407,43 @@ export default function SettingsPage() {
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-[var(--text-primary)]">默认下载音质</span>
-                  <select
-                    className="yinliu-input text-sm py-1"
+                  <SettingsSelect
                     value={downloadQuality}
-                    onChange={(e) => setDownloadQuality(e.target.value as Quality)}
-                  >
-                    {QUALITY_OPTIONS.map((q) => (
-                      <option key={q.value} value={q.value}>{q.label}</option>
-                    ))}
-                  </select>
+                    options={QUALITY_OPTIONS.map((q) => ({ value: q.value, label: q.label }))}
+                    onChange={(v) => setDownloadQuality(v)}
+                  />
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-[var(--text-primary)]">最大并发下载数</span>
-                  <select
-                    className="yinliu-input text-sm py-1"
+                  <SettingsSelect
                     value={maxConcurrentDownloads}
-                    onChange={(e) => setMaxConcurrentDownloads(Number(e.target.value))}
-                  >
-                    {[1, 2, 3, 5].map((n) => (
-                      <option key={n} value={n}>{n}</option>
-                    ))}
-                  </select>
+                    options={[1, 2, 3, 5].map((n) => ({ value: n, label: String(n) }))}
+                    onChange={(v) => setMaxConcurrentDownloads(v)}
+                  />
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-[var(--text-primary)]">下载目录</span>
-                  <span className="text-xs text-[var(--text-tertiary)] font-mono break-all max-w-[60%] text-right">
-                    {downloadDir}
-                  </span>
+                {/* v23 修复走查 #11：下载目录改为可编辑（应用私有数据目录下的相对路径，保存后立即生效） */}
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm text-[var(--text-primary)]">下载目录</span>
+                    <div className="flex gap-2">
+                      <input
+                        className="yinliu-input text-xs py-1.5 w-44 font-mono text-right"
+                        value={downloadDirDraft}
+                        placeholder="如 yinliu/downloads"
+                        onChange={(e) => setDownloadDirDraft(e.target.value)}
+                      />
+                      <button
+                        onClick={() => setDownloadDir(downloadDirDraft)}
+                        disabled={downloadDirDraft.trim() === downloadDir || !downloadDirDraft.trim()}
+                        className="px-3 py-1.5 rounded-xl text-xs bg-[var(--accent)] text-white disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-opacity flex-shrink-0"
+                      >
+                        保存
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-[var(--text-tertiary)] leading-relaxed">
+                    相对于应用私有数据目录；修改后新下载任务立即使用新目录，已下载文件不受影响
+                  </p>
                 </div>
               </div>
             </div>

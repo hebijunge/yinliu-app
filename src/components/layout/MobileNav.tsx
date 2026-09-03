@@ -18,7 +18,7 @@ export default function MobileNav() {
             to={item.to}
             end={item.to === '/'}
             className={({ isActive }) =>
-              `mobile-nav-item flex flex-col items-center justify-center gap-0.5 flex-1 py-1 ${
+              `mobile-nav-item flex flex-col items-center justify-center gap-0.5 flex-1 py-1 transition-transform duration-100 active:scale-90 ${
                 isActive ? 'text-[var(--accent)]' : 'text-[var(--text-tertiary)]'
               }`
             }

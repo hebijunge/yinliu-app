@@ -8,7 +8,8 @@ import { create } from 'zustand';
  * 设计目标：
  * 1. 不引入新依赖，复用 lucide-react + zustand（项目已有）
  * 2. 失败降级链用 info（蓝色）级；真正的不可恢复错误用 error 级
- * 3. 默认 3 秒自动消失，最多同时展示 3 条
+ * 3. 默认 3 秒自动消失（error 级延长到 5 秒，给用户足够阅读时间），最多同时展示 3 条
+ * 4. v23：位置从右上角改到底部居中——移动端拇指可达区，符合移动端 Toast 惯例
  */
 
 export type ToastType = 'info' | 'success' | 'error';
@@ -36,7 +37,13 @@ export const useToastStore = create<ToastState>((set) => ({
   toasts: [],
   push: (t) => {
     const id = nextId();
-    const item: ToastItem = { id, duration: 3000, ...t };
+    const item: ToastItem = {
+      id,
+      duration: t.duration ?? (t.type === 'error' ? 5000 : 3000),
+      message: t.message,
+      description: t.description,
+      type: t.type,
+    };
     set((s) => ({ toasts: [...s.toasts, item].slice(-3) }));
     return id;
   },
@@ -98,7 +105,7 @@ function ToastCard({ item, onDismiss }: { item: ToastItem; onDismiss: (id: strin
   );
 }
 
-/** Toast 容器：放在 Layout 顶层固定右下角 */
+/** Toast 容器：放在 Layout 顶层，底部居中（避开 PlayerBar / 底部导航） */
 export default function ToastContainer() {
   const toasts = useToastStore((s) => s.toasts);
   const dismiss = useToastStore((s) => s.dismiss);
@@ -107,7 +114,7 @@ export default function ToastContainer() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="fixed top-4 right-4 z-[200] flex flex-col gap-2 max-w-sm pointer-events-none">
+    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[200] flex flex-col gap-2 max-w-sm w-[calc(100%-2rem)] sm:w-auto pointer-events-none">
       {toasts.map((t) => (
         <ToastCard key={t.id} item={t} onDismiss={onDismiss} />
       ))}
