@@ -377,7 +377,7 @@ function walkBoxes(data: Uint8Array, start: number, end: number): Mp4Box[] {
       // extended size
       if (offset + 16 > end) break;
       const extSize = readUint64(data, offset + 8);
-      if (extSize <= 0 || offset + extSize > end) break;
+      if (extSize <= 0 || offset + Number(extSize) > end) break;
       const box: Mp4Box = {
         type,
         offset,
@@ -536,6 +536,10 @@ function readUint32(data: Uint8Array, offset: number): number {
     (data[offset + 2] << 8) |
     data[offset + 3]
   ) >>> 0;
+}
+
+function readUint16(data: Uint8Array, offset: number): number {
+  return (data[offset] << 8) | data[offset + 1];
 }
 
 function readUint24(data: Uint8Array, offset: number): number {
