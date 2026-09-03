@@ -131,6 +131,15 @@ export interface PlayUrlResult {
   ekey?: string;
   /** CENC 解密密钥（汽水音乐 track.php 返回的 decrypt_key） */
   decryptKey?: string;
+  /**
+   * v21.4: 咪咕 Z3D 解密信息（流式播放/下载时通过 3D60 已知明文攻击提取密钥）
+   */
+  z3dDecryptInfo?: {
+    /** Z3D 加密音频直链 */
+    z3dUrl: string;
+    /** 3D60 明文试听直链（用于已知明文攻击提取密钥） */
+    p3dUrl: string;
+  };
 }
 
 export interface SongDetail {

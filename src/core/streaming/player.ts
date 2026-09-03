@@ -19,6 +19,7 @@ import { streamCacheEngine, type CacheEntry } from './cache';
 import { detectMSECapability, isMSEAvailable } from './mseDetector';
 import { debugLogger } from '@shared/utils/debugLogger';
 import { QishuiCencDecryptor } from '@providers/music/QishuiCencDecryptor';
+import { fetchZ3dKey, createZ3dDecryptStream } from '@shared/audio/crypto';
 
 export type StreamingState =
   | 'idle'
@@ -48,6 +49,13 @@ interface StreamingOptions {
   isEncrypted?: boolean;
   /** v21.3: CENC 解密密钥（isEncrypted=true 时必填） */
   decryptKey?: string;
+  /**
+   * v21.4: 咪咕 Z3D 解密信息（z3dUrl + p3dUrl，播放前通过 3D60 已知明文攻击提取密钥）
+   */
+  z3dDecryptInfo?: {
+    z3dUrl: string;
+    p3dUrl: string;
+  };
 }
 
 const PRELOAD_THRESHOLD = 0.5; // 播放进度超过 50% 时预取下一首
@@ -158,6 +166,33 @@ class StreamingAudioPlayer {
       }
 
       await this.loadEncryptedStream(options);
+      return;
+    }
+
+    // v21.4: 咪咕 Z3D 加密流式播放（fetch + Z3D decryptStream + Blob 刷新）
+    if (options.z3dDecryptInfo) {
+      this.isEncryptedStream = true;
+      this.useMSE = false;
+      debugLogger.info('streaming', 'StreamingAudioPlayer.load (Z3D)', {
+        cacheKey: options.cacheKey,
+        mimeType: this.mimeType,
+      });
+
+      // 初始化缓存
+      await streamCacheEngine.init();
+      this.cacheEntry = await streamCacheEngine.getOrCreateEntry(
+        options.cacheKey,
+        options.format || 'wav'
+      );
+
+      // 如果缓存中已有完整文件，直接播放本地缓存
+      if (this.cacheEntry.totalSize > 0 && this.isCacheComplete()) {
+        debugLogger.info('streaming', 'Playing Z3D stream from complete cache');
+        await this.playFromCache();
+        return;
+      }
+
+      await this.loadZ3dStream(options);
       return;
     }
 
@@ -340,6 +375,136 @@ class StreamingAudioPlayer {
       }
       this.setState('error');
       this.callbacks.onError?.(err instanceof Error ? err.message : 'Encrypted stream failed');
+      throw err;
+    } finally {
+      reader.releaseLock();
+      this.encryptedStreamAbortController = null;
+    }
+  }
+
+  /**
+   * v21.4: 加载咪咕 Z3D 加密流（fetch + Z3D decryptStream + Blob 刷新）
+   * P2: 大文件内存控制——起播后定期清空内存 chunks，数据已落地缓存
+   */
+  private async loadZ3dStream(options: StreamingOptions): Promise<void> {
+    if (!options.z3dDecryptInfo) {
+      throw new Error('z3dDecryptInfo is required for Z3D stream');
+    }
+
+    this.encryptedStreamAbortController = new AbortController();
+
+    // 1. 通过 3D60 已知明文攻击提取 Z3D 密钥
+    debugLogger.info('streaming', 'Z3D: extracting key via known-plaintext attack');
+    let key: Uint8Array;
+    try {
+      key = await fetchZ3dKey(
+        options.z3dDecryptInfo.z3dUrl,
+        options.z3dDecryptInfo.p3dUrl,
+        options.headers
+      );
+      debugLogger.info('streaming', 'Z3D: key extracted successfully');
+    } catch (keyErr) {
+      this.setState('error');
+      this.callbacks.onError?.(
+        `Z3D 密钥提取失败: ${keyErr instanceof Error ? keyErr.message : String(keyErr)}`
+      );
+      throw keyErr;
+    }
+
+    // 2. 创建解密流并发起 Z3D 下载
+    const decryptStream = createZ3dDecryptStream(key);
+    const response = await fetch(options.z3dDecryptInfo.z3dUrl, {
+      method: 'GET',
+      headers: options.headers,
+      signal: this.encryptedStreamAbortController.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Z3D stream fetch failed: ${response.status} ${response.statusText}`);
+    }
+    if (!response.body) {
+      throw new Error('Z3D stream response has no body');
+    }
+
+    const decryptedStream = response.body.pipeThrough(decryptStream);
+    const reader = decryptedStream.getReader();
+
+    this.setState('loading');
+
+    const MIN_START_SIZE = 256 * 1024;
+    let totalReceived = 0;
+    let chunkIndex = 0;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const start = totalReceived;
+        const end = start + value.length - 1;
+        this.chunks.push({ data: value, start, end });
+        totalReceived += value.length;
+        this.totalDownloaded = totalReceived;
+
+        // 写入缓存
+        await streamCacheEngine.appendData(this.cacheKey, value, start);
+
+        // 首次达到起播阈值时开始播放
+        if (this.state === 'loading' && totalReceived >= MIN_START_SIZE) {
+          debugLogger.info('streaming', 'Z3D stream first chunk ready', {
+            cacheKey: this.cacheKey,
+            received: totalReceived,
+          });
+          await this.onFirstChunkReady();
+          // P2: Z3D 大文件内存控制——起播后清空内存 chunks，数据已落地缓存
+          this.chunks = [];
+          debugLogger.info('streaming', 'Z3D: cleared in-memory chunks after first playback', {
+            cacheKey: this.cacheKey,
+          });
+        }
+
+        // 后续 chunks：定期刷新 blob URL
+        if (chunkIndex > 0 && !this.useMSE) {
+          const shouldRefreshBySize =
+            this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
+          if (shouldRefreshBySize) {
+            await this.setupBlobPlayback();
+            this.lastRefreshDownloaded = this.totalDownloaded;
+            // P2: Z3D 大文件内存控制——刷新后清空内存 chunks，数据已落地缓存
+            this.chunks = [];
+            debugLogger.info('streaming', 'Z3D: cleared in-memory chunks after blob refresh', {
+              cacheKey: this.cacheKey,
+              totalDownloaded: this.totalDownloaded,
+            });
+          }
+        }
+
+        chunkIndex++;
+      }
+
+      // 流结束后的处理
+      if (this.state === 'loading') {
+        // 数据量不足 MIN_START_SIZE，但流已结束，直接播放
+        await this.onFirstChunkReady();
+        this.chunks = []; // P2
+      } else if (!this.useMSE && this.chunks.length > 0) {
+        // 最终刷新 blob
+        debugLogger.info('streaming', 'Z3D stream completed, final blob refresh');
+        await this.setupBlobPlayback();
+        this.chunks = []; // P2
+      }
+
+      this.totalSize = totalReceived;
+      if (this.cacheKey && this.totalSize > 0) {
+        await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
+      }
+    } catch (err) {
+      if (this.encryptedStreamAbortController?.signal.aborted) {
+        // 正常取消，不报错
+        return;
+      }
+      this.setState('error');
+      this.callbacks.onError?.(err instanceof Error ? err.message : 'Z3D stream failed');
       throw err;
     } finally {
       reader.releaseLock();
@@ -578,9 +743,39 @@ class StreamingAudioPlayer {
   private async setupBlobPlayback(): Promise<void> {
     // 合并所有 chunks
     const allData = this.mergeChunks();
+
+    // v21.4 P2: Z3D 大文件内存控制——chunks 已清空时直接从缓存构造 blob
     if (allData.length === 0) {
-      debugLogger.warn('streaming', 'setupBlobPlayback: merged data is empty');
-      return;
+      try {
+        const newUrl = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
+        const currentTime = this.audio?.currentTime ?? 0;
+        if (this.blobUrl) {
+          URL.revokeObjectURL(this.blobUrl);
+        }
+        this.blobUrl = newUrl;
+        if (!this.audio) {
+          await this.setupAudioWithReadyWait(newUrl);
+        } else {
+          this.audio.src = newUrl;
+          if (currentTime > 0) {
+            this.audio.currentTime = currentTime;
+          }
+          try {
+            await this.audio.play();
+          } catch {
+            // 自动播放策略可能阻止
+          }
+        }
+        debugLogger.info('streaming', 'Blob refresh from cache (chunks cleared)', {
+          cacheKey: this.cacheKey,
+        });
+        return;
+      } catch (cacheErr) {
+        debugLogger.warn('streaming', 'setupBlobPlayback: chunks empty and cache read failed', {
+          error: cacheErr instanceof Error ? cacheErr.message : String(cacheErr),
+        });
+        return;
+      }
     }
 
     // 文件完整性校验

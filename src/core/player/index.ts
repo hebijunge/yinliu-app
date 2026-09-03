@@ -447,7 +447,8 @@ export class PlayerEngine {
           actualSourceId,
           result.isEncrypted,
           result.decryptKey,
-          result.ekey
+          result.ekey,
+          result.z3dDecryptInfo
         );
       } else {
         await this.loadAndPlay(url, track);
@@ -551,6 +552,7 @@ export class PlayerEngine {
     isEncrypted?: boolean,
     decryptKey?: string,
     ekey?: string,
+    z3dDecryptInfo?: { z3dUrl: string; p3dUrl: string },
   ): Promise<void> {
     this.isStreaming = true;
     this.streamingCurrentUrl = url;
@@ -592,6 +594,81 @@ export class PlayerEngine {
 
       // 设置回调
       streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
+      return;
+    }
+
+    // v21.4: 咪咕 Z3D 加密流式播放
+    if (z3dDecryptInfo) {
+      debugLogger.info('player', 'Z3D 加密流，启动流式解密播放', {
+        track: track.title,
+        sourceId: actualSourceId || track.sourceId,
+      });
+      try {
+        await streamingAudioPlayer.load({
+          url,
+          headers,
+          cacheKey,
+          format,
+          z3dDecryptInfo,
+        });
+      } catch (err) {
+        debugLogger.error('player', 'Z3D 流式解密播放失败', {
+          track: track.title,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw new Error(
+          `Z3D 流式解密播放失败: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+
+      // 设置回调
+      streamingAudioPlayer.setCallbacks({
+        onStateChange: (streamState: StreamingState) => {
+          const stateMap: Record<StreamingState, PlayerState> = {
+            idle: 'idle',
+            loading: 'loading',
+            ready: 'loading',
+            playing: 'playing',
+            paused: 'paused',
+            buffering: 'loading',
+            seeking: 'loading',
+            completed: 'idle',
+            error: 'error',
+          };
+          const mapped = stateMap[streamState];
+          if (mapped && mapped !== this.state) {
+            this.setState(mapped, streamState === 'playing' ? 'user' : 'engine');
+          }
+        },
+        onProgress: (currentTime: number, duration: number) => {
+          this.emit('progress', {
+            currentTime,
+            duration,
+            progress: duration > 0 ? currentTime / duration : 0,
+          });
+          void updatePosition(currentTime, duration);
+
+          if (duration > 0 && currentTime / duration > 0.5 && !this.prefetchTriggered) {
+            this.prefetchTriggered = true;
+            void this.prefetchNextTrack();
+          }
+        },
+        onError: (message: string) => {
+          this.setState('error', 'system');
+          this.emit('error', { message });
+          debugLogger.error('player', `流式播放错误: ${track.title}`, { message });
+        },
+        onEnded: () => {
+          this.setState('idle', 'engine');
+          this.stopProgressTracking();
+          this.emit('ended', undefined);
+          debugLogger.info('player', `流式播放结束: ${track.title}`);
+        },
+        onCanPlay: () => {
+          this.setState('playing', 'user');
+          this.startProgressTracking();
+        },
+      });
       return;
     }
 
@@ -753,7 +830,8 @@ export class PlayerEngine {
 
       // 流式模式下同时预取首块数据
       // v21.3: 加密流不支持 Range 预取，跳过流式首块预取（prefetchCache 已存储 URL+decryptKey）
-      if (nextTrack.sourceId !== 'local' && !result.isEncrypted) {
+      // v21.4: Z3D 同样需要密钥提取，跳过 Range 预取
+      if (nextTrack.sourceId !== 'local' && !result.isEncrypted && !result.z3dDecryptInfo) {
         try {
           // v20.1-fix: 流式缓存 key 用 actualSourceId，避免降级后缓存串读
           const streamCacheKey = `${actualSourceId}_${nextTrack.sourceSongId}_${this.lastQuality}`;

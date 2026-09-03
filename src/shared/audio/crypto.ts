@@ -88,6 +88,75 @@ export function decryptZ3d(cipher: Uint8Array, key: Uint8Array): Uint8Array {
   return decryptZ3dChunk(new Uint8Array(cipher), key, 0);
 }
 
+/**
+ * 创建 Z3D 流式解密 TransformStream
+ * v21.4: 用于在线播放「边下载边解密边播放」
+ * @param key 32字节循环密钥
+ * @returns TransformStream<Uint8Array, Uint8Array>
+ */
+export function createZ3dDecryptStream(key: Uint8Array): TransformStream<Uint8Array, Uint8Array> {
+  if (key.length !== Z3D_KEY_LEN) {
+    throw new Error(`Z3D 密钥长度必须是 ${Z3D_KEY_LEN} 字节，实际 ${key.length} 字节`);
+  }
+
+  let totalOffset = 0;
+
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      const plain = new Uint8Array(chunk.length);
+      for (let i = 0; i < chunk.length; i++) {
+        const ki = (totalOffset + i) % Z3D_KEY_LEN;
+        plain[i] = (chunk[i] - key[ki]) & 0xff;
+      }
+      totalOffset += chunk.length;
+      controller.enqueue(plain);
+    },
+  });
+}
+
+/**
+ * 通过 Range 请求获取 Z3D 解密密钥（3D60 已知明文攻击）
+ * v21.4: 播放/下载前调用，提取 32 字节动态密钥
+ * @param z3dUrl Z3D 加密音频直链
+ * @param p3dUrl 3D60 明文试听直链
+ * @param headers 请求头（咪咕需要 birth/channel/Referer 等）
+ * @returns 32字节循环密钥
+ */
+export async function fetchZ3dKey(
+  z3dUrl: string,
+  p3dUrl: string,
+  headers?: Record<string, string>
+): Promise<Uint8Array> {
+  // 1. Range 请求 3D60 前32字节（已知明文，标准WAV头）
+  const p3dResp = await fetch(p3dUrl, {
+    method: 'GET',
+    headers: { ...headers, Range: 'bytes=0-31' },
+  });
+  if (!p3dResp.ok) {
+    throw new Error(`3D60 前32字节下载失败: ${p3dResp.status}`);
+  }
+  const p3dFirst32 = new Uint8Array(await p3dResp.arrayBuffer());
+  if (p3dFirst32.length < Z3D_KEY_LEN) {
+    throw new Error(`3D60 前32字节不足: ${p3dFirst32.length} 字节`);
+  }
+
+  // 2. Range 请求 Z3D 前32字节（密文）
+  const z3dResp = await fetch(z3dUrl, {
+    method: 'GET',
+    headers: { ...headers, Range: 'bytes=0-31' },
+  });
+  if (!z3dResp.ok) {
+    throw new Error(`Z3D 前32字节下载失败: ${z3dResp.status}`);
+  }
+  const z3dFirst32 = new Uint8Array(await z3dResp.arrayBuffer());
+  if (z3dFirst32.length < Z3D_KEY_LEN) {
+    throw new Error(`Z3D 前32字节不足: ${z3dFirst32.length} 字节`);
+  }
+
+  // 3. 已知明文攻击提取密钥
+  return extractZ3dKey(z3dFirst32, p3dFirst32);
+}
+
 // ======== 汽水音乐 CENC + AES-128-CTR 解密 ========
 
 interface IsobmffBox {

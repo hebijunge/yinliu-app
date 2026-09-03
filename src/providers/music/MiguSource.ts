@@ -1,14 +1,15 @@
-import { BaseHttpSource } from './BaseHttpSource';
+import { BaseHttpSource, type ResolvedCandidate } from './BaseHttpSource';
 import { Quality } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, TierSizes, PlaylistSummary, QualityOption, QualityTier } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, TierSizes, QualityOption, QualityTier, PlayUrlResult } from '@core/types';
 import { YinliuError, ErrorCode } from '@core/types';
 import { debugLogger } from '@shared/utils/debugLogger';
+import { decryptH5v24Response } from '@shared/audio/crypto';
 
 /**
  * 咪咕音乐音源Provider
- * 接口：app.c.nf.migu.cn / pd.musicapp.migu.cn（JSON API）
- * 特色：URL派生法（PQ→HQ/SQ/ZQ24替换目录+扩展名），免登录全音质
- * 并发：官方listen接口 + URL派生 + 第三方代理
+ * v21.4: 接入 h5v2.4 加密取链 + URL派生法 + Z3D 流式解密支持
+ * 接口：app.c.nf.migu.cn / pd.musicapp.migu.cn / c.musicapp.migu.cn（h5v2.4）
+ * 特色：h5v2.4 免登录绕过版权限制，URL派生全音质，Z3D 需流式解密
  */
 export class MiguSource extends BaseHttpSource {
   readonly id = 'migu';
@@ -16,10 +17,64 @@ export class MiguSource extends BaseHttpSource {
   readonly maxQuality = Quality.HIRES;
   private readonly apiBase = 'https://app.c.nf.migu.cn';
   private readonly bmwBase = 'https://pd.musicapp.migu.cn/MIGU/3.0.0/v2.0/content';
+  private readonly h5v24Base = 'https://c.musicapp.migu.cn/strategy/listen-url/h5/v2.4';
+
+  /** h5v2.4 必需请求头 */
+  private readonly h5v24Headers: Record<string, string> = {
+    birth: 'h5page',
+    channel: '014X031',
+    Referer: 'https://y.migu.cn/',
+    'location-data': '30.6698676660,104.1229614820',
+    'location-info': '',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  };
+
+  /** contentId → copyrightId 缓存 */
+  private copyrightIdCache = new Map<string, string>();
+  /** 当前取链的 copyrightId（由 getPlayUrl 覆写设置） */
+  private currentCopyrightId: string | null = null;
 
   /**
-   * 搜索歌曲
+   * v21.4: 覆写 getPlayUrl，先获取 copyrightId 再调用父类竞速逻辑
    */
+  async getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal): Promise<PlayUrlResult> {
+    const contentId = this.extractContentId(songId);
+    let copyrightId = this.copyrightIdCache.get(contentId);
+    if (!copyrightId) {
+      copyrightId = await this.fetchCopyrightId(contentId);
+      if (copyrightId) {
+        this.copyrightIdCache.set(contentId, copyrightId);
+      }
+    }
+    this.currentCopyrightId = copyrightId || contentId;
+    return super.getPlayUrl(songId, quality, signal);
+  }
+
+  /**
+   * 通过 resourceinfo.do 获取 copyrightId
+   */
+  private async fetchCopyrightId(contentId: string): Promise<string | null> {
+    try {
+      const url = `https://c.musicapp.migu.cn/MIGUM2.0/v1.0/content/resourceinfo.do?resourceId=${contentId}&resourceType=2`;
+      const resp = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36',
+          Accept: 'application/json',
+          Referer: 'https://y.migu.cn/',
+        },
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json().catch(() => null);
+      const res = data?.resource?.[0];
+      const cid = res?.copyrightId || res?.contentId || '';
+      return cid ? String(cid) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // === 搜索 ===
+
   async search(params: SearchParams): Promise<SearchResult[]> {
     const page = params.page || 0;
     const pageSize = params.pageSize || 30;
@@ -54,6 +109,11 @@ export class MiguSource extends BaseHttpSource {
 
   private mapSearchResult(item: any): SearchResult {
     const contentId = item.contentId || item.copyrightId || item.id || '';
+    const copyrightId = item.copyrightId || '';
+    if (contentId && copyrightId && String(copyrightId) !== String(contentId)) {
+      this.copyrightIdCache.set(String(contentId), String(copyrightId));
+    }
+
     const newRateFormats = item.newRateFormats || [];
 
     // 找出最高音质
@@ -74,7 +134,7 @@ export class MiguSource extends BaseHttpSource {
       }
     }
 
-    // v19.1：搜索结果的音质大小（best-effort，newRateFormats/rateFormats/audioFormats 任一携带即取）
+    // v19.1：搜索结果的音质大小
     const sizes = this.extractSizes(item);
 
     return {
@@ -94,11 +154,7 @@ export class MiguSource extends BaseHttpSource {
   }
 
   /**
-   * v19.1 从咪咕各形态响应中提取每档文件大小（字节）：
-   * - newRateFormats: {formatType(PQ/HQ/SQ/ZQ24), size, androidSize}
-   * - rateFormats:    {formatType(LQ/PQ/HQ/SQ), size, androidSize}
-   * - audioFormats:   {formatType, isize, resourceType}
-   * 档位映射：ZQ24/ZQ/Hires→Hi-Res，SQ→无损，HQ→320K，PQ→128K（LQ 48K 不展示）。
+   * v19.1 从咪咕各形态响应中提取每档文件大小（字节）
    */
   private extractSizes(item: any): TierSizes {
     const sizes: TierSizes = {};
@@ -125,9 +181,7 @@ export class MiguSource extends BaseHttpSource {
   }
 
   /**
-   * v19.1 音质弹窗实时查询：resourceinfo.do 歌曲详情（resourceType=2），
-   * 返回 rateFormats/newRateFormats 各档文件大小。
-   * 文档：咪咕音乐接口完整文档 §4.1 歌曲详情 resourceType=2（实测可用）。
+   * v19.1 音质弹窗实时查询
    */
   async getQualityOptions(songId: string): Promise<QualityOption[]> {
     const contentId = this.extractContentId(songId);
@@ -157,9 +211,8 @@ export class MiguSource extends BaseHttpSource {
     }
   }
 
-  /**
-   * 获取歌曲详情
-   */
+  // === 歌曲详情 ===
+
   async getSongDetail(songId: string): Promise<SongDetail> {
     const contentId = this.extractContentId(songId);
 
@@ -206,9 +259,8 @@ export class MiguSource extends BaseHttpSource {
     };
   }
 
-  /**
-   * 获取歌词
-   */
+  // === 歌词 ===
+
   async getLyrics(songId: string): Promise<string | null> {
     const contentId = this.extractContentId(songId);
 
@@ -226,9 +278,8 @@ export class MiguSource extends BaseHttpSource {
     }
   }
 
-  /**
-   * 融合分类名 → 咪咕标签名别名映射（咪咕标签树里没有同名的分类）
-   */
+  // === 歌单分类 ===
+
   private static readonly MIGU_TAG_ALIASES: Record<string, string> = {
     华语: '国语',
     日韩: '日语',
@@ -238,9 +289,6 @@ export class MiguSource extends BaseHttpSource {
     影视原声: '电影',
   };
 
-  /**
-   * 按融合固定分类拉取歌单列表：taglist 匹配标签 → listbytag（咪咕歌单广场真实分类接口）
-   */
   async getPlaylistsByCategory(categoryName: string, page = 0): Promise<PlaylistSummary[]> {
     try {
       const tagId = await this.resolveMiguTagId(categoryName);
@@ -270,7 +318,6 @@ export class MiguSource extends BaseHttpSource {
     }
   }
 
-  /** 从 taglist 接口匹配分类名对应的 tagId（缓存） */
   private miguTagCache: Map<string, string> | null = null;
   private async resolveMiguTagId(categoryName: string): Promise<string> {
     if (!this.miguTagCache) {
@@ -289,7 +336,7 @@ export class MiguSource extends BaseHttpSource {
           }
         }
       } catch {
-        /* 缓存留空，匹配不到时返回空列表 */
+        /* 缓存留空 */
       }
     }
     const alias = MiguSource.MIGU_TAG_ALIASES[categoryName];
@@ -301,9 +348,8 @@ export class MiguSource extends BaseHttpSource {
     );
   }
 
-  /**
-   * 获取歌单详情
-   */
+  // === 歌单详情 ===
+
   async getPlaylist(playlistId: string) {
     try {
       const url = `${this.bmwBase}/queryMusiclistSongs.do?musicListId=${playlistId}&pageSize=100`;
@@ -330,12 +376,7 @@ export class MiguSource extends BaseHttpSource {
     }
   }
 
-  /**
-   * 解析歌单URL
-   */
   async parsePlaylistUrl(url: string) {
-    // 咪咕歌单URL格式：
-    // https://music.migu.cn/v3/music/playlist/123456789
     const match = url.match(/playlist[\/](\d+)/);
     if (!match) {
       throw new YinliuError(ErrorCode.VALIDATION_ERROR, '无法解析咪咕歌单URL', 400);
@@ -343,18 +384,39 @@ export class MiguSource extends BaseHttpSource {
     return this.getPlaylist(match[1]);
   }
 
-  /**
-   * 构建取链候选端点
-   * 包含：官方listen接口 + URL派生法 + 第三方代理
-   */
-  protected buildEndpointCandidates(songId: string, quality: Quality) {
-    const contentId = this.extractContentId(songId);
-    const candidates = [];
+  // === 取链（v21.4 核心改造）===
 
-    // 官方listen接口
+  /**
+   * v21.4: 构建取链候选端点
+   * 优先级：h5v2.4(0) > listenUrl.do fallback(1) > URL派生 fallback(1) > 第三方代理(2)
+   */
+  protected buildEndpointCandidates(songId: string, quality: Quality): ResolvedCandidate[] {
+    const contentId = this.extractContentId(songId);
+    const copyrightId = this.currentCopyrightId || contentId;
+    const candidates: ResolvedCandidate[] = [];
+
+    // 1. h5v2.4 加密取链（主链路，唯一能绕过版权限制的接口）
+    const h5v24Url =
+      `${this.h5v24Base}?contentId=${encodeURIComponent(contentId)}` +
+      `&copyrightId=${encodeURIComponent(copyrightId)}` +
+      `&resourceType=2&netType=01&toneFlag=PQ&scene=&lowerQualityContentId=${encodeURIComponent(contentId)}`;
+
+    candidates.push({
+      url: h5v24Url,
+      method: 'GET',
+      timeout: 12000,
+      priority: 0,
+      headers: this.h5v24Headers,
+      key: `h5v24_${contentId}`,
+      resolve: async (response: Response) => {
+        return this.resolveH5v24Response(response, quality);
+      },
+    });
+
+    // 2. listenUrl.do 明文取链（fallback）
     candidates.push({
       url: `${this.apiBase}/MIGU/3.0.0/v2.0/content/listenUrl.do?contentId=${contentId}&resourceType=2&purpose=1&channel=0`,
-      method: 'GET' as const,
+      method: 'GET',
       timeout: 8000,
       priority: 1,
       headers: {
@@ -362,21 +424,21 @@ export class MiguSource extends BaseHttpSource {
       },
     });
 
-    // URL派生法：通过PQ URL派生HQ/SQ/ZQ24
+    // 3. URL派生法 fallback（基于固定模板，不依赖 h5v2.4）
     const derivedUrls = this.buildDerivedUrls(contentId, quality);
     for (const url of derivedUrls) {
       candidates.push({
         url,
-        method: 'GET' as const,
+        method: 'GET',
         timeout: 10000,
         priority: 1,
       });
     }
 
-    // 第三方代理
+    // 4. 第三方代理
     candidates.push({
       url: `https://migu-api-enhanced.example/v1/song/url?id=${contentId}&quality=${this.mapQualityToParam(quality)}`,
-      method: 'GET' as const,
+      method: 'GET',
       timeout: 10000,
       priority: 2,
     });
@@ -385,33 +447,216 @@ export class MiguSource extends BaseHttpSource {
   }
 
   /**
-   * URL派生法：从PQ（标准音质）URL派生HQ/SQ/ZQ24 URL
-   * 原理：替换目录名和扩展名，CDN只校验Tim/Key参数
+   * v21.4: 解析 h5v2.4 加密响应，解密后派生目标音质 URL
    */
+  private async resolveH5v24Response(response: Response, quality: Quality): Promise<PlayUrlResult | null> {
+    try {
+      const raw = new Uint8Array(await response.arrayBuffer());
+      const json = decryptH5v24Response(raw);
+
+      if (json.code !== '000000') {
+        debugLogger.warn('network', `h5v2.4 取链失败: ${json.code}`, { info: json.info });
+        return null;
+      }
+
+      const data = json.data as Record<string, unknown> | undefined;
+      const pqUrl = data?.url as string | undefined;
+      if (!pqUrl || !pqUrl.includes('freetyst.nf.migu.cn')) {
+        return null;
+      }
+
+      // 按目标音质尝试派生 URL（优先级列表）
+      const flags = this.qualityToFlags(quality);
+      for (const flag of flags) {
+        const derived = this.deriveTargetUrl(pqUrl, flag);
+        if (!derived) continue;
+
+        // HEAD 验证派生 URL 是否有效
+        try {
+          const head = await fetch(derived, { method: 'HEAD', headers: this.h5v24Headers });
+          if (!head.ok) continue;
+          const cl = head.headers.get('content-length');
+          const size = cl ? parseInt(cl, 10) : 0;
+          if (size < 1024) continue; // 太小可能是防盗占位
+
+          const result: PlayUrlResult = {
+            url: derived,
+            quality,
+            bitrate: this.flagToBitrate(flag),
+            format: this.flagToFormat(flag),
+            accurate: true,
+            headers: this.h5v24Headers,
+          };
+
+          // Z3D 需要附加解密信息
+          if (flag === 'Z3D') {
+            const p3dUrl = this.deriveTargetUrl(pqUrl, '3D60');
+            if (p3dUrl) {
+              result.z3dDecryptInfo = { z3dUrl: derived, p3dUrl };
+            } else {
+              continue; // 3D60 派生失败，无法解密 Z3D，跳过
+            }
+          }
+
+          return result;
+        } catch {
+          // HEAD 失败，继续试下一个 flag
+          continue;
+        }
+      }
+
+      // 所有派生都失败，返回 PQ 直链（降级）
+      return {
+        url: pqUrl,
+        quality: Quality.STANDARD,
+        bitrate: 128,
+        format: 'mp3',
+        accurate: false,
+      };
+    } catch (err) {
+      debugLogger.warn('network', 'h5v2.4 响应解析失败', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * 音质档位 → 派生 toneFlag 优先级列表
+   */
+  private qualityToFlags(quality: Quality): string[] {
+    switch (quality) {
+      case Quality.LOW:
+        return ['PQ'];
+      case Quality.STANDARD:
+        return ['PQ'];
+      case Quality.HIGHER:
+        return ['HQ', 'PQ'];
+      case Quality.HIGH:
+        return ['HQ', 'PQ'];
+      case Quality.LOSSLESS:
+        return ['SQ', 'HQ', 'PQ'];
+      case Quality.HIFI:
+      case Quality.HIRES:
+        return ['ZQ24', 'SQ', 'HQ', 'PQ'];
+      case Quality.SKY:
+      case Quality.JYEFFECT:
+        return ['HQ', 'PQ'];
+      default:
+        return ['PQ'];
+    }
+  }
+
+  /**
+   * 从 PQ 直链派生目标档 URL（URL 派生法）
+   * 原理：替换中文目录 + ASCII 子目录 + 扩展名，CDN 只校验 Tim/Key 签名
+   */
+  private deriveTargetUrl(pqUrl: string, targetFlag: string): string | null {
+    if (!pqUrl.includes('freetyst.nf.migu.cn')) return null;
+
+    const mapping: Record<string, { cn: string; ascii: string; ext: string }> = {
+      PQ: { cn: '标清高清', ascii: 'MP3_128_16_Stero', ext: '.mp3' },
+      HQ: { cn: '标清高清', ascii: 'MP3_320_16_Stero', ext: '.mp3' },
+      SQ: { cn: '歌曲下载', ascii: 'flac', ext: '.flac' },
+      ZQ24: { cn: '歌曲下载', ascii: 'flac_24bit', ext: '.flac' },
+      Z3D: { cn: '歌曲下载', ascii: 'wav_3d', ext: '.wav' },
+      '3D60': { cn: '歌曲下载', ascii: 'wav_3d_60s', ext: '.wav' },
+    };
+
+    const map = mapping[targetFlag];
+    if (!map) return null;
+
+    const pqMap = mapping['PQ'];
+
+    let url = pqUrl;
+
+    // 替换中文目录（URL 编码形态 + 明文形态）
+    const pqCnEncoded = encodeURIComponent(pqMap.cn);
+    const targetCnEncoded = encodeURIComponent(map.cn);
+    url = url.replace(pqCnEncoded, targetCnEncoded);
+    url = url.replace(pqMap.cn, map.cn);
+
+    // 替换 ASCII 子目录
+    url = url.replace(pqMap.ascii, map.ascii);
+
+    // 替换扩展名（只替换文件名部分的 .mp3）
+    const urlParts = url.split('?');
+    const path = urlParts[0];
+    const query = urlParts[1] || '';
+    const lastDot = path.lastIndexOf('.');
+    if (lastDot > path.lastIndexOf('/')) {
+      url = path.substring(0, lastDot) + map.ext + (query ? `?${query}` : '');
+    }
+
+    return url;
+  }
+
+  /**
+   * v21.4: 覆写内容校验，对直链做 HEAD 验证
+   */
+  protected async validateContent(result: PlayUrlResult, _songId: string): Promise<boolean> {
+    try {
+      const head = await fetch(result.url, {
+        method: 'HEAD',
+        headers: result.headers,
+      });
+      if (!head.ok) return false;
+      const cl = head.headers.get('content-length');
+      const size = cl ? parseInt(cl, 10) : 0;
+      return size >= 1024;
+    } catch {
+      return true; // HEAD 失败不拦截
+    }
+  }
+
+  /**
+   * toneFlag → 码率
+   */
+  private flagToBitrate(flag: string): number {
+    switch (flag) {
+      case 'PQ': return 128;
+      case 'HQ': return 320;
+      case 'SQ': return 1000;
+      case 'ZQ24': return 1800;
+      case 'Z3D': return 1800;
+      default: return 128;
+    }
+  }
+
+  /**
+   * toneFlag → 格式
+   */
+  private flagToFormat(flag: string): string {
+    switch (flag) {
+      case 'PQ': return 'mp3';
+      case 'HQ': return 'mp3';
+      case 'SQ': return 'flac';
+      case 'ZQ24': return 'flac';
+      case 'Z3D': return 'wav';
+      default: return 'mp3';
+    }
+  }
+
+  // === 兼容旧版 URL 派生（fallback）===
+
   private buildDerivedUrls(contentId: string, quality: Quality): string[] {
     const urls: string[] = [];
-
-    // 先获取PQ URL，然后替换
     const pqUrl = `https://freetyst.nf.migu.cn/${contentId}.mp3`;
 
     switch (quality) {
       case Quality.HIFI:
       case Quality.HIRES:
-        // ZQ24
         urls.push(pqUrl.replace('.mp3', '_ZQ24.flac'));
         urls.push(pqUrl.replace('.mp3', '_SQ.flac'));
         break;
       case Quality.LOSSLESS:
-        // SQ FLAC
         urls.push(pqUrl.replace('.mp3', '_SQ.flac'));
         break;
       case Quality.HIGH:
-        // HQ 320K
         urls.push(pqUrl.replace('.mp3', '_HQ.mp3'));
         break;
       case Quality.STANDARD:
       default:
-        // PQ 128K
         urls.push(pqUrl);
         break;
     }
@@ -435,16 +680,14 @@ export class MiguSource extends BaseHttpSource {
   }
 
   private extractContentId(songId: string): string {
-    // songId可能是 migu_xxx 或纯contentId
     if (songId.startsWith('migu_')) {
       return songId.slice(5);
     }
     return songId;
   }
 
-  /**
-   * 获取歌曲音质信息
-   */
+  // === 其他接口 ===
+
   async getSongRateInfo(contentId: string) {
     try {
       const url = `${this.apiBase}/MIGU/3.0.0/v2.0/content/querySongInfo.do?contentId=${contentId}`;
@@ -458,10 +701,6 @@ export class MiguSource extends BaseHttpSource {
     }
   }
 
-  /**
-   * 获取排行榜列表（v18：官方 rank-index 接口，channel 必须为 014X031）
-   * 嵌套结构：data.contents[].style=分组名, contents[] 内 rankId/rankName，需递归提取
-   */
   async getCharts() {
     try {
       const url = `${this.apiBase}/pc/bmw/rank/rank-index/v1.0?channel=014X031`;
@@ -500,12 +739,6 @@ export class MiguSource extends BaseHttpSource {
     }
   }
 
-  /**
-   * 获取排行榜详情（官方 rank-info 接口）
-   * 歌曲信息在 contents[].songData（JSON字符串需二次解析），部分条目缺 songData 时回退本层 txt/txt2/resId
-   * v19.1：pageSize 放大到 100（实测服务端单页上限 100，榜单 totalCount≤100 即一页全量），
-   * 并按 data.hasNextPage 继续翻页兜底（部分环境 pageNum 不推进时靠去重自然终止），不得只取 50 条
-   */
   async getChartDetail(chartId: string) {
     const PAGE_SIZE = 100;
     const MAX_PAGES = 3;
@@ -537,7 +770,6 @@ export class MiguSource extends BaseHttpSource {
               // fallthrough
             }
           }
-          // 兜底：本层字段（榜单分组页内嵌歌曲）
           if (!song && item?.resId && item?.txt) {
             song = {
               id: `migu_${item.resId}`,
@@ -559,7 +791,6 @@ export class MiguSource extends BaseHttpSource {
             added++;
           }
         }
-        // hasNextPage=false 或该页无新增 → 已取全，终止
         if (added === 0 || data?.data?.hasNextPage !== true) break;
       }
 
@@ -569,9 +800,6 @@ export class MiguSource extends BaseHttpSource {
     }
   }
 
-  /**
-   * rank-info songData 结构 → SearchResult（songName/singerList/img3/audioFormats.isize）
-   */
   private mapRankSong(song: any): SearchResult {
     const contentId = song?.contentId || song?.copyrightId || song?.songId || '';
     const formats = song?.audioFormats || [];
@@ -613,9 +841,6 @@ export class MiguSource extends BaseHttpSource {
     };
   }
 
-  /**
-   * 健康检查
-   */
   async healthCheck(): Promise<HealthStatus> {
     try {
       const response = await fetch('https://music.migu.cn', {

@@ -7,7 +7,7 @@ import { buildFallbackChain, PLATFORM_DISPLAY_NAMES } from '@core/platformPriori
 import { toast } from '@shared/components/Toast';
 import { deriveRawKey } from '../../utils/crypto/kuwoEkey';
 import { qmc2DecryptBytes } from '../../utils/crypto/qmc2';
-import { decryptCencMp4 } from '@shared/audio/crypto';
+import { decryptCencMp4, fetchZ3dKey, decryptZ3d, extractZ3dKey } from '@shared/audio/crypto';
 
 /**
  * v16 内容级音频校验：识别防盗占位/加密废数据。
@@ -281,6 +281,34 @@ export class DownloadEngine {
               );
               throw new Error(
                 `CENC 解密失败: ${cencErr instanceof Error ? cencErr.message : String(cencErr)}`
+              );
+            }
+          }
+
+          // 3b-3. Z3D 解密（咪咕加密音频）——下载路径优化：已持有完整 Z3D bytes，只需 fetch 3D60 前32字节提取密钥
+          if (playUrl.z3dDecryptInfo) {
+            try {
+              const p3dResp = await fetch(playUrl.z3dDecryptInfo.p3dUrl, {
+                method: 'GET',
+                headers: { ...(playUrl.headers || {}), Range: 'bytes=0-31' },
+              });
+              if (!p3dResp.ok) {
+                throw new Error(`3D60 前32字节下载失败: ${p3dResp.status}`);
+              }
+              const p3dFirst32 = new Uint8Array(await p3dResp.arrayBuffer());
+              const z3dFirst32 = bytes.slice(0, 32);
+              const key = extractZ3dKey(z3dFirst32, p3dFirst32);
+              bytes = decryptZ3d(bytes, key);
+              playUrl.format = 'wav';
+              console.log(
+                `[DownloadEngine] Z3D decrypted: ${bytes.length} bytes (${trySourceId})`
+              );
+            } catch (z3dErr) {
+              console.error(
+                `[DownloadEngine] Z3D decrypt failed: ${z3dErr instanceof Error ? z3dErr.message : String(z3dErr)} (${trySourceId})`
+              );
+              throw new Error(
+                `Z3D 解密失败: ${z3dErr instanceof Error ? z3dErr.message : String(z3dErr)}`
               );
             }
           }
