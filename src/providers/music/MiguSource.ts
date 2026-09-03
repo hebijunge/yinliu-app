@@ -524,6 +524,67 @@ export class MiguSource extends BaseHttpSource {
   }
 
   /**
+   * v21.4: h5v2.4 加密取链独立方法：返回二进制加密 JSON，解密后获取 PQ 直链
+   * 该接口可绕过 VIP/版权限制（cannotCode=440013），供取链失败排查与集成测试直调
+   * 注意：常规取链走 buildEndpointCandidates 的 resolveH5v24Response（含音质派生与 HEAD 校验）
+   */
+  async fetchH5v24(contentId: string, quality: Quality): Promise<string | null> {
+    const toneFlag = this.mapQualityToParam(quality);
+    const url =
+      `${this.h5v24Base}?contentId=${encodeURIComponent(contentId)}` +
+      `&toneFlag=${toneFlag}&resourceType=2&version=1`;
+
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          ...this.h5v24Headers,
+          'birth': 'h5page',
+          'channel': '014X031',
+          'Referer': 'https://y.migu.cn/',
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) {
+        debugLogger.warn('network', '咪咕 h5v2.4 接口 HTTP 错误', { contentId, status: response.status });
+        return null;
+      }
+
+      const raw = new Uint8Array(await response.arrayBuffer());
+      if (raw.length < 4) {
+        debugLogger.warn('network', '咪咕 h5v2.4 响应过短', { contentId, length: raw.length });
+        return null;
+      }
+
+      const decrypted = decryptH5v24Response(raw) as {
+        code?: unknown;
+        msg?: unknown;
+        data?: { listenUrl?: string };
+        listenUrl?: string;
+      };
+
+      // 检查业务错误码
+      const code = decrypted?.code;
+      if (code !== undefined && code !== '000000' && code !== 0) {
+        debugLogger.warn('network', '咪咕 h5v2.4 业务错误', { contentId, code, msg: decrypted?.msg });
+        return null;
+      }
+
+      const listenUrl = decrypted?.data?.listenUrl || decrypted?.listenUrl || '';
+      if (!listenUrl) {
+        debugLogger.warn('network', '咪咕 h5v2.4 返回空 listenUrl', { contentId });
+        return null;
+      }
+
+      return listenUrl;
+    } catch (err) {
+      debugLogger.warn('network', '咪咕 h5v2.4 取链异常', { contentId, err: String(err) });
+      return null;
+    }
+  }
+
+  /**
    * 音质档位 → 派生 toneFlag 优先级列表
    */
   private qualityToFlags(quality: Quality): string[] {
