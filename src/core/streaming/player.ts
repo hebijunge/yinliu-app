@@ -18,6 +18,7 @@ import { StreamFetcher, type ChunkInfo, type FetcherCallbacks } from './fetcher'
 import { streamCacheEngine, type CacheEntry } from './cache';
 import { detectMSECapability, isMSEAvailable } from './mseDetector';
 import { debugLogger } from '@shared/utils/debugLogger';
+import { QishuiCencDecryptor } from '@providers/music/QishuiCencDecryptor';
 
 export type StreamingState =
   | 'idle'
@@ -43,6 +44,10 @@ interface StreamingOptions {
   headers?: Record<string, string>;
   cacheKey: string;
   format?: string;
+  /** v21.3: CENC 加密流标记 */
+  isEncrypted?: boolean;
+  /** v21.3: CENC 解密密钥（isEncrypted=true 时必填） */
+  decryptKey?: string;
 }
 
 const PRELOAD_THRESHOLD = 0.5; // 播放进度超过 50% 时预取下一首
@@ -89,6 +94,10 @@ class StreamingAudioPlayer {
   // v18 EQ：audio 元素创建监听（均衡器挂接新元素用）
   private audioElementListener: ((el: HTMLAudioElement | null) => void) | null = null;
 
+  // v21.3: 加密流状态
+  private isEncryptedStream = false;
+  private encryptedStreamAbortController: AbortController | null = null;
+
   // === 公共接口 ===
 
   setCallbacks(callbacks: StreamingCallbacks): void {
@@ -124,6 +133,33 @@ class StreamingAudioPlayer {
 
     this.cacheKey = options.cacheKey;
     this.mimeType = this.inferMimeType(options.format);
+
+    // v21.3: 加密流走独立路径（fetch + decryptStream + Blob 刷新）
+    if (options.isEncrypted && options.decryptKey) {
+      this.isEncryptedStream = true;
+      this.useMSE = false;
+      debugLogger.info('streaming', 'StreamingAudioPlayer.load (encrypted)', {
+        cacheKey: options.cacheKey,
+        mimeType: this.mimeType,
+      });
+
+      // 初始化缓存
+      await streamCacheEngine.init();
+      this.cacheEntry = await streamCacheEngine.getOrCreateEntry(
+        options.cacheKey,
+        options.format || 'mp4'
+      );
+
+      // 如果缓存中已有完整文件，直接播放本地缓存
+      if (this.cacheEntry.totalSize > 0 && this.isCacheComplete()) {
+        debugLogger.info('streaming', 'Playing encrypted stream from complete cache');
+        await this.playFromCache();
+        return;
+      }
+
+      await this.loadEncryptedStream(options);
+      return;
+    }
 
     // 检测 MSE 可用性
     const mseCap = detectMSECapability();
@@ -214,6 +250,104 @@ class StreamingAudioPlayer {
   }
 
   /**
+   * v21.3: 加载 CENC 加密流（fetch + decryptStream + Blob 刷新）
+   */
+  private async loadEncryptedStream(options: StreamingOptions): Promise<void> {
+    if (!options.decryptKey) {
+      throw new Error('decryptKey is required for encrypted stream');
+    }
+
+    this.encryptedStreamAbortController = new AbortController();
+
+    const response = await fetch(options.url, {
+      method: 'GET',
+      headers: options.headers,
+      signal: this.encryptedStreamAbortController.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Encrypted stream fetch failed: ${response.status} ${response.statusText}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Encrypted stream response has no body');
+    }
+
+    const decryptor = new QishuiCencDecryptor(options.decryptKey);
+    const decryptedStream = await decryptor.decryptStream(response.body);
+    const reader = decryptedStream.getReader();
+
+    this.setState('loading');
+
+    const MIN_START_SIZE = 256 * 1024;
+    let totalReceived = 0;
+    let chunkIndex = 0;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const start = totalReceived;
+        const end = start + value.length - 1;
+        this.chunks.push({ data: value, start, end });
+        totalReceived += value.length;
+        this.totalDownloaded = totalReceived;
+
+        // 写入缓存
+        await streamCacheEngine.appendData(this.cacheKey, value, start);
+
+        // 首次达到起播阈值时开始播放
+        if (this.state === 'loading' && totalReceived >= MIN_START_SIZE) {
+          debugLogger.info('streaming', 'Encrypted stream first chunk ready', {
+            cacheKey: this.cacheKey,
+            received: totalReceived,
+          });
+          await this.onFirstChunkReady();
+        }
+
+        // 后续 chunks：定期刷新 blob URL
+        if (chunkIndex > 0 && !this.useMSE) {
+          const shouldRefreshBySize =
+            this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
+          if (shouldRefreshBySize) {
+            await this.setupBlobPlayback();
+            this.lastRefreshDownloaded = this.totalDownloaded;
+          }
+        }
+
+        chunkIndex++;
+      }
+
+      // 流结束后的处理
+      if (this.state === 'loading') {
+        // 数据量不足 MIN_START_SIZE，但流已结束，直接播放
+        await this.onFirstChunkReady();
+      } else if (!this.useMSE && this.chunks.length > 0) {
+        // 最终刷新 blob
+        debugLogger.info('streaming', 'Encrypted stream completed, final blob refresh');
+        await this.setupBlobPlayback();
+      }
+
+      this.totalSize = totalReceived;
+      if (this.cacheKey && this.totalSize > 0) {
+        await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
+      }
+    } catch (err) {
+      if (this.encryptedStreamAbortController?.signal.aborted) {
+        // 正常取消，不报错
+        return;
+      }
+      this.setState('error');
+      this.callbacks.onError?.(err instanceof Error ? err.message : 'Encrypted stream failed');
+      throw err;
+    } finally {
+      reader.releaseLock();
+      this.encryptedStreamAbortController = null;
+    }
+  }
+
+  /**
    * Seek 到指定时间（秒）
    */
   async seek(time: number): Promise<void> {
@@ -221,6 +355,13 @@ class StreamingAudioPlayer {
 
     const duration = this.audio.duration || 1;
     const clampedTime = Math.max(0, Math.min(time, duration));
+
+    // v21.3: 加密流由浏览器自行处理 seek（blob URL 顺序增长）
+    if (this.isEncryptedStream) {
+      this.audio.currentTime = clampedTime;
+      return;
+    }
+
     const bytePosition = Math.floor((clampedTime / duration) * this.totalSize);
 
     debugLogger.info('streaming', 'Seek requested', {
@@ -303,8 +444,12 @@ class StreamingAudioPlayer {
   async reset(): Promise<void> {
     this.stopProgressTracking();
 
-    // 停止 fetcher
+    // 停止 fetcher / 加密流
     await this.fetcher.stop();
+    if (this.encryptedStreamAbortController) {
+      this.encryptedStreamAbortController.abort();
+      this.encryptedStreamAbortController = null;
+    }
     if (this.prefetchFetcher) {
       await this.prefetchFetcher.stop();
       this.prefetchFetcher = null;
@@ -347,6 +492,8 @@ class StreamingAudioPlayer {
     this.cacheKey = '';
     this.cacheEntry = null;
     this.lastRefreshDownloaded = 0;
+    this.isEncryptedStream = false;
+    this.encryptedStreamAbortController = null;
 
     this.setState('idle');
   }

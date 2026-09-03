@@ -55,7 +55,7 @@ export class QishuiCencDecryptor {
     }
     this.cryptoKey = await crypto.subtle.importKey(
       'raw',
-      keyBytes,
+      keyBytes as BufferSource,
       { name: 'AES-CTR', length: 128 },
       false,
       ['decrypt']
@@ -92,32 +92,32 @@ export class QishuiCencDecryptor {
                   sampleIndex,
                   mdatOffset
                 );
-                if (decrypted.length > 0) controller.enqueue(decrypted);
+                if (decrypted.length > 0) controller.enqueue(decrypted as any);
               }
               controller.close();
               break;
             }
 
             if (state === 'header') {
-              headerBuffer = concatUint8Arrays(headerBuffer, value);
+              headerBuffer = concatUint8Arrays(headerBuffer, value) as Uint8Array<ArrayBuffer>;
               if (headerBuffer.length >= QishuiCencDecryptor.HEAD_LEN) {
                 // 尝试解析并重写 header
                 const { rewritten, moov, mdatStart } = decryptor.rewriteHead(headerBuffer);
                 moovInfo = moov;
-                controller.enqueue(rewritten);
+                controller.enqueue(rewritten as any);
                 state = 'body';
 
                 // 剩余数据归入 body buffer
                 const remaining = headerBuffer.slice(rewritten.length);
                 headerBuffer = new Uint8Array(0);
                 if (remaining.length > 0) {
-                  bodyBuffer = remaining;
+                  bodyBuffer = remaining as Uint8Array<ArrayBuffer>;
                   mdatOffset = 0; // remaining 已经是 mdat 数据部分
                 }
               }
             } else {
               // body 阶段
-              bodyBuffer = concatUint8Arrays(bodyBuffer, value);
+              bodyBuffer = concatUint8Arrays(bodyBuffer, value) as Uint8Array<ArrayBuffer>;
               if (bodyBuffer.length >= QishuiCencDecryptor.MAX_READ_BYTES) {
                 const chunk = bodyBuffer.slice(0, QishuiCencDecryptor.MAX_READ_BYTES);
                 const decrypted = await decryptor.decryptBodyChunk(
@@ -126,10 +126,10 @@ export class QishuiCencDecryptor {
                   sampleIndex,
                   mdatOffset
                 );
-                controller.enqueue(decrypted);
+                controller.enqueue(decrypted as any);
 
                 const processed = chunk.length;
-                bodyBuffer = bodyBuffer.slice(processed);
+                bodyBuffer = bodyBuffer.slice(processed) as Uint8Array<ArrayBuffer>;
                 mdatOffset += processed;
                 sampleIndex = moovInfo!.sampleIndexAt(mdatOffset);
               }
@@ -285,7 +285,7 @@ export class QishuiCencDecryptor {
     const decrypted = await crypto.subtle.decrypt(
       { name: 'AES-CTR', counter: new Uint8Array(counterBuffer), length: 64 },
       this.cryptoKey,
-      data
+      data as BufferSource
     );
 
     return new Uint8Array(decrypted);
@@ -572,7 +572,7 @@ function hexToBytes(hex: string): Uint8Array {
 
 function concatUint8Arrays(a: Uint8Array, b: Uint8Array): Uint8Array {
   const result = new Uint8Array(a.length + b.length);
-  result.set(a, 0);
-  result.set(b, a.length);
-  return result;
+  result.set(a as Uint8Array, 0);
+  result.set(b as Uint8Array, a.length);
+  return result as Uint8Array;
 }

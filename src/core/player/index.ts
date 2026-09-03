@@ -436,8 +436,18 @@ export class PlayerEngine {
       }
 
       // v14.4: 在线播放且不是本地文件/已下载文件 → 使用流式播放
+      // v21.3: 加密流通过 streamingAudioPlayer 的 decryptStream 路径解密后播放
       if (!isLocal && track.sourceId !== 'local') {
-        await this.loadAndPlayStreaming(url, result.headers || {}, track, result.format, actualSourceId, result.decryptKey, result.ekey);
+        await this.loadAndPlayStreaming(
+          url,
+          result.headers || {},
+          track,
+          result.format,
+          actualSourceId,
+          result.isEncrypted,
+          result.decryptKey,
+          result.ekey
+        );
       } else {
         await this.loadAndPlay(url, track);
       }
@@ -530,12 +540,14 @@ export class PlayerEngine {
   // v14.4: 流式播放加载
   // v21: 支持 CENC 加密音频（汽水音乐）：若提供 decryptKey，先下载完整加密文件并解密后再播放
   // v21.1: 支持 QMC2 加密音频（酷我 mflac/mgg）：若提供 ekey，先下载完整加密文件并 QMC2 解密后再播放
+  // v21.3: 新增 isEncrypted / decryptKey 支持 CENC 加密流（流式管道解密，替代全量下载）
   private async loadAndPlayStreaming(
     url: string,
     headers: Record<string, string>,
     track: PlayerTrack,
     format?: string,
     actualSourceId?: string,
+    isEncrypted?: boolean,
     decryptKey?: string,
     ekey?: string,
   ): Promise<void> {
@@ -551,7 +563,84 @@ export class PlayerEngine {
       void eqService.attachElement(el);
     });
 
-    // v21: CENC 加密音频处理（汽水音乐 track.php）
+    // v21.3: CENC 加密流式处理（汽水音乐 track.php）
+    // 流式管道解密：fetch → decryptStream → Blob 刷新，支持长音频无损
+    if (isEncrypted && decryptKey) {
+      debugLogger.info('player', 'CENC 加密流，启动流式解密播放', {
+        track: track.title,
+        sourceId: actualSourceId || track.sourceId,
+      });
+      try {
+        await streamingAudioPlayer.load({
+          url,
+          headers,
+          cacheKey,
+          format,
+          isEncrypted,
+          decryptKey,
+        });
+      } catch (err) {
+        debugLogger.error('player', 'CENC 流式解密播放失败', {
+          track: track.title,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw new Error(
+          `CENC 流式解密播放失败: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+
+      // 设置回调
+      streamingAudioPlayer.setCallbacks({
+        onStateChange: (streamState: StreamingState) => {
+          const stateMap: Record<StreamingState, PlayerState> = {
+            idle: 'idle',
+            loading: 'loading',
+            ready: 'loading',
+            playing: 'playing',
+            paused: 'paused',
+            buffering: 'loading',
+            seeking: 'loading',
+            completed: 'idle',
+            error: 'error',
+          };
+          const mapped = stateMap[streamState];
+          if (mapped && mapped !== this.state) {
+            this.setState(mapped, streamState === 'playing' ? 'user' : 'engine');
+          }
+        },
+        onProgress: (currentTime: number, duration: number) => {
+          this.emit('progress', {
+            currentTime,
+            duration,
+            progress: duration > 0 ? currentTime / duration : 0,
+          });
+          void updatePosition(currentTime, duration);
+
+          if (duration > 0 && currentTime / duration > 0.5 && !this.prefetchTriggered) {
+            this.prefetchTriggered = true;
+            void this.prefetchNextTrack();
+          }
+        },
+        onError: (message: string) => {
+          this.setState('error', 'system');
+          this.emit('error', { message });
+          debugLogger.error('player', `流式播放错误: ${track.title}`, { message });
+        },
+        onEnded: () => {
+          this.setState('idle', 'engine');
+          this.stopProgressTracking();
+          this.emit('ended', undefined);
+          debugLogger.info('player', `流式播放结束: ${track.title}`);
+        },
+        onCanPlay: () => {
+          this.setState('playing', 'user');
+          this.startProgressTracking();
+        },
+      });
+      return;
+    }
+
+    // v21: CENC 加密音频处理（全量下载解密，向后兼容非 isEncrypted 源）
     if (decryptKey) {
       debugLogger.info('player', 'CENC 加密音频，开始下载并解密', {
         track: track.title,
@@ -797,6 +886,8 @@ export class PlayerEngine {
       headers,
       cacheKey,
       format,
+      isEncrypted,
+      decryptKey,
     });
   }
 
@@ -845,7 +936,8 @@ export class PlayerEngine {
       });
 
       // 流式模式下同时预取首块数据
-      if (nextTrack.sourceId !== 'local') {
+      // v21.3: 加密流不支持 Range 预取，跳过流式首块预取（prefetchCache 已存储 URL+decryptKey）
+      if (nextTrack.sourceId !== 'local' && !result.isEncrypted) {
         try {
           // v20.1-fix: 流式缓存 key 用 actualSourceId，避免降级后缓存串读
           const streamCacheKey = `${actualSourceId}_${nextTrack.sourceSongId}_${this.lastQuality}`;
