@@ -185,12 +185,12 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
             playerEngine.seek(percent * duration);
           }}
         >
-          <div className="w-full h-[3px] bg-[var(--bg-tertiary)] rounded-full progress-visual-bar relative">
+          <div className="w-full h-[2px] bg-[var(--bg-tertiary)] rounded-full progress-visual-bar relative">
             <div
               className="h-full bg-[var(--accent)] rounded-full group-hover:bg-[var(--accent-hover)] progress-bar-smooth relative"
               style={{ width: `${progressPercent}%` }}
             >
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full border-2 border-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity" />
+              <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 bg-white rounded-full border-2 border-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity" />
             </div>
           </div>
         </div>

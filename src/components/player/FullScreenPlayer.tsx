@@ -255,9 +255,9 @@ export default function FullScreenPlayer({ onClose }: Props) {
         onTouchMove={handleProgressTouchMove}
       >
         {/* 视觉进度条（保持细线） */}
-        <div className="w-full h-1 bg-[var(--bg-tertiary)] rounded-full relative">
+        <div className="w-full h-[3px] bg-[var(--bg-tertiary)] rounded-full relative">
           <div className="h-full bg-[var(--accent)] rounded-full progress-bar-smooth relative" style={{ width: `${progressPercent}%` }}>
-            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full border-2 border-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity" />
+            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full border-2 border-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity" />
           </div>
         </div>
       </div>
@@ -316,7 +316,7 @@ export default function FullScreenPlayer({ onClose }: Props) {
         onTouchStart={handleVolumeTouchStart}
         onTouchMove={handleVolumeTouchMove}
       >
-        <div className="w-full h-1 bg-[var(--bg-tertiary)] rounded-full relative">
+        <div className="w-full h-[3px] bg-[var(--bg-tertiary)] rounded-full relative">
           <div className="h-full bg-[var(--accent)] rounded-full relative" style={{ width: `${volume * 100}%` }}>
             <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full border-2 border-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity" />
           </div>
