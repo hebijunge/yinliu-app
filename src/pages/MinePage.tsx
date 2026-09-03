@@ -18,6 +18,7 @@ export default function MinePage() {
 
   const entries = [
     { icon: Heart, label: '我喜欢的音乐', to: '/playlists' },
+    { icon: Heart, label: '收藏歌单', to: '/favorite-playlists' },
     { icon: ListMusic, label: '我的歌单', to: '/playlists' },
     { icon: Clock, label: '最近播放', to: '/history' },
     { icon: Download, label: '下载管理', to: '/downloads' },

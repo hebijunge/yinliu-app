@@ -22,12 +22,15 @@ const DebugLogPage = lazy(() => import('./pages/DebugLogPage'));
 const ChartPage = lazy(() => import('./pages/ChartPage'));
 const PlaylistAggregationPage = lazy(() => import('./pages/PlaylistAggregationPage'));
 const VideoPlayerPage = lazy(() => import('./pages/VideoPlayerPage'));
+// 歌单收藏页
+const FavoritePlaylistsPage = lazy(() => import('./pages/FavoritePlaylistsPage'));
 import { playerEngine } from './core/player';
 import { downloadEngine } from './core/download';
 import { usePlayerStore } from './shared/store/playerStore';
 import { useDownloadStore } from './shared/store/downloadStore';
 import { usePlaylistStore } from './shared/store/playlistStore';
 import { usePlayHistoryStore } from './shared/store/playHistoryStore';
+import { useFavoritePlaylistStore } from './shared/store/favoritePlaylistStore';
 import { useSettingsStore } from './shared/store/settingsStore';
 import { configureAudioFocus, updateAudioFocusOptions } from './core/player/audioFocus';
 import { floatingLyricsBridge } from './core/player/floatingLyricsBridge';
@@ -90,6 +93,9 @@ function App() {
 
       // 加载播放历史
       await usePlayHistoryStore.getState().loadRecords();
+
+      // 加载收藏歌单
+      await useFavoritePlaylistStore.getState().loadItems();
     });
 
     // 初始化媒体会话（通知栏 / 锁屏 / 硬件按键控制）
@@ -184,6 +190,7 @@ function App() {
           <Route path="/playlists" element={<PlaylistPage />} />
             <Route path="/charts" element={<ChartPage />} />
             <Route path="/songlists" element={<PlaylistAggregationPage />} />
+            <Route path="/favorite-playlists" element={<FavoritePlaylistsPage />} />
             <Route path="/video" element={<VideoPlayerPage />} />
           <Route path="/downloads" element={<DownloadPage />} />
           <Route path="/reading" element={<ReadingPage />} />

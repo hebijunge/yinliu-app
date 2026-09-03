@@ -240,6 +240,17 @@ export async function initDatabase(): Promise<typeof db> {
       expired_at INTEGER,
       created_at INTEGER
     );
+    CREATE TABLE IF NOT EXISTS favorite_playlists (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      playlist_id TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      cover_url TEXT,
+      creator TEXT,
+      play_count INTEGER,
+      track_count INTEGER,
+      created_at INTEGER
+    );
   `);
 
   // v14 兼容迁移：playlist_songs 增量列（已建过表的旧 DB 需要补列）

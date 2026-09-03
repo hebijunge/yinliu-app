@@ -81,6 +81,18 @@ export const sourceConfigs = sqliteTable('source_configs', {
   stabilityScore: integer('stability_score'),
 });
 
+export const favoritePlaylists = sqliteTable('favorite_playlists', {
+  id: integer('id', { mode: 'number' }).primaryKey({ autoIncrement: true }),
+  playlistId: text('playlist_id').notNull(),
+  sourceId: text('source_id').notNull(),
+  title: text('title').notNull(),
+  coverUrl: text('cover_url'),
+  creator: text('creator'),
+  playCount: integer('play_count'),
+  trackCount: integer('track_count'),
+  createdAt: integer('created_at'),
+});
+
 // === 阅读相关表 ===
 export const books = sqliteTable('books', {
   id: text('id').primaryKey(),

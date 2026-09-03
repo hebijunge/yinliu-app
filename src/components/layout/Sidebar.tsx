@@ -19,6 +19,7 @@ export default function Sidebar({ onClose }: SidebarProps) {
     { to: '/history', icon: Clock, label: '最近播放' },
     { to: '/charts', icon: Trophy, label: '榜单聚合' },
     { to: '/songlists', icon: ListMusic, label: '歌单聚合' },
+    { to: '/favorite-playlists', icon: Heart, label: '收藏歌单' },
     { to: '/playlists', icon: ListMusic, label: '我的歌单' },
     { to: '/downloads', icon: Download, label: '下载管理' },
     { to: '/reading', icon: BookOpen, label: '书架' },
