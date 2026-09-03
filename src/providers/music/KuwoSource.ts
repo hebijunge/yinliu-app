@@ -376,10 +376,9 @@ export class KuwoSource extends BaseHttpSource {
     // 精确音质匹配（参照 DJMusic qualityExpectation/bitrateTolerance）
     const accurate = this.isBitrateAccurate(quality, bitrate, format);
 
-    // 如果 expected 存在且完全不匹配，丢弃此链
-    if (expected && !accurate) {
-      return null;
-    }
+    // v20.1-fix: 不再在此处丢弃「不准确」结果（如降级/格式变化），
+    // 而是标记为 accurate=false 交给竞速层做 fallback。
+    // 真正防盗/占位由 validateContent 的内容级校验拦截。
 
     // 判断加密：有 ekey 或格式为 mflac/mgg
     const isEncrypted = !!ekey || format === 'mflac' || format === 'mgg' || url.endsWith('.mflac') || url.endsWith('.mgg');
@@ -412,12 +411,35 @@ export class KuwoSource extends BaseHttpSource {
     return 8;
   }
 
-  /** 判断实际码率是否与请求音质匹配 */
+  /** 判断实际码率是否与请求音质匹配
+   * v20.1-fix: 接受升级（更高码率=更好音质），低/标准音质放宽格式限制
+   *（aac/ogg/mp3/m4a 等价），降级时仍允许小幅偏差做 fallback。
+   */
   private isBitrateAccurate(requestedQuality: Quality, actualBitrate: number, actualFormat?: string): boolean {
     const expected = this.qualityExpectation(requestedQuality);
     if (!expected) return true;
     const [expBr, expFmt] = expected;
     const tol = this.bitrateTolerance(actualFormat || expFmt);
+
+    // 接受升级（更高码率 = 更好音质 = 准确）
+    if (actualBitrate >= expBr - tol && actualBitrate <= expBr * 3) {
+      // 对低/标准音质放宽格式限制（aac/ogg/mp3/m4a 等价）
+      if (requestedQuality === Quality.LOW || requestedQuality === Quality.STANDARD) {
+        return true;
+      }
+      // 高音质以上仍需格式一致
+      const formatMatch = !actualFormat || actualFormat === expFmt;
+      return formatMatch;
+    }
+
+    // 降级时：低/标准音质允许小幅降级 + 格式等价
+    if ((requestedQuality === Quality.LOW || requestedQuality === Quality.STANDARD) && actualBitrate >= expBr * 0.7) {
+      const okFormats = ['mp3', 'aac', 'ogg', 'm4a', 'mp4'];
+      if (!actualFormat || okFormats.includes(actualFormat.toLowerCase())) {
+        return true;
+      }
+    }
+
     const formatMatch = !actualFormat || actualFormat === expFmt;
     return formatMatch && Math.abs(actualBitrate - expBr) <= tol;
   }
