@@ -24,6 +24,8 @@ import { streamingAudioPlayer, type StreamingState } from '@core/streaming';
 import { eqService } from './equalizer';
 import { decryptCencMp4 } from '@shared/audio/crypto';
 import { platformFetch } from '@shared/utils/platformFetch';
+import { deriveRawKey } from '../../utils/crypto/kuwoEkey';
+import { qmc2DecryptBytes, isDecryptedMagic } from '../../utils/crypto/qmc2';
 
 export type PlayerState = 'idle' | 'loading' | 'playing' | 'paused' | 'error';
 
@@ -435,7 +437,7 @@ export class PlayerEngine {
 
       // v14.4: 在线播放且不是本地文件/已下载文件 → 使用流式播放
       if (!isLocal && track.sourceId !== 'local') {
-        await this.loadAndPlayStreaming(url, result.headers || {}, track, result.format, actualSourceId, result.decryptKey);
+        await this.loadAndPlayStreaming(url, result.headers || {}, track, result.format, actualSourceId, result.decryptKey, result.ekey);
       } else {
         await this.loadAndPlay(url, track);
       }
@@ -527,6 +529,7 @@ export class PlayerEngine {
 
   // v14.4: 流式播放加载
   // v21: 支持 CENC 加密音频（汽水音乐）：若提供 decryptKey，先下载完整加密文件并解密后再播放
+  // v21.1: 支持 QMC2 加密音频（酷我 mflac/mgg）：若提供 ekey，先下载完整加密文件并 QMC2 解密后再播放
   private async loadAndPlayStreaming(
     url: string,
     headers: Record<string, string>,
@@ -534,6 +537,7 @@ export class PlayerEngine {
     format?: string,
     actualSourceId?: string,
     decryptKey?: string,
+    ekey?: string,
   ): Promise<void> {
     this.isStreaming = true;
     this.streamingCurrentUrl = url;
@@ -632,6 +636,108 @@ export class PlayerEngine {
         });
         throw new Error(
           `CENC 解密播放失败: ${cencErr instanceof Error ? cencErr.message : String(cencErr)}`
+        );
+      }
+    }
+
+    // v21.1: QMC2 加密音频处理（酷我 mflac/mgg）
+    if (ekey) {
+      debugLogger.info('player', 'QMC2 加密音频，开始下载并解密', {
+        track: track.title,
+        sourceId: actualSourceId || track.sourceId,
+        format,
+      });
+      try {
+        const resp = await platformFetch(url, { headers });
+        if (!resp.ok) {
+          throw new Error(`QMC2 音频下载失败: ${resp.status}`);
+        }
+        const encryptedData = new Uint8Array(await resp.arrayBuffer());
+        debugLogger.info('player', 'QMC2 音频下载完成，开始解密', {
+          track: track.title,
+          size: encryptedData.byteLength,
+        });
+
+        const rawKey = deriveRawKey(ekey);
+        if (!rawKey) {
+          throw new Error('QMC2 ekey 派生密钥失败');
+        }
+
+        const decrypted = qmc2DecryptBytes(encryptedData, rawKey);
+        debugLogger.info('player', 'QMC2 解密完成', {
+          track: track.title,
+          size: decrypted.length,
+        });
+
+        // 验证解密后魔数（必须为合法 flac/ogg）
+        if (!isDecryptedMagic(decrypted)) {
+          throw new Error('QMC2 解密后魔数校验失败，数据可能未正确解密');
+        }
+
+        // mflac → flac, mgg → ogg
+        const decryptedFormat = format === 'mgg' || url.endsWith('.mgg') ? 'ogg' : 'flac';
+
+        await streamingAudioPlayer.loadDecryptedData(decrypted, {
+          cacheKey,
+          format: decryptedFormat,
+        });
+
+        // 设置回调（loadDecryptedData 不经过流式下载，但仍需状态回调）
+        streamingAudioPlayer.setCallbacks({
+          onStateChange: (streamState: StreamingState) => {
+            const stateMap: Record<StreamingState, PlayerState> = {
+              idle: 'idle',
+              loading: 'loading',
+              ready: 'loading',
+              playing: 'playing',
+              paused: 'paused',
+              buffering: 'loading',
+              seeking: 'loading',
+              completed: 'idle',
+              error: 'error',
+            };
+            const mapped = stateMap[streamState];
+            if (mapped && mapped !== this.state) {
+              this.setState(mapped, streamState === 'playing' ? 'user' : 'engine');
+            }
+          },
+          onProgress: (currentTime: number, duration: number) => {
+            this.emit('progress', {
+              currentTime,
+              duration,
+              progress: duration > 0 ? currentTime / duration : 0,
+            });
+            void updatePosition(currentTime, duration);
+
+            if (duration > 0 && currentTime / duration > 0.5 && !this.prefetchTriggered) {
+              this.prefetchTriggered = true;
+              void this.prefetchNextTrack();
+            }
+          },
+          onError: (message: string) => {
+            this.setState('error', 'system');
+            this.emit('error', { message });
+            debugLogger.error('player', `流式播放错误: ${track.title}`, { message });
+          },
+          onEnded: () => {
+            this.setState('idle', 'engine');
+            this.stopProgressTracking();
+            this.emit('ended', undefined);
+            debugLogger.info('player', `流式播放结束: ${track.title}`);
+          },
+          onCanPlay: () => {
+            this.setState('playing', 'user');
+            this.startProgressTracking();
+          },
+        });
+        return;
+      } catch (qmc2Err) {
+        debugLogger.error('player', 'QMC2 解密播放失败', {
+          track: track.title,
+          error: qmc2Err instanceof Error ? qmc2Err.message : String(qmc2Err),
+        });
+        throw new Error(
+          `QMC2 解密播放失败: ${qmc2Err instanceof Error ? qmc2Err.message : String(qmc2Err)}`
         );
       }
     }
