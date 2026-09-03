@@ -1,16 +1,17 @@
 import type { PlaylistSummary } from '../../core/types';
 import { BaseHttpSource, type ResolvedCandidate } from './BaseHttpSource';
 import { Quality } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, TierSizes, QualityOption, QualityTier, PlayUrlResult } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, TierSizes, QualityOption, QualityTier, PlayUrlResult, FileSizeResult } from '@core/types';
 import { YinliuError, ErrorCode } from '@core/types';
 import { debugLogger } from '@shared/utils/debugLogger';
 import { decryptH5v24Response } from '@shared/audio/crypto';
 
 /**
  * 咪咕音乐音源Provider
- * v21.4: 接入 h5v2.4 加密取链 + URL派生法 + Z3D 流式解密支持
- * 接口：app.c.nf.migu.cn / pd.musicapp.migu.cn / c.musicapp.migu.cn（h5v2.4）
- * 特色：h5v2.4 免登录绕过版权限制，URL派生全音质，Z3D 需流式解密
+ * v22.x: 固定 h5v2.4 PQ 取链 + 全音质 URL 派生
+ * 不再做多端点并发竞速，不再串行尝试 listenUrl.do / 代理等候选端点
+ * HQ/SQ/ZQ24/Z3D 一律从 PQ 直链派生（CDN 签名对音质路径不敏感）
+ * 已知限制：部分歌曲无 ZQ24（自动降级到 SQ→HQ→PQ）；Z3D 需额外 3D60 明文提取密钥
  */
 export class MiguSource extends BaseHttpSource {
   readonly id = 'migu';
@@ -32,14 +33,47 @@ export class MiguSource extends BaseHttpSource {
 
   /** contentId → copyrightId 缓存 */
   private copyrightIdCache = new Map<string, string>();
-  /** 当前取链的 copyrightId（由 getPlayUrl 覆写设置） */
+  /** 当前取链的 copyrightId（由 getPlayUrl 设置） */
   private currentCopyrightId: string | null = null;
 
+  // === 实例级缓存与锁（替代父类多候选竞速）===
+  private static readonly CACHE_TTL = 25 * 60 * 1000;      // 25 分钟
+  private static readonly PQ_CACHE_TTL = 25 * 60 * 1000;   // PQ 直链缓存 25 分钟
+  /** songId_quality → PlayUrlResult 缓存 */
+  private playUrlCache = new Map<string, { result: PlayUrlResult; expiresAt: number }>();
+  /** copyrightId → PQ 直链缓存（PQ 直链记忆仍有价值） */
+  private pqUrlCache = new Map<string, { pqUrl: string; expiresAt: number }>();
+  /** 去重锁：songId_quality → Promise */
+  private pendingLocks = new Map<string, Promise<PlayUrlResult>>();
+
   /**
-   * v21.4: 覆写 getPlayUrl，先获取 copyrightId 再调用父类竞速逻辑
+   * v22.x: 固定走 h5v2.4 取 PQ 直链，再派生目标音质。
+   * 不再调用父类 linkRace 竞速逻辑，不再串行尝试 listenUrl.do / 代理等候选端点。
    */
   async getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal): Promise<PlayUrlResult> {
     const contentId = this.extractContentId(songId);
+    const lockKey = `${this.id}_${songId}_${quality}`;
+
+    // 1. 缓存命中检查
+    const cached = this.playUrlCache.get(lockKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      debugLogger.info('player', `咪咕取链缓存命中: ${songId}`, { lockKey, quality });
+      return cached.result;
+    }
+
+    // 2. 去重保护：同曲同音质正在取链中，直接等待已有请求
+    const existing = this.pendingLocks.get(lockKey);
+    if (existing) {
+      debugLogger.info('player', `咪咕取链去重复用: ${songId}`, { lockKey });
+      return existing;
+    }
+
+    // 外部取消信号优先
+    if (signal?.aborted) {
+      throw new YinliuError(ErrorCode.LINK_RACE_FAILED, '取链已取消', 499);
+    }
+
+    // 3. 获取 copyrightId
     let copyrightId = this.copyrightIdCache.get(contentId);
     if (!copyrightId) {
       const fetched = await this.fetchCopyrightId(contentId);
@@ -49,7 +83,153 @@ export class MiguSource extends BaseHttpSource {
       }
     }
     this.currentCopyrightId = copyrightId || contentId;
-    return super.getPlayUrl(songId, quality, signal);
+
+    // 4. 执行取链并管理锁/缓存生命周期
+    const promise = this.doGetPlayUrl(contentId, copyrightId || contentId, quality, signal);
+    this.pendingLocks.set(lockKey, promise);
+
+    promise
+      .then((result) => {
+        const ttl = result.expiresAt
+          ? result.expiresAt - Date.now()
+          : MiguSource.CACHE_TTL;
+        if (ttl > 0) {
+          this.playUrlCache.set(lockKey, { result, expiresAt: Date.now() + ttl });
+        }
+      })
+      .catch(() => {
+        // 失败不缓存
+      })
+      .finally(() => {
+        this.pendingLocks.delete(lockKey);
+      });
+
+    return promise;
+  }
+
+  /**
+   * 实际取链：固定 h5v2.4 PQ → 派生目标音质 → HEAD 验证
+   */
+  private async doGetPlayUrl(
+    contentId: string,
+    copyrightId: string,
+    quality: Quality,
+    signal?: AbortSignal
+  ): Promise<PlayUrlResult> {
+    // 优先查 PQ 直链缓存（同一首歌换音质可复用）
+    const pqCacheKey = copyrightId;
+    let pqUrl: string | null = null;
+    const pqCached = this.pqUrlCache.get(pqCacheKey);
+    if (pqCached && Date.now() < pqCached.expiresAt) {
+      pqUrl = pqCached.pqUrl;
+    }
+
+    // 缓存未命中，请求 h5v2.4 固定 PQ
+    if (!pqUrl) {
+      pqUrl = await this.fetchH5v24Pq(contentId, copyrightId, signal);
+      if (pqUrl) {
+        this.pqUrlCache.set(pqCacheKey, { pqUrl, expiresAt: Date.now() + MiguSource.PQ_CACHE_TTL });
+      }
+    }
+
+    if (!pqUrl) {
+      throw new YinliuError(ErrorCode.LINK_RACE_FAILED, '咪咕 h5v2.4 取链失败', 503);
+    }
+
+    // 从 PQ 直链按目标音质优先级派生
+    const flags = this.qualityToFlags(quality);
+    for (const flag of flags) {
+      const derived = this.deriveTargetUrl(pqUrl, flag);
+      if (!derived) continue;
+
+      // HEAD 验证派生 URL 是否真实存在
+      try {
+        const head = await fetch(derived, { method: 'HEAD', headers: this.h5v24Headers, signal });
+        if (!head.ok) continue;
+        const cl = head.headers.get('content-length');
+        const size = cl ? parseInt(cl, 10) : 0;
+        if (size < 1024) continue; // 太小可能是防盗占位
+
+        const result: PlayUrlResult = {
+          url: derived,
+          quality,
+          bitrate: this.flagToBitrate(flag),
+          format: this.flagToFormat(flag),
+          accurate: true,
+          headers: this.h5v24Headers,
+        };
+
+        // Z3D 需要附加解密信息（3D60 用于已知明文攻击提取密钥）
+        if (flag === 'Z3D') {
+          const p3dUrl = this.deriveTargetUrl(pqUrl, '3D60');
+          if (p3dUrl) {
+            result.z3dDecryptInfo = { z3dUrl: derived, p3dUrl };
+          } else {
+            continue; // 3D60 派生失败，无法解密 Z3D，跳过
+          }
+        }
+
+        return result;
+      } catch {
+        // HEAD 失败，继续试下一个 flag
+        continue;
+      }
+    }
+
+    // 所有派生都失败，返回 PQ 直链降级
+    return {
+      url: pqUrl,
+      quality: Quality.STANDARD,
+      bitrate: 128,
+      format: 'mp3',
+      accurate: false,
+    };
+  }
+
+  /**
+   * 固定从 h5v2.4 取 PQ 直链（toneFlag=PQ，不再传可变 quality）
+   */
+  private async fetchH5v24Pq(
+    contentId: string,
+    copyrightId: string,
+    signal?: AbortSignal
+  ): Promise<string | null> {
+    const url =
+      `${this.h5v24Base}?contentId=${encodeURIComponent(contentId)}` +
+      `&copyrightId=${encodeURIComponent(copyrightId)}` +
+      `&resourceType=2&netType=01&toneFlag=PQ&scene=&lowerQualityContentId=${encodeURIComponent(contentId)}`;
+
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.h5v24Headers,
+        signal: signal || AbortSignal.timeout(12000),
+      });
+
+      if (!response.ok) {
+        debugLogger.warn('network', '咪咕 h5v2.4 接口 HTTP 错误', { contentId, status: response.status });
+        return null;
+      }
+
+      const raw = new Uint8Array(await response.arrayBuffer());
+      const json = decryptH5v24Response(raw);
+
+      if (json.code !== '000000') {
+        debugLogger.warn('network', `h5v2.4 取链失败: ${json.code}`, { info: json.info });
+        return null;
+      }
+
+      const data = json.data as Record<string, unknown> | undefined;
+      const pqUrl = data?.url as string | undefined;
+      if (!pqUrl || !pqUrl.includes('freetyst.nf.migu.cn')) {
+        return null;
+      }
+
+      return pqUrl;
+    } catch (err) {
+      debugLogger.warn('network', '咪咕 h5v2.4 取链异常', { contentId, err: String(err) });
+      return null;
+    }
   }
 
   /**
@@ -386,202 +566,65 @@ export class MiguSource extends BaseHttpSource {
     return this.getPlaylist(match[1]);
   }
 
-  // === 取链（v21.4 核心改造）===
+  // === 取链（v22.x 核心改造）===
 
   /**
-   * v21.4: 构建取链候选端点
-   * 优先级：h5v2.4(0) > listenUrl.do fallback(1) > URL派生 fallback(1) > 第三方代理(2)
+   * v22.x: buildEndpointCandidates 已停用。
+   * 咪咕取链固定走 h5v2.4 PQ 直链 + 音质派生，不再返回多候选端点。
+   * 本方法保留仅为满足 BaseHttpSource 抽象类契约。
    */
-  protected buildEndpointCandidates(songId: string, quality: Quality): ResolvedCandidate[] {
+  protected buildEndpointCandidates(_songId: string, _quality: Quality): ResolvedCandidate[] {
+    return [];
+  }
+
+  /**
+   * v22.x: 覆写 getFileSize，固定走 h5v2.4 PQ → 派生目标音质 → HEAD 验证
+   */
+  async getFileSize(songId: string, quality: Quality, signal?: AbortSignal): Promise<FileSizeResult | null> {
     const contentId = this.extractContentId(songId);
-    const copyrightId = this.currentCopyrightId || contentId;
-    const candidates: ResolvedCandidate[] = [];
+    let copyrightId = this.copyrightIdCache.get(contentId);
+    if (!copyrightId) {
+      const fetched = await this.fetchCopyrightId(contentId);
+      if (fetched) {
+        copyrightId = fetched;
+        this.copyrightIdCache.set(contentId, fetched);
+      }
+    }
+    copyrightId = copyrightId || contentId;
 
-    // 1. h5v2.4 加密取链（主链路，唯一能绕过版权限制的接口）
-    const h5v24Url =
-      `${this.h5v24Base}?contentId=${encodeURIComponent(contentId)}` +
-      `&copyrightId=${encodeURIComponent(copyrightId)}` +
-      `&resourceType=2&netType=01&toneFlag=PQ&scene=&lowerQualityContentId=${encodeURIComponent(contentId)}`;
-
-    candidates.push({
-      url: h5v24Url,
-      method: 'GET',
-      timeout: 12000,
-      priority: 0,
-      headers: this.h5v24Headers,
-      key: `h5v24_${contentId}`,
-      resolve: async (response: Response) => {
-        return this.resolveH5v24Response(response, quality);
-      },
-    });
-
-    // 2. listenUrl.do 明文取链（fallback）
-    candidates.push({
-      url: `${this.apiBase}/MIGU/3.0.0/v2.0/content/listenUrl.do?contentId=${contentId}&resourceType=2&purpose=1&channel=0`,
-      method: 'GET',
-      timeout: 8000,
-      priority: 1,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36',
-      },
-    });
-
-    // 3. URL派生法 fallback（基于固定模板，不依赖 h5v2.4）
-    const derivedUrls = this.buildDerivedUrls(contentId, quality);
-    for (const url of derivedUrls) {
-      candidates.push({
-        url,
-        method: 'GET',
-        timeout: 10000,
-        priority: 1,
-      });
+    // 获取 PQ 直链
+    const pqCacheKey = copyrightId;
+    let pqUrl: string | null = null;
+    const pqCached = this.pqUrlCache.get(pqCacheKey);
+    if (pqCached && Date.now() < pqCached.expiresAt) {
+      pqUrl = pqCached.pqUrl;
+    } else {
+      pqUrl = await this.fetchH5v24Pq(contentId, copyrightId, signal);
+      if (pqUrl) {
+        this.pqUrlCache.set(pqCacheKey, { pqUrl, expiresAt: Date.now() + MiguSource.PQ_CACHE_TTL });
+      }
     }
 
-    // 4. 第三方代理
-    candidates.push({
-      url: `https://migu-api-enhanced.example/v1/song/url?id=${contentId}&quality=${this.mapQualityToParam(quality)}`,
-      method: 'GET',
-      timeout: 10000,
-      priority: 2,
-    });
+    if (!pqUrl) return null;
 
-    return candidates;
-  }
-
-  /**
-   * v21.4: 解析 h5v2.4 加密响应，解密后派生目标音质 URL
-   */
-  private async resolveH5v24Response(response: Response, quality: Quality): Promise<PlayUrlResult | null> {
-    try {
-      const raw = new Uint8Array(await response.arrayBuffer());
-      const json = decryptH5v24Response(raw);
-
-      if (json.code !== '000000') {
-        debugLogger.warn('network', `h5v2.4 取链失败: ${json.code}`, { info: json.info });
-        return null;
-      }
-
-      const data = json.data as Record<string, unknown> | undefined;
-      const pqUrl = data?.url as string | undefined;
-      if (!pqUrl || !pqUrl.includes('freetyst.nf.migu.cn')) {
-        return null;
-      }
-
-      // 按目标音质尝试派生 URL（优先级列表）
-      const flags = this.qualityToFlags(quality);
-      for (const flag of flags) {
-        const derived = this.deriveTargetUrl(pqUrl, flag);
-        if (!derived) continue;
-
-        // HEAD 验证派生 URL 是否有效
-        try {
-          const head = await fetch(derived, { method: 'HEAD', headers: this.h5v24Headers });
-          if (!head.ok) continue;
-          const cl = head.headers.get('content-length');
-          const size = cl ? parseInt(cl, 10) : 0;
-          if (size < 1024) continue; // 太小可能是防盗占位
-
-          const result: PlayUrlResult = {
-            url: derived,
-            quality,
-            bitrate: this.flagToBitrate(flag),
-            format: this.flagToFormat(flag),
-            accurate: true,
-            headers: this.h5v24Headers,
-          };
-
-          // Z3D 需要附加解密信息
-          if (flag === 'Z3D') {
-            const p3dUrl = this.deriveTargetUrl(pqUrl, '3D60');
-            if (p3dUrl) {
-              result.z3dDecryptInfo = { z3dUrl: derived, p3dUrl };
-            } else {
-              continue; // 3D60 派生失败，无法解密 Z3D，跳过
-            }
-          }
-
-          return result;
-        } catch {
-          // HEAD 失败，继续试下一个 flag
-          continue;
+    // 对目标音质的派生 URL 发 HEAD 取文件大小
+    const flags = this.qualityToFlags(quality);
+    for (const flag of flags) {
+      const derived = this.deriveTargetUrl(pqUrl, flag);
+      if (!derived) continue;
+      try {
+        const resp = await fetch(derived, { method: 'HEAD', headers: this.h5v24Headers, signal });
+        if (!resp.ok) continue;
+        const cl = resp.headers.get('content-length');
+        const size = cl ? parseInt(cl, 10) : 0;
+        if (size > 0) {
+          return { size, url: derived };
         }
+      } catch {
+        continue;
       }
-
-      // 所有派生都失败，返回 PQ 直链（降级）
-      return {
-        url: pqUrl,
-        quality: Quality.STANDARD,
-        bitrate: 128,
-        format: 'mp3',
-        accurate: false,
-      };
-    } catch (err) {
-      debugLogger.warn('network', 'h5v2.4 响应解析失败', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return null;
     }
-  }
-
-  /**
-   * v21.4: h5v2.4 加密取链独立方法：返回二进制加密 JSON，解密后获取 PQ 直链
-   * 该接口可绕过 VIP/版权限制（cannotCode=440013），供取链失败排查与集成测试直调
-   * 注意：常规取链走 buildEndpointCandidates 的 resolveH5v24Response（含音质派生与 HEAD 校验）
-   */
-  async fetchH5v24(contentId: string, quality: Quality): Promise<string | null> {
-    const toneFlag = this.mapQualityToParam(quality);
-    const url =
-      `${this.h5v24Base}?contentId=${encodeURIComponent(contentId)}` +
-      `&toneFlag=${toneFlag}&resourceType=2&version=1`;
-
-    try {
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          ...this.h5v24Headers,
-          'birth': 'h5page',
-          'channel': '014X031',
-          'Referer': 'https://y.migu.cn/',
-        },
-        signal: AbortSignal.timeout(10000),
-      });
-
-      if (!response.ok) {
-        debugLogger.warn('network', '咪咕 h5v2.4 接口 HTTP 错误', { contentId, status: response.status });
-        return null;
-      }
-
-      const raw = new Uint8Array(await response.arrayBuffer());
-      if (raw.length < 4) {
-        debugLogger.warn('network', '咪咕 h5v2.4 响应过短', { contentId, length: raw.length });
-        return null;
-      }
-
-      const decrypted = decryptH5v24Response(raw) as {
-        code?: unknown;
-        msg?: unknown;
-        data?: { listenUrl?: string };
-        listenUrl?: string;
-      };
-
-      // 检查业务错误码
-      const code = decrypted?.code;
-      if (code !== undefined && code !== '000000' && code !== 0) {
-        debugLogger.warn('network', '咪咕 h5v2.4 业务错误', { contentId, code, msg: decrypted?.msg });
-        return null;
-      }
-
-      const listenUrl = decrypted?.data?.listenUrl || decrypted?.listenUrl || '';
-      if (!listenUrl) {
-        debugLogger.warn('network', '咪咕 h5v2.4 返回空 listenUrl', { contentId });
-        return null;
-      }
-
-      return listenUrl;
-    } catch (err) {
-      debugLogger.warn('network', '咪咕 h5v2.4 取链异常', { contentId, err: String(err) });
-      return null;
-    }
+    return null;
   }
 
   /**
@@ -655,7 +698,7 @@ export class MiguSource extends BaseHttpSource {
   }
 
   /**
-   * v21.4: 覆写内容校验，对直链做 HEAD 验证
+   * v22.x: 覆写内容校验，对直链做 HEAD 验证
    */
   protected async validateContent(result: PlayUrlResult, _songId: string): Promise<boolean> {
     try {
@@ -697,48 +740,6 @@ export class MiguSource extends BaseHttpSource {
       case 'ZQ24': return 'flac';
       case 'Z3D': return 'wav';
       default: return 'mp3';
-    }
-  }
-
-  // === 兼容旧版 URL 派生（fallback）===
-
-  private buildDerivedUrls(contentId: string, quality: Quality): string[] {
-    const urls: string[] = [];
-    const pqUrl = `https://freetyst.nf.migu.cn/${contentId}.mp3`;
-
-    switch (quality) {
-      case Quality.HIFI:
-      case Quality.HIRES:
-        urls.push(pqUrl.replace('.mp3', '_ZQ24.flac'));
-        urls.push(pqUrl.replace('.mp3', '_SQ.flac'));
-        break;
-      case Quality.LOSSLESS:
-        urls.push(pqUrl.replace('.mp3', '_SQ.flac'));
-        break;
-      case Quality.HIGH:
-        urls.push(pqUrl.replace('.mp3', '_HQ.mp3'));
-        break;
-      case Quality.STANDARD:
-      default:
-        urls.push(pqUrl);
-        break;
-    }
-
-    return urls;
-  }
-
-  private mapQualityToParam(quality: Quality): string {
-    switch (quality) {
-      case Quality.HIFI:
-      case Quality.HIRES:
-        return 'ZQ24';
-      case Quality.LOSSLESS:
-        return 'SQ';
-      case Quality.HIGH:
-        return 'HQ';
-      case Quality.STANDARD:
-      default:
-        return 'PQ';
     }
   }
 
