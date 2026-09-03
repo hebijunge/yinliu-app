@@ -1,273 +1,368 @@
-import { useEffect, useState } from 'react';
-import { Trophy, ListMusic, Loader2 } from 'lucide-react';
-import type { ChartCategoryGroup, ClassifiedChart } from '../core/charts';
-import { CHART_CATEGORIES, getActiveMappings } from '../modules/chart/chartMappings';
-import { PLAYLIST_CATEGORIES, getCategoryPlaylists, type SourcePlaylistGroup } from '../core/playlistCategories';
-import { sourceRegistry } from '@providers/music/registry';
-import { PLATFORM_SHORT_NAMES } from '../core/platformPriority';
-import type { PlaylistSummary, SearchResult } from '../core/types';
-import type { AggregatedSearchResult } from '../core/search';
-import SongRow from '../components/song/SongRow';
-import QualitySizeSheet from '../components/song/QualitySizeSheet';
-import { playerEngine } from '../core/player';
-import { useSearchStore } from '../shared/store/searchStore';
-import { toast } from '../shared/components/Toast';
+import { useState, useEffect, useCallback } from 'react';
+import { Trophy, ListMusic, Music, Loader2, AlertCircle, ChevronRight } from 'lucide-react';
+import { CHART_CATEGORIES } from '@modules/chart/chartMappings';
+import { aggregateChartsByCategory, type SourceChartResult, type AggregatedChartSong } from '@modules/chart/aggregator';
+import { aggregatePlaylistsByCategory, type SourcePlaylistResult } from '@modules/playlist/aggregator';
+import { playerEngine } from '@core/player';
+import { useSearchStore } from '@shared/store/searchStore';
+
+const SOURCE_BADGE_COLORS: Record<string, string> = {
+  netease: 'bg-red-500',
+  kugou: 'bg-blue-500',
+  qq: 'bg-yellow-500',
+  kuwo: 'bg-orange-500',
+  migu: 'bg-teal-500',
+};
+
+type TabKey = 'charts' | 'playlists';
 
 /**
- * 曲库页：榜单 / 歌单 两个 Tab
- * - 榜单：按固定分类取各源固定汇总榜单ID（文档 Section 4 口径）
- * - 歌单：固定融合分类，展示顺序 汽水>酷我>咪咕>网易云>QQ>酷狗
+ * 曲库页：「聚合榜单」+「聚合歌单」双 Tab 切换
+ * - 顶部双 Tab，点击切换，只加载并显示当前 Tab 的数据
+ * - 未进入的 Tab 不预拉数据，切 Tab 时按需异步加载
+ * - 每个 Tab 内仍按固定分类呈现，分类下多源聚合
  */
-type DetailSong = { song: SearchResult; sourceId: string; sourceName: string };
-
 export default function LibraryPage() {
   const { selectedQuality } = useSearchStore();
-  const [tab, setTab] = useState<'charts' | 'playlists'>('charts');
 
-  // 榜单
-  const [chartGroups, setChartGroups] = useState<ChartCategoryGroup[]>([]);
-  const [chartsLoading, setChartsLoading] = useState(true);
-  const [chartSongs, setChartSongs] = useState<DetailSong[]>([]);
-  const [chartDetailTitle, setChartDetailTitle] = useState('');
+  // ===== 顶部 Tab 切换 =====
+  const [activeTab, setActiveTab] = useState<TabKey>('charts');
 
-  // 歌单
-  const [activeCat, setActiveCat] = useState('hot');
-  const [playlistGroups, setPlaylistGroups] = useState<SourcePlaylistGroup[]>([]);
-  const [playlistsLoading, setPlaylistsLoading] = useState(false);
-  const [playlistSongs, setPlaylistSongs] = useState<DetailSong[]>([]);
-  const [playlistDetailTitle, setPlaylistDetailTitle] = useState('');
+  // ===== 聚合榜单数据 =====
+  const [chartCat, setChartCat] = useState(CHART_CATEGORIES[0].id);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartResults, setChartResults] = useState<SourceChartResult[]>([]);
+  const [expandedChartSource, setExpandedChartSource] = useState<string | null>(null);
+  const [chartsLoaded, setChartsLoaded] = useState(false);
 
-  const [sheetSong, setSheetSong] = useState<AggregatedSearchResult | null>(null);
-
-  // v21.0 口径修复：榜单 = 按固定分类取各源固定汇总榜单ID（文档 Section 4），不再取全量再归类
-  useEffect(() => {
-    const groups: ChartCategoryGroup[] = CHART_CATEGORIES.map((cat) => ({
-      categoryId: cat.id,
-      categoryName: cat.name,
-      charts: getActiveMappings(cat.id).map((m): ClassifiedChart => ({
-        sourceId: m.sourceId,
-        sourceName: sourceRegistry.get(m.sourceId)?.name || m.sourceId,
-        chartId: m.chartId,
-        chartName: m.chartName,
-      })),
-    }));
-    setChartGroups(groups);
-    setChartsLoading(false);
+  const loadCharts = useCallback(async (catId: string) => {
+    setChartLoading(true);
+    setExpandedChartSource(null);
+    try {
+      const results = await aggregateChartsByCategory(catId);
+      setChartResults(results);
+    } finally {
+      setChartLoading(false);
+    }
   }, []);
 
+  // ===== 聚合歌单数据 =====
+  const [playlistCat, setPlaylistCat] = useState(CHART_CATEGORIES[0].id);
+  const [playlistLoading, setPlaylistLoading] = useState(false);
+  const [playlistResults, setPlaylistResults] = useState<SourcePlaylistResult[]>([]);
+  const [expandedPlaylist, setExpandedPlaylist] = useState<string | null>(null);
+  const [playlistsLoaded, setPlaylistsLoaded] = useState(false);
+
+  const loadPlaylists = useCallback(async (catId: string) => {
+    setPlaylistLoading(true);
+    setExpandedPlaylist(null);
+    try {
+      const results = await aggregatePlaylistsByCategory(catId);
+      setPlaylistResults(results);
+    } finally {
+      setPlaylistLoading(false);
+    }
+  }, []);
+
+  // ===== 按需加载：切 Tab 时才加载对应数据 =====
   useEffect(() => {
-    let alive = true;
-    setPlaylistsLoading(true);
-    (async () => {
-      try {
-        const groups = await getCategoryPlaylists(activeCat === 'hot' ? '热门推荐' : activeCat);
-        if (alive) setPlaylistGroups(groups);
-      } finally {
-        if (alive) setPlaylistsLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [activeCat]);
-
-  const toDetail = (song: SearchResult, sourceId: string): AggregatedSearchResult => ({
-    ...song,
-    sources: [
-      {
-        sourceId,
-        sourceName: PLATFORM_SHORT_NAMES[sourceId] || sourceId,
-        sourceSongId: song.sourceSongId,
-        maxQuality: song.quality || 0,
-        available: true,
-        sizes: song.sizes, // v19.1：榜单/歌单条目带上各档大小，音质弹窗首屏可用
-      },
-    ],
-  } as AggregatedSearchResult);
-
-  const play = async (ds: DetailSong) => {
-    try {
-      await playerEngine.playTrack(
-        {
-          id: ds.song.id,
-          title: ds.song.title,
-          artist: ds.song.artist,
-          album: ds.song.album,
-          coverUrl: ds.song.coverUrl,
-          duration: ds.song.duration,
-          sourceId: ds.sourceId,
-          sourceSongId: ds.song.sourceSongId,
-          uri: `stream://${ds.sourceId}/${ds.song.sourceSongId}`,
-          availableSources: [{ sourceId: ds.sourceId, sourceSongId: ds.song.sourceSongId }],
-        },
-        selectedQuality
-      );
-    } catch (err) {
-      toast.error('播放失败', err instanceof Error ? err.message : String(err));
+    if (activeTab === 'charts' && !chartsLoaded) {
+      loadCharts(chartCat);
+      setChartsLoaded(true);
     }
+  }, [activeTab, chartsLoaded, chartCat, loadCharts]);
+
+  useEffect(() => {
+    if (activeTab === 'playlists' && !playlistsLoaded) {
+      loadPlaylists(playlistCat);
+      setPlaylistsLoaded(true);
+    }
+  }, [activeTab, playlistsLoaded, playlistCat, loadPlaylists]);
+
+  // ===== 分类切换时重载当前 Tab 数据 =====
+  useEffect(() => {
+    if (activeTab === 'charts' && chartsLoaded) {
+      loadCharts(chartCat);
+    }
+  }, [chartCat, activeTab, chartsLoaded, loadCharts]);
+
+  useEffect(() => {
+    if (activeTab === 'playlists' && playlistsLoaded) {
+      loadPlaylists(playlistCat);
+    }
+  }, [playlistCat, activeTab, playlistsLoaded, loadPlaylists]);
+
+  const handlePlay = async (song: AggregatedChartSong) => {
+    await playerEngine.playTrack({
+      id: song.id,
+      title: song.title,
+      artist: song.artist,
+      album: song.album,
+      coverUrl: song.coverUrl,
+      duration: song.duration,
+      sourceId: song.sourceId,
+      sourceSongId: song.sourceSongId,
+      uri: `stream://${song.sourceId}/${song.sourceSongId}`,
+    }, selectedQuality);
   };
 
-  const openChart = async (chart: ClassifiedChart) => {
-    setChartDetailTitle(`${chart.sourceName} · ${chart.chartName}`);
-    setChartSongs([]);
-    try {
-      const source = sourceRegistry.get(chart.sourceId);
-      if (!source?.getChartDetail) return;
-      const detail = await source.getChartDetail(chart.chartId);
-      setChartSongs((detail?.songs || []).map((s) => ({ song: s, sourceId: chart.sourceId, sourceName: chart.sourceName })));
-    } catch (err) {
-      toast.error('榜单详情拉取失败', err instanceof Error ? err.message : String(err));
-    }
-  };
+  const chartCatName = CHART_CATEGORIES.find((c) => c.id === chartCat)?.name || '';
+  const playlistCatName = CHART_CATEGORIES.find((c) => c.id === playlistCat)?.name || '';
 
-  const openPlaylist = async (sourceId: string, sourceName: string, pl: PlaylistSummary) => {
-    setPlaylistDetailTitle(pl.title);
-    setPlaylistSongs([]);
-    try {
-      const source = sourceRegistry.get(sourceId);
-      if (!source?.getPlaylist) return;
-      const detail = await source.getPlaylist(pl.id);
-      setPlaylistSongs((detail?.songs || []).map((s) => ({ song: s, sourceId, sourceName })));
-    } catch (err) {
-      toast.error('歌单详情拉取失败', err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const detail = (title: string, songs: DetailSong[]) =>
-    songs.length === 0 && !title ? null : (
-      <div className="mt-6">
-        {title && <h3 className="text-base font-bold mb-2">{title}</h3>}
-        {songs.length === 0 ? (
-          <div className="flex justify-center py-8 text-[var(--text-tertiary)]">
-            <Loader2 className="w-5 h-5 animate-spin" />
-          </div>
-        ) : (
-          songs.map((ds, i) => (
-            <SongRow
-              key={`${ds.song.id}-${i}`}
-              song={toDetail(ds.song, ds.sourceId)}
-              onPlay={() => play(ds)}
-              onMore={() => setSheetSong(toDetail(ds.song, ds.sourceId))}
-            />
-          ))
-        )}
-      </div>
-    );
+  const TABS: { key: TabKey; label: string; icon: typeof Trophy }[] = [
+    { key: 'charts', label: '聚合榜单', icon: Trophy },
+    { key: 'playlists', label: '聚合歌单', icon: ListMusic },
+  ];
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-4">曲库</h1>
+    <div className="max-w-4xl mx-auto pb-20">
+      <h1 className="text-2xl font-bold mb-6">曲库</h1>
 
-      {/* Tab 切换 */}
-      <div className="flex gap-2 mb-4">
-        {(
-          [
-            { key: 'charts', label: '榜单', icon: Trophy },
-            { key: 'playlists', label: '歌单', icon: ListMusic },
-          ] as const
-        ).map((t) => (
+      {/* ===== 顶部 Tab 切换 ===== */}
+      <div className="flex gap-2 mb-6 border-b border-[var(--border-color)]">
+        {TABS.map(({ key, label, icon: Icon }) => (
           <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-full text-sm font-medium ${
-              tab === t.key
-                ? 'bg-[var(--accent)] text-white'
-                : 'bg-[var(--bg-secondary)] text-[var(--text-secondary)]'
+            key={key}
+            onClick={() => setActiveTab(key)}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-[1px] ${
+              activeTab === key
+                ? 'border-[var(--accent)] text-[var(--accent)]'
+                : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
             }`}
           >
-            <t.icon className="w-4 h-4" />
-            {t.label}
+            <Icon className="w-4 h-4" />
+            {label}
           </button>
         ))}
       </div>
 
-      {tab === 'charts' && (
-        <div>
-          {chartsLoading ? (
-            <div className="flex justify-center py-16 text-[var(--text-tertiary)]">
-              <Loader2 className="w-6 h-6 animate-spin" />
-            </div>
-          ) : (
-            chartGroups.map((g) => (
-              <div key={g.categoryId} className="mb-5">
-                <h3 className="text-sm font-bold text-[var(--text-secondary)] mb-2">{g.categoryName}</h3>
-                <div className="flex flex-wrap gap-2">
-                  {g.charts.length === 0 ? (
-                    <span className="text-xs text-[var(--text-tertiary)]">暂无</span>
-                  ) : (
-                    g.charts.map((c) => (
-                      <button
-                        key={`${c.sourceId}-${c.chartId}`}
-                        onClick={() => openChart(c)}
-                        className="px-3 py-1.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] text-xs hover:border-[var(--accent)]"
-                      >
-                        <span className="text-[10px] text-[var(--text-tertiary)] mr-1">[{c.sourceName}]</span>
-                        {c.chartName}
-                      </button>
-                    ))
-                  )}
-                </div>
-              </div>
-            ))
-          )}
-          {detail(chartDetailTitle, chartSongs)}
-        </div>
-      )}
-
-      {tab === 'playlists' && (
-        <div>
-          <div className="flex flex-wrap gap-2 mb-4">
-            {PLAYLIST_CATEGORIES.map((c) => (
+      {/* ===== 聚合榜单 Tab ===== */}
+      {activeTab === 'charts' && (
+        <section>
+          {/* 榜单分类选择器 */}
+          <div className="flex gap-2 overflow-x-auto pb-2 mb-4 scrollbar-hide -mx-1 px-1">
+            {CHART_CATEGORIES.map((cat) => (
               <button
-                key={c.id}
-                onClick={() => setActiveCat(c.id)}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium ${
-                  activeCat === c.id
+                key={cat.id}
+                onClick={() => setChartCat(cat.id)}
+                className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                  chartCat === cat.id
                     ? 'bg-[var(--accent)] text-white'
-                    : 'bg-[var(--bg-secondary)] text-[var(--text-secondary)]'
+                    : 'bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]/80'
                 }`}
               >
-                {c.name}
+                {cat.name}
               </button>
             ))}
           </div>
-          {playlistsLoading ? (
-            <div className="flex justify-center py-16 text-[var(--text-tertiary)]">
-              <Loader2 className="w-6 h-6 animate-spin" />
+
+          {/* 榜单内容 */}
+          {chartLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-6 h-6 animate-spin text-[var(--text-tertiary)]" />
+              <span className="ml-2 text-sm text-[var(--text-tertiary)]">加载中…</span>
             </div>
-          ) : playlistGroups.length === 0 ? (
-            <div className="py-10 text-center text-sm text-[var(--text-tertiary)]">
-              该分类下暂无各源歌单数据（部分音源未提供此分类）
+          ) : chartResults.length > 0 && chartResults.every((r) => r.songs.length === 0) ? (
+            <div className="flex flex-col items-center justify-center py-12 text-[var(--text-tertiary)]">
+              <AlertCircle className="w-8 h-8 mb-2" />
+              <p className="text-sm">「{chartCatName}」分类下暂无文档映射的固定榜单ID</p>
             </div>
           ) : (
-            playlistGroups.map((g) => (
-              <div key={g.sourceId} className="mb-5">
-                <h3 className="text-sm font-bold text-[var(--text-secondary)] mb-2">{g.sourceName}</h3>
-                <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
-                  {g.playlists.map((pl) => (
-                    <button
-                      key={`${g.sourceId}-${pl.id}`}
-                      onClick={() => openPlaylist(g.sourceId, g.sourceName, pl)}
-                      className="text-left"
-                    >
-                      <div className="aspect-square rounded-lg overflow-hidden bg-[var(--bg-secondary)] mb-1">
-                        {pl.coverUrl ? (
-                          <img src={pl.coverUrl} alt={pl.title} className="w-full h-full object-cover" loading="lazy" />
-                        ) : null}
-                      </div>
-                      <div className="text-xs line-clamp-2 text-[var(--text-primary)]">{pl.title}</div>
-                    </button>
-                  ))}
+            <div className="space-y-4">
+              {chartResults.map((result) => (
+                <div key={result.sourceId}>
+                  {/* 源标题 */}
+                  <div
+                    className="flex items-center gap-2 mb-2 cursor-pointer"
+                    onClick={() => setExpandedChartSource(
+                      expandedChartSource === result.sourceId ? null : result.sourceId
+                    )}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${SOURCE_BADGE_COLORS[result.sourceId] || 'bg-gray-500'}`} />
+                    <span className="text-sm font-semibold">{result.sourceName}</span>
+                    <span className="text-xs text-[var(--text-tertiary)]">{result.chartName}</span>
+                    {result.error && <span className="text-xs text-red-400">({result.error})</span>}
+                    <ChevronRight className={`w-4 h-4 text-[var(--text-tertiary)] ml-auto transition-transform ${
+                      expandedChartSource === result.sourceId ? 'rotate-90' : ''
+                    }`} />
+                  </div>
+
+                  {/* 展开的歌曲列表 */}
+                  {expandedChartSource === result.sourceId && (
+                    <div className="ml-4 space-y-1">
+                      {result.songs.length === 0 ? (
+                        <p className="text-sm text-[var(--text-tertiary)] py-2">暂无数据</p>
+                      ) : (
+                        result.songs.map((song) => (
+                          <div
+                            key={`${result.sourceId}-${song.id}`}
+                            onClick={() => handlePlay(song)}
+                            className="flex items-center gap-3 p-2 rounded-lg hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer"
+                          >
+                            <span className={`w-5 text-center text-xs font-bold ${
+                              (song.rank || 0) <= 3 ? 'text-[var(--accent)]' : 'text-[var(--text-tertiary)]'
+                            }`}>
+                              {song.rank}
+                            </span>
+                            <div className="w-8 h-8 rounded bg-[var(--bg-secondary)] overflow-hidden flex-shrink-0">
+                              {song.coverUrl ? (
+                                <img src={song.coverUrl} alt={song.title} className="w-full h-full object-cover" loading="lazy" />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center">
+                                  <Music className="w-3 h-3 text-[var(--text-tertiary)]" />
+                                </div>
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-medium truncate">{song.title}</div>
+                              <div className="text-xs text-[var(--text-tertiary)] truncate">{song.artist}</div>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+
+                  {/* 折叠时显示前3首预览 */}
+                  {expandedChartSource !== result.sourceId && result.songs.length > 0 && (
+                    <div className="ml-4 space-y-1">
+                      {result.songs.slice(0, 3).map((song) => (
+                        <div
+                          key={`${result.sourceId}-${song.id}-preview`}
+                          onClick={() => handlePlay(song)}
+                          className="flex items-center gap-3 p-1.5 rounded-lg hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer"
+                        >
+                          <span className={`w-5 text-center text-xs font-bold ${
+                            (song.rank || 0) <= 3 ? 'text-[var(--accent)]' : 'text-[var(--text-tertiary)]'
+                          }`}>
+                            {song.rank}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm truncate">{song.title}</div>
+                            <div className="text-xs text-[var(--text-tertiary)] truncate">{song.artist}</div>
+                          </div>
+                        </div>
+                      ))}
+                      {result.songs.length > 3 && (
+                        <p className="text-xs text-[var(--text-tertiary)] pl-5 py-1">
+                          还有 {result.songs.length - 3} 首…
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))
+              ))}
+            </div>
           )}
-          {detail(playlistDetailTitle, playlistSongs)}
-        </div>
+        </section>
       )}
 
-      {sheetSong && (
-        <QualitySizeSheet song={sheetSong} open onClose={() => setSheetSong(null)} />
+      {/* ===== 聚合歌单 Tab ===== */}
+      {activeTab === 'playlists' && (
+        <section>
+          {/* 歌单分类选择器 */}
+          <div className="flex gap-2 overflow-x-auto pb-2 mb-4 scrollbar-hide -mx-1 px-1">
+            {CHART_CATEGORIES.map((cat) => (
+              <button
+                key={cat.id}
+                onClick={() => setPlaylistCat(cat.id)}
+                className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                  playlistCat === cat.id
+                    ? 'bg-[var(--accent)] text-white'
+                    : 'bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]/80'
+                }`}
+              >
+                {cat.name}
+              </button>
+            ))}
+          </div>
+
+          {/* 歌单内容 */}
+          {playlistLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="w-6 h-6 animate-spin text-[var(--text-tertiary)]" />
+              <span className="ml-2 text-sm text-[var(--text-tertiary)]">加载中…</span>
+            </div>
+          ) : playlistResults.length > 0 && playlistResults.every((r) => r.playlists.length === 0) ? (
+            <div className="flex flex-col items-center justify-center py-12 text-[var(--text-tertiary)]">
+              <AlertCircle className="w-8 h-8 mb-2" />
+              <p className="text-sm">「{playlistCatName}」分类下暂无文档映射的固定歌单/榜单</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {playlistResults.map((result) => (
+                <div key={result.sourceId}>
+                  {/* 源标题 */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className={`w-2 h-2 rounded-full ${SOURCE_BADGE_COLORS[result.sourceId] || 'bg-gray-500'}`} />
+                    <span className="text-sm font-semibold">{result.sourceName}</span>
+                    {result.error && <span className="text-xs text-red-400">({result.error})</span>}
+                  </div>
+
+                  {result.playlists.length === 0 ? (
+                    <p className="text-sm text-[var(--text-tertiary)] py-2">暂无数据</p>
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                      {result.playlists.map((playlist) => (
+                        <div key={playlist.id}>
+                          <div
+                            onClick={() => setExpandedPlaylist(
+                              expandedPlaylist === `${result.sourceId}-${playlist.id}`
+                                ? null
+                                : `${result.sourceId}-${playlist.id}`
+                            )}
+                            className="text-left cursor-pointer"
+                          >
+                            <div className="aspect-square rounded-lg overflow-hidden bg-[var(--bg-secondary)] mb-1.5">
+                              {playlist.coverUrl ? (
+                                <img src={playlist.coverUrl} alt={playlist.name} className="w-full h-full object-cover" loading="lazy" />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center">
+                                  <ListMusic className="w-8 h-8 text-[var(--text-tertiary)]" />
+                                </div>
+                              )}
+                            </div>
+                            <div className="text-xs font-medium line-clamp-2">{playlist.name}</div>
+                            <div className="text-[10px] text-[var(--text-tertiary)]">{playlist.songCount} 首</div>
+                          </div>
+
+                          {/* 展开的歌曲预览 */}
+                          {expandedPlaylist === `${result.sourceId}-${playlist.id}` && playlist.songs && (
+                            <div className="mt-2 space-y-1">
+                              {playlist.songs.map((song, idx) => (
+                                <div
+                                  key={`${song.id}-${idx}`}
+                                  onClick={() => playerEngine.playTrack({
+                                    id: song.id,
+                                    title: song.title,
+                                    artist: song.artist,
+                                    album: song.album,
+                                    coverUrl: song.coverUrl,
+                                    duration: song.duration,
+                                    sourceId: song.sourceId,
+                                    sourceSongId: song.sourceSongId,
+                                    uri: `stream://${song.sourceId}/${song.sourceSongId}`,
+                                  }, selectedQuality)}
+                                  className="flex items-center gap-2 p-1.5 rounded hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer"
+                                >
+                                  <span className="w-4 text-center text-[10px] text-[var(--text-tertiary)]">{idx + 1}</span>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-xs truncate">{song.title}</div>
+                                    <div className="text-[10px] text-[var(--text-tertiary)] truncate">{song.artist}</div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       )}
     </div>
   );
