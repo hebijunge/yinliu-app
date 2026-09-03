@@ -32,6 +32,7 @@ export const HOT_CHART_IDS: Record<string, string> = {
   kuwo: '16',
   migu: '27186466',
   qishui: '7036274230471712007',
+  bilibili: 'ranking_all',
 };
 
 /** 归类后的榜单条目（榜单广场展示用） */
