@@ -13,7 +13,6 @@ import { sizeCache } from './sizeCache';
  * 搜索：kuwo.cn/search/searchMusicBykeyWord（免登录标准JSON，优先）
  *       search.kuwo.cn/r.s（Python dict格式，回退）
  * 取链：nmobi.kuwo.cn/mobi.s（convert_url_with_sign，多域名并发）
- *       + antiserver.kuwo.cn/anti.s（低音质兜底）
  *       + musicapi.haitangw.net（第三方代理）
  * 歌词：kuwo.cn/openapi/v1/www/lyric/getlyric（免Cookie）
  *
@@ -35,7 +34,6 @@ export class KuwoSource extends BaseHttpSource {
     'https://mobi.kuwo.cn',
     'https://nmsublist.kuwo.cn',
   ];
-  private readonly ANTI_HOST = 'http://antiserver.kuwo.cn';
   private readonly HAITANG_HOST = 'https://musicapi.haitangw.net';
   private readonly COVER_BASE = 'https://img1.kuwo.cn/star/starheads/';
   private readonly ALBUM_COVER_BASE = 'https://img4.kuwo.cn/star/albumcover/';
@@ -310,21 +308,6 @@ export class KuwoSource extends BaseHttpSource {
       });
     }
 
-    // antiserver兜底（仅128k mp3）
-    candidates.push({
-      url: `${this.ANTI_HOST}/anti.s?type=convert_url&rid=MUSIC_${rid}&format=mp3&response=url`,
-      method: 'GET',
-      timeout: 8000,
-      priority: 3,
-      headers: { Referer: 'http://m.kuwo.cn/' },
-      resolve: async (resp) => {
-        const text = await resp.text();
-        const url = text.trim();
-        if (!url.startsWith('http')) return null;
-        return { url, quality, bitrate: 128, format: 'mp3', accurate: quality === Quality.LOW || quality === Quality.STANDARD };
-      },
-    });
-
     // 海棠第三方代理（超时 3 秒，不阻塞主链路）
     const level = this.haitangLevel(quality);
     const expectedBitrate = this.brToBitrate(br);
@@ -338,7 +321,8 @@ export class KuwoSource extends BaseHttpSource {
         const ct = resp.headers.get('content-type') || '';
         if (!ct.includes('audio') && !ct.includes('octet-stream')) return null;
         const url = `${this.HAITANG_HOST}/music/kw.php?id=${rid}&level=${level}&type=mp3`;
-        return { url, quality, bitrate: expectedBitrate, format: 'mp3', accurate: this.isBitrateAccurate(quality, expectedBitrate) };
+        // 海棠为第三方代理，无法校验真实码率，标记 accurate:false 作为降级 fallback
+        return { url, quality, bitrate: expectedBitrate, format: 'mp3', accurate: false };
       },
     });
 
@@ -396,7 +380,10 @@ export class KuwoSource extends BaseHttpSource {
       case Quality.LOW: return [48, 'aac'];
       case Quality.STANDARD: return [128, 'mp3'];
       case Quality.HIGH: return [320, 'mp3'];
-      case Quality.LOSSLESS: return [2000, 'flac'];
+      case Quality.LOSSLESS:
+      case Quality.HIFI:
+      case Quality.HIRES:
+        return [2000, 'flac'];
       default: return null;
     }
   }
@@ -411,9 +398,9 @@ export class KuwoSource extends BaseHttpSource {
     return 8;
   }
 
-  /** 判断实际码率是否与请求音质匹配
-   * v20.1-fix: 接受升级（更高码率=更好音质），低/标准音质放宽格式限制
-   *（aac/ogg/mp3/m4a 等价），降级时仍允许小幅偏差做 fallback。
+  /** 判断实际码率与格式是否与请求音质严格匹配
+   * 请求 128k mp3 必须返回 128k mp3，不允许升级、降级或格式替换。
+   * 容差仅覆盖编码器小幅浮动（mp3/aac ±8kbps，flac ±80kbps）。
    */
   private isBitrateAccurate(requestedQuality: Quality, actualBitrate: number, actualFormat?: string): boolean {
     const expected = this.qualityExpectation(requestedQuality);
@@ -421,27 +408,9 @@ export class KuwoSource extends BaseHttpSource {
     const [expBr, expFmt] = expected;
     const tol = this.bitrateTolerance(actualFormat || expFmt);
 
-    // 接受升级（更高码率 = 更好音质 = 准确）
-    if (actualBitrate >= expBr - tol && actualBitrate <= expBr * 3) {
-      // 对低/标准音质放宽格式限制（aac/ogg/mp3/m4a 等价）
-      if (requestedQuality === Quality.LOW || requestedQuality === Quality.STANDARD) {
-        return true;
-      }
-      // 高音质以上仍需格式一致
-      const formatMatch = !actualFormat || actualFormat === expFmt;
-      return formatMatch;
-    }
-
-    // 降级时：低/标准音质允许小幅降级 + 格式等价
-    if ((requestedQuality === Quality.LOW || requestedQuality === Quality.STANDARD) && actualBitrate >= expBr * 0.7) {
-      const okFormats = ['mp3', 'aac', 'ogg', 'm4a', 'mp4'];
-      if (!actualFormat || okFormats.includes(actualFormat.toLowerCase())) {
-        return true;
-      }
-    }
-
     const formatMatch = !actualFormat || actualFormat === expFmt;
-    return formatMatch && Math.abs(actualBitrate - expBr) <= tol;
+    const bitrateMatch = Math.abs(actualBitrate - expBr) <= tol;
+    return formatMatch && bitrateMatch;
   }
 
   private isAntiTheft(url: string): boolean {
