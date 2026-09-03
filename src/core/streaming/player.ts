@@ -833,6 +833,12 @@ class StreamingAudioPlayer {
           this.setState('playing');
         }
       });
+
+      this.audio.addEventListener('pause', () => {
+        if (this.state === 'playing') {
+          this.setState('paused');
+        }
+      });
     });
   }
 
@@ -881,6 +887,12 @@ class StreamingAudioPlayer {
     this.audio.addEventListener('playing', () => {
       if (this.state === 'buffering' || this.state === 'loading') {
         this.setState('playing');
+      }
+    });
+
+    this.audio.addEventListener('pause', () => {
+      if (this.state === 'playing') {
+        this.setState('paused');
       }
     });
   }

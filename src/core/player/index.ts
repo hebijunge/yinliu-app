@@ -998,7 +998,19 @@ export class PlayerEngine {
     if (this.isStreaming) {
       void streamingAudioPlayer.play();
     } else {
-      this.audio?.play();
+      this.audio?.play().catch((err) => {
+        if (this.state === 'playing') {
+          this.setState('paused', 'system');
+        }
+        debugLogger.warn('player', '恢复播放失败', {
+          track: this.currentTrack?.title,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
+    if (this.state !== 'playing') {
+      this.setState('playing', 'user');
+      this.startProgressTracking();
     }
     debugLogger.info('player', '用户恢复播放', {
       track: this.currentTrack?.title,
