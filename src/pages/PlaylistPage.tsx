@@ -3,7 +3,7 @@ import { Plus, Trash2, Edit3, ListMusic, Play, Link2, Loader2, CheckCircle2, Ale
 import { usePlaylistStore } from '../shared/store/playlistStore';
 import { usePlayerStore } from '../shared/store/playerStore';
 import { playerEngine } from '../core/player';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import { SkeletonPlaylistGrid } from '../components/ui/Skeleton';
 import { toast } from '../shared/components/Toast';
 import { playlistImporter } from '../modules/music/playlistImporter';
@@ -224,36 +224,38 @@ export default function PlaylistPage() {
               key={pl.id}
               className="group relative rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] overflow-hidden hover:border-[var(--accent)]/30 transition-all duration-200"
             >
-              <a href={`/playlists?id=${pl.id}`} className="block">
+              <Link to={`/playlists?id=${pl.id}`} className="block">
                 <div className="aspect-square bg-[var(--bg-tertiary)] flex items-center justify-center">
                   <ListMusic className="w-12 h-12 text-[var(--text-tertiary)]" />
                 </div>
-                <div className="p-4">
-                  {editingId === pl.id ? (
-                    <div className="flex gap-1">
-                      <input
-                        value={editName}
-                        onChange={(e) => setEditName(e.target.value)}
-                        className="yinliu-input text-sm py-1 px-2 flex-1"
-                        autoFocus
-                        onBlur={() => {
+              </Link>
+              <div className="p-4">
+                {editingId === pl.id ? (
+                  <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      className="yinliu-input text-sm py-1 px-2 flex-1"
+                      autoFocus
+                      onBlur={() => {
+                        if (editName.trim()) renamePlaylist(pl.id, editName.trim());
+                        setEditingId(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
                           if (editName.trim()) renamePlaylist(pl.id, editName.trim());
                           setEditingId(null);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            if (editName.trim()) renamePlaylist(pl.id, editName.trim());
-                            setEditingId(null);
-                          }
-                        }}
-                      />
-                    </div>
-                  ) : (
+                        }
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <Link to={`/playlists?id=${pl.id}`} className="block">
                     <h3 className="font-medium truncate text-[var(--text-primary)]">{pl.name}</h3>
-                  )}
-                  <p className="text-xs text-[var(--text-tertiary)] mt-1">{pl.songCount} 首歌曲</p>
-                </div>
-              </a>
+                  </Link>
+                )}
+                <p className="text-xs text-[var(--text-tertiary)] mt-1">{pl.songCount} 首歌曲</p>
+              </div>
 
               {/* Actions */}
               {!pl.id.startsWith('sys_') && editingId !== pl.id && (
@@ -342,9 +344,9 @@ function ImportReportView({ report, onClose }: { report: ImportReport; onClose: 
       )}
 
       <div className="flex gap-2 pt-1">
-        <a href={`/playlists?id=${playlistId}`} className="yinliu-btn text-xs flex-1 text-center">
+        <Link to={`/playlists?id=${playlistId}`} className="yinliu-btn text-xs flex-1 text-center">
           打开歌单
-        </a>
+        </Link>
         <button onClick={onClose} className="yinliu-btn-secondary text-xs">
           关闭
         </button>

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play } from 'lucide-react';
 import { toast } from '../shared/components/Toast';
 import { useSearchStore } from '../shared/store/searchStore';
@@ -68,14 +69,15 @@ export default function SearchPage() {
     return () => observer.disconnect();
   }, [displayCount, results.length]);
 
-  const handleSearch = useCallback(async () => {
-    if (!inputValue.trim()) return;
-    setKeyword(inputValue);
+  const handleSearch = useCallback(async (termOverride?: string) => {
+    const term = (termOverride ?? inputValue).trim();
+    if (!term) return;
+    setKeyword(term);
     setSearching(true);
-    addToHistory(inputValue);
+    addToHistory(term);
     try {
       const { results, sourceStats } = await searchEngine.search(
-        { keyword: inputValue, page: 0, pageSize: 30 },
+        { keyword: term, page: 0, pageSize: 30 },
         { sources: selectedSources, timeout: 10000 }
       );
       setResults(results);
@@ -90,6 +92,19 @@ export default function SearchPage() {
       setSearching(false);
     }
   }, [inputValue, selectedSources, setKeyword, setSearching, addToHistory, setResults, setSourceStats]);
+
+  // 支持从首页带词跳转（/search?q=xxx）：进入页面自动搜索一次
+  const [searchParams] = useSearchParams();
+  const lastAutoQRef = useRef<string>('');
+  const qParam = searchParams.get('q') ?? '';
+  useEffect(() => {
+    const q = qParam.trim();
+    if (q && q !== lastAutoQRef.current) {
+      lastAutoQRef.current = q;
+      setInputValue(q);
+      void handleSearch(q);
+    }
+  }, [qParam, handleSearch]);
 
   const handlePlay = async (result: AggregatedSearchResult) => {
     if (!result.sources || result.sources.length === 0) {
@@ -201,7 +216,7 @@ export default function SearchPage() {
           />
         </div>
         <button
-          onClick={handleSearch}
+          onClick={() => handleSearch()}
           disabled={isSearching}
           className="yinliu-btn flex items-center gap-2"
         >
@@ -249,8 +264,7 @@ export default function SearchPage() {
         <div className="flex gap-3 mb-4 flex-wrap">
           {Object.entries(sourceStats).map(([id, stat]) => (
             <div key={id} className="text-xs px-2 py-1 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
-              {/* v19.2：搜索结果不再显示各源请求用时（latency），仅保留条数与错误标记 */}
-              {id}: {stat.total}条 {stat.error && <span className="text-red-500">(错误)</span>}
+              {id}: {stat.total}条 {stat.latency}ms {stat.error && <span className="text-red-500">(错误)</span>}
             </div>
           ))}
         </div>
