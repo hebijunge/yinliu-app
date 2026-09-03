@@ -285,12 +285,22 @@ export class KugouSource extends BaseHttpSource {
         if (!data?.url) return null;
         const url = data.url as string;
         if (!url.startsWith('http')) return null;
-        return { url, quality, bitrate: 128, format: 'mp3', accurate: true };
+        // HEAD 校验实际格式/大小，不标 accurate 让 BaseHttpSource 兜底校验
+        try {
+          const head = await platformFetch(url, { method: 'HEAD', timeout: 2000 });
+          const ct = head.headers.get('content-type') || '';
+          const cl = head.headers.get('content-length') || '0';
+          const format = ct.includes('flac') ? 'flac' : ct.includes('mpeg') || ct.includes('mp3') ? 'mp3' : 'mp3';
+          const bitrate = this.estimateBitrate(cl, quality);
+          return { url, quality, bitrate, format, accurate: false };
+        } catch {
+          return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
+        }
       },
     });
 
-    // 海棠resolve-url（POST JSON）—— 仅用于 lossless 档，超时 3 秒
-    if (quality === Quality.LOSSLESS || quality === Quality.HIFI || quality === Quality.HIRES) {
+    // 海棠resolve-url（POST JSON）—— HIGH/LOSSLESS/HIFI/HIRES 均走海棠，超时 3 秒
+    if (quality === Quality.HIGH || quality === Quality.LOSSLESS || quality === Quality.HIFI || quality === Quality.HIRES) {
       candidates.push({
         url: this.HAITANG_URL,
         method: 'POST',
@@ -308,26 +318,47 @@ export class KugouSource extends BaseHttpSource {
           const url = data.url as string;
 
           // HEAD 音质校验（带 2 秒独立超时）
-          let isFlac = false;
+          let ct = '';
           let sizeMb = 0;
           try {
-            const head = await platformFetch(url, {
-              method: 'HEAD',
-              timeout: 2000,
-            });
-            const ct = head.headers.get('content-type') || '';
+            const head = await platformFetch(url, { method: 'HEAD', timeout: 2000 });
+            ct = head.headers.get('content-type') || '';
             const cl = head.headers.get('content-length') || '0';
             const sizeBytes = parseInt(cl, 10) || 0;
             sizeMb = sizeBytes / (1024 * 1024);
-            isFlac = ct.includes('flac') || ct.includes('x-flac');
           } catch {
             // HEAD 失败不阻断，降级为 inaccurate 返回
           }
 
-          if (!isFlac || sizeMb < 10) {
-            return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
+          const isFlac = ct.includes('flac') || ct.includes('x-flac');
+          const isMpeg = ct.includes('mpeg') || ct.includes('mp3');
+
+          // 获取歌曲时长用于动态阈值计算
+          const cached = this.hashCache.get(songId);
+          const durationSec = cached?.duration || 180; // 默认3分钟
+
+          if (quality === Quality.LOSSLESS || quality === Quality.HIFI || quality === Quality.HIRES) {
+            // FLAC 最低阈值：按 500kbps * duration 估算，至少 3MB
+            const minFlacMb = Math.max(3, (500 * durationSec) / 8 / 1024 / 1024);
+            if (!isFlac || sizeMb < minFlacMb) {
+              return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
+            }
+            return { url, quality, bitrate: this.levelToBitrate(level), format: 'flac', accurate: true };
           }
-          return { url, quality, bitrate: this.levelToBitrate(level), format: 'flac', accurate: true };
+
+          if (quality === Quality.HIGH) {
+            if (!isMpeg) {
+              return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
+            }
+            // 320K MP3 最低阈值：按 192kbps * duration 估算，至少 2MB
+            const minMp3Mb = Math.max(2, (192 * durationSec) / 8 / 1024 / 1024);
+            if (sizeMb < minMp3Mb) {
+              return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
+            }
+            return { url, quality, bitrate: this.levelToBitrate(level), format: 'mp3', accurate: true };
+          }
+
+          return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
         },
       });
     }
@@ -360,9 +391,8 @@ export class KugouSource extends BaseHttpSource {
       case Quality.STANDARD: return 'standard';
       case Quality.HIGH: return 'exhigh';
       case Quality.LOSSLESS:
-      case Quality.HIFI:
-      case Quality.HIRES:
-        return 'lossless';
+      case Quality.HIFI: return 'lossless';
+      case Quality.HIRES: return 'hires';
       default: return 'standard';
     }
   }
@@ -372,6 +402,7 @@ export class KugouSource extends BaseHttpSource {
       case 'standard': return 128;
       case 'exhigh': return 320;
       case 'lossless': return 1000;
+      case 'hires': return 1800;
       default: return 128;
     }
   }
