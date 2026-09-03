@@ -34,18 +34,22 @@ export default function QualitySelector({ onClose }: Props) {
 
   const handleSelect = async (q: Quality) => {
     if (q === currentQuality || switching) return;
+    const prevQuality = currentQuality;
     usePlayerStore.getState().setQuality(q);
     if (currentTrack) {
       setSwitching(true);
       try {
         await playerEngine.switchQuality(q);
+        onClose();
       } catch {
-        // 切档失败由 engine 的 error 事件统一上报
+        // 切档失败：回滚到原档位（engine 已弹 Toast 提示原因），弹窗保持打开供用户重选
+        usePlayerStore.getState().setQuality(prevQuality);
       } finally {
         setSwitching(false);
       }
+    } else {
+      onClose();
     }
-    onClose();
   };
 
   return (

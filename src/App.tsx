@@ -37,6 +37,7 @@ import { useSettingsStore } from './shared/store/settingsStore';
 import { configureAudioFocus, updateAudioFocusOptions } from './core/player/audioFocus';
 import { floatingLyricsBridge } from './core/player/floatingLyricsBridge';
 import { initDatabase } from './shared/database';
+import { toast } from './shared/components/Toast';
 
 /**
  * v23 修复走查 #7：启动遮罩。
@@ -180,6 +181,14 @@ function App() {
     const unsub3c = playerEngine.on('mediaAction', ({ action }) => {
       console.log('[App] media action from system control:', action);
     });
+    // v23: 播放失败统一 toast 提示（含播放中途失败）—— 此前 error 事件无人订阅，失败零提示
+    const unsub3d = playerEngine.on('error', ({ message }) => {
+      toast.error('播放失败', message || '播放中途出现错误，可点击重试');
+    });
+    // v23: 缓冲状态 → store（UI 显示缓冲指示器）
+    const unsub3e = playerEngine.on('bufferingChange', ({ buffering }) => {
+      usePlayerStore.getState().setBuffering(buffering);
+    });
 
     // 绑定下载事件到 Store
     const unsub4 = downloadEngine.on('stateChange', ({ task }) => {
@@ -221,6 +230,8 @@ function App() {
       unsub3();
       unsub3b();
       unsub3c();
+      unsub3d();
+      unsub3e();
       unsub4();
       unsub5();
       unsub6();

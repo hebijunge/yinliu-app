@@ -205,8 +205,8 @@ function guessMime(url: string): string {
  * - playing: 显示通知栏媒体卡片（Android 上会启动 Foreground Service）
  * - paused / none: 通知栏卡片保留但显示暂停态
  */
-export async function updatePlaybackState(state: 'playing' | 'paused' | 'none'): Promise<void> {
-  if (state === lastNotifiedPlaybackState) return;
+export async function updatePlaybackState(state: 'playing' | 'paused' | 'none', force = false): Promise<void> {
+  if (!force && state === lastNotifiedPlaybackState) return;
   const prevNotified = lastNotifiedPlaybackState;
   lastNotifiedPlaybackState = state;
 

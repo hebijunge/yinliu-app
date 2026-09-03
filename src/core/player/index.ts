@@ -65,6 +65,8 @@ interface PlayerEventMap {
   };
   /** 系统媒体会话 / 锁屏控制触发的事件 */
   mediaAction: { action: string; seekTime: number | null };
+  /** v23: 缓冲状态变化（流式 buffering/seeking 或普通 audio waiting） */
+  bufferingChange: { buffering: boolean };
 }
 
 export class PlayerEngine {
@@ -97,9 +99,23 @@ export class PlayerEngine {
   // v20.1-fix: 切歌取消旧取链 AbortController
   private playAbortController: AbortController | null = null;
 
+  // v23: 快速切歌竞态防护 —— 每次 playTrack 递增，过期请求的错误不再上报 UI
+  private playGeneration = 0;
+  // v23: 上一首/下一首切歌进行中标记（防抖锁：切歌过程中再次点击无效）
+  private switchInProgress = false;
+  // v23: 缓冲状态缓存（去重，避免重复 emit）
+  private bufferingActive = false;
+
   private emit<K extends keyof PlayerEventMap>(event: K, data: PlayerEventMap[K]) {
     const callbacks = this.listeners[event] || [];
     callbacks.forEach((cb) => cb(data as unknown));
+  }
+
+  /** v23: 缓冲状态变化（去重后广播，UI 据此显示缓冲指示器） */
+  private setBuffering(buffering: boolean): void {
+    if (this.bufferingActive === buffering) return;
+    this.bufferingActive = buffering;
+    this.emit('bufferingChange', { buffering });
   }
 
   on<K extends keyof PlayerEventMap>(event: K, callback: (data: PlayerEventMap[K]) => void): () => void {
@@ -208,6 +224,31 @@ export class PlayerEngine {
       currentTime: this.getCurrentTime(),
       duration: this.getDuration(),
     }));
+
+    // v23: 前后台切换时强制同步状态与进度。
+    // 后台期间定时器被系统节流，回前台后进度条/通知栏可能停留在旧值
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible') return;
+        try {
+          const currentTime = this.getCurrentTime();
+          const duration = this.getDuration();
+          // 强制向 UI 广播一次当前进度（修复进度条不同步）
+          this.emit('progress', {
+            currentTime,
+            duration,
+            progress: duration > 0 ? currentTime / duration : 0,
+          });
+          void updatePosition(currentTime, duration);
+          // 强制刷新系统媒体会话播放状态（force 绕过内部去重缓存）
+          void updatePlaybackState(this.state === 'playing' ? 'playing' : 'paused', true);
+        } catch (err) {
+          debugLogger.warn('player', '前后台切换同步失败', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      });
+    }
   }
 
   getState(): PlayerState {
@@ -381,7 +422,11 @@ export class PlayerEngine {
     this.lastQuality = quality;
     this.currentTrack = track;
     this.setState('loading');
+    this.setBuffering(false);
     this.prefetchTriggered = false;
+
+    // v23: 本次播放请求的代际号 —— 被更新的切歌取代后，其错误不再上报
+    const generation = ++this.playGeneration;
 
     // v20.1-fix: 取消上一首的取链请求（快速切歌）
     if (this.playAbortController) {
@@ -469,6 +514,14 @@ export class PlayerEngine {
 
       return result;
     } catch (err) {
+      // v23: 过期播放请求（已被更新的切歌取代）不再进入 error 态 ——
+      // 修复快速连点切歌时旧请求的 AbortError 误报"播放失败"
+      if (generation !== this.playGeneration) {
+        debugLogger.info('player', `忽略过期播放请求的错误: ${track.title}`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
       this.setState('error');
       const msg = err instanceof Error ? err.message : '播放失败';
       this.emit('error', { message: msg });
@@ -495,7 +548,19 @@ export class PlayerEngine {
     this.audio.addEventListener('canplay', () => {
       // 标记为用户主动播放意图
       this.setState('playing', 'user');
+      this.setBuffering(false);
       this.startProgressTracking();
+    });
+
+    this.audio.addEventListener('waiting', () => {
+      // v23: 播放中数据不足进入缓冲
+      if (this.state === 'playing') {
+        this.setBuffering(true);
+      }
+    });
+
+    this.audio.addEventListener('playing', () => {
+      this.setBuffering(false);
     });
 
     this.audio.addEventListener('ended', () => {
@@ -621,54 +686,8 @@ export class PlayerEngine {
         );
       }
 
-      // 设置回调
-      streamingAudioPlayer.setCallbacks({
-        onStateChange: (streamState: StreamingState) => {
-          const stateMap: Record<StreamingState, PlayerState> = {
-            idle: 'idle',
-            loading: 'loading',
-            ready: 'loading',
-            playing: 'playing',
-            paused: 'paused',
-            buffering: 'loading',
-            seeking: 'loading',
-            completed: 'idle',
-            error: 'error',
-          };
-          const mapped = stateMap[streamState];
-          if (mapped && mapped !== this.state) {
-            this.setState(mapped, streamState === 'playing' ? 'user' : 'engine');
-          }
-        },
-        onProgress: (currentTime: number, duration: number) => {
-          this.emit('progress', {
-            currentTime,
-            duration,
-            progress: duration > 0 ? currentTime / duration : 0,
-          });
-          void updatePosition(currentTime, duration);
-
-          if (duration > 0 && currentTime / duration > 0.5 && !this.prefetchTriggered) {
-            this.prefetchTriggered = true;
-            void this.prefetchNextTrack();
-          }
-        },
-        onError: (message: string) => {
-          this.setState('error', 'system');
-          this.emit('error', { message });
-          debugLogger.error('player', `流式播放错误: ${track.title}`, { message });
-        },
-        onEnded: () => {
-          this.setState('idle', 'engine');
-          this.stopProgressTracking();
-          this.emit('ended', undefined);
-          debugLogger.info('player', `流式播放结束: ${track.title}`);
-        },
-        onCanPlay: () => {
-          this.setState('playing', 'user');
-          this.startProgressTracking();
-        },
-      });
+      // v23: 统一使用 buildStreamingCallbacks（含缓冲状态上报），避免两套映射漂移
+      streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
       return;
     }
 
@@ -886,6 +905,8 @@ export class PlayerEngine {
           }
           this.setState(mapped, source);
         }
+        // v23: 广播缓冲状态（buffering/seeking → UI 显示缓冲指示器）
+        this.setBuffering(streamState === 'buffering' || streamState === 'seeking');
       },
       onProgress: (currentTime: number, duration: number) => {
         this.emit('progress', {
@@ -926,6 +947,7 @@ export class PlayerEngine {
       this.audio?.pause();
     }
     this.setState('paused', 'user');
+    this.setBuffering(false);
     this.stopProgressTracking();
     debugLogger.info('player', '用户暂停播放', {
       track: this.currentTrack?.title,
@@ -993,6 +1015,7 @@ export class PlayerEngine {
       this.audio.currentTime = 0;
     }
     this.setState('idle', 'user');
+    this.setBuffering(false);
     this.stopProgressTracking();
     void clearMediaSession();
     debugLogger.info('player', '用户停止播放', {
@@ -1004,8 +1027,30 @@ export class PlayerEngine {
     if (this.isStreaming) {
       void streamingAudioPlayer.seek(time);
     } else if (this.audio) {
-      this.audio.currentTime = Math.max(0, Math.min(time, this.audio.duration || 0));
+      // v23: duration 为 NaN/0（元数据未就绪）时不做截断，避免 seek 被钳到 0
+      const duration = this.audio.duration;
+      const target =
+        isFinite(duration) && duration > 0
+          ? Math.max(0, Math.min(time, duration))
+          : Math.max(0, time);
+      try {
+        this.audio.currentTime = target;
+      } catch (err) {
+        debugLogger.warn('player', 'seek 失败', {
+          time,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
+  }
+
+  /**
+   * v23: 播放失败后重试当前曲目（UI"播放失败，点击重试"入口）
+   */
+  async retry(): Promise<PlayUrlResult | null> {
+    if (!this.currentTrack) return null;
+    debugLogger.info('player', `重试播放: ${this.currentTrack.title}`);
+    return await this.playTrack(this.currentTrack, this.lastQuality);
   }
 
   setVolume(volume: number): void {
@@ -1043,6 +1088,20 @@ export class PlayerEngine {
   }
 
   async playNext(): Promise<void> {
+    // v23: 切歌防抖锁 —— 切歌过程中再次点击无效（修复快速连点导致的跳歌/误报）
+    if (this.switchInProgress) {
+      debugLogger.info('player', '切歌进行中，忽略本次下一首请求');
+      return;
+    }
+    this.switchInProgress = true;
+    try {
+      await this.playNextInternal();
+    } finally {
+      this.switchInProgress = false;
+    }
+  }
+
+  private async playNextInternal(): Promise<void> {
     const store = (await import('../../shared/store/playerStore')).usePlayerStore.getState();
     const { queue, currentIndex, repeatMode } = store;
     if (queue.length === 0) {
@@ -1091,6 +1150,20 @@ export class PlayerEngine {
   }
 
   async playPrevious(): Promise<void> {
+    // v23: 切歌防抖锁（与 playNext 一致）
+    if (this.switchInProgress) {
+      debugLogger.info('player', '切歌进行中，忽略本次上一首请求');
+      return;
+    }
+    this.switchInProgress = true;
+    try {
+      await this.playPreviousInternal();
+    } finally {
+      this.switchInProgress = false;
+    }
+  }
+
+  private async playPreviousInternal(): Promise<void> {
     const store = (await import('../../shared/store/playerStore')).usePlayerStore.getState();
     const { queue, currentIndex, repeatMode } = store;
     if (queue.length === 0) return;
@@ -1140,7 +1213,7 @@ export class PlayerEngine {
     }
   }
 
-  /** 切换音质：对当前曲目重新取链并接续播放进度 */
+  /** 切换音质：对当前曲目重新取链并接续播放进度（v23: 成功/失败均给 toast 反馈） */
   async switchQuality(quality: Quality): Promise<PlayUrlResult | null> {
     if (!this.currentTrack) return null;
 
@@ -1157,17 +1230,23 @@ export class PlayerEngine {
       toQuality: quality,
     });
 
-    const result = await this.playTrack(track, quality);
+    try {
+      const result = await this.playTrack(track, quality);
 
-    if (resumeTime > 0) {
-      try {
-        this.seek(Math.min(resumeTime, this.getDuration() || resumeTime));
-      } catch {
-        // seek 失败不影响播放
+      if (resumeTime > 0) {
+        try {
+          this.seek(Math.min(resumeTime, this.getDuration() || resumeTime));
+        } catch {
+          // seek 失败不影响播放
+        }
       }
-    }
 
-    return result;
+      toast.success('音质切换成功', `当前曲目已按新音质重新加载，进度已接续`);
+      return result;
+    } catch (err) {
+      toast.error('音质切换失败', '该音源可能未提供所选档位，请尝试其他档位');
+      throw err;
+    }
   }
 
   private startProgressTracking() {
@@ -1183,6 +1262,18 @@ export class PlayerEngine {
         });
         // 同步到系统媒体会话（内部有节流）
         void updatePosition(currentTime, duration);
+
+        // v23: 非流式路径（本地/已下载文件）也触发下一首预加载，
+        // 此前预加载只挂在流式回调上，本地路径切歌永远无预加载
+        if (
+          !this.isStreaming &&
+          duration > 0 &&
+          currentTime / duration > 0.5 &&
+          !this.prefetchTriggered
+        ) {
+          this.prefetchTriggered = true;
+          void this.prefetchNextTrack();
+        }
       }
     }, 250);
   }

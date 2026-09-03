@@ -20,6 +20,8 @@ interface PlayerStore {
   isMuted: boolean;
   /** 实际生效的音源（多源降级后可能不同于 track.sourceId） */
   actualSourceId: string | null;
+  /** v23: 是否处于缓冲等待（流式 buffering/seeking 或 audio waiting） */
+  isBuffering: boolean;
 
   /** 全屏播放页是否打开（返回键据此决定收起播放页还是走默认行为） */
   fullscreenOpen: boolean;
@@ -38,6 +40,7 @@ interface PlayerStore {
   setQuality: (quality: Quality) => void;
   setActualQuality: (quality: Quality | null) => void;
   setActualSourceId: (sourceId: string | null) => void;
+  setBuffering: (buffering: boolean) => void;
   setFullscreenOpen: (open: boolean) => void;
   setPreview: (isPreview: boolean) => void;
   toggleMute: () => void;
@@ -66,6 +69,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   isPreview: false,
   isMuted: false,
   actualSourceId: null,
+  isBuffering: false,
   fullscreenOpen: false,
 
   queue: [],
@@ -84,6 +88,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   },
   setActualQuality: (actualQuality) => set({ actualQuality }),
   setActualSourceId: (actualSourceId) => set({ actualSourceId }),
+  setBuffering: (isBuffering) => set({ isBuffering }),
   setFullscreenOpen: (fullscreenOpen) => set({ fullscreenOpen }),
   setPreview: (isPreview) => set({ isPreview }),
   toggleMute: () => set((s) => ({ isMuted: !s.isMuted })),

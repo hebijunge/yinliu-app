@@ -77,6 +77,8 @@ class StreamingAudioPlayer {
 
   // 播放控制
   private pendingSeekTime = -1;
+  /** v23-fix: seek 前是否处于播放态（seek 数据到位后据此恢复播放/暂停） */
+  private seekResumePlay = false;
   private lastReportedTime = 0;
   private progressTimer: number | null = null;
   private blobUrl: string | null = null;
@@ -514,16 +516,29 @@ class StreamingAudioPlayer {
 
   /**
    * Seek 到指定时间（秒）
+   * v23-fix: 修复 seek 到未缓存位置不生效的回弹问题：
+   * 1. 元数据缺失（totalSize/duration 未知）时直接交给浏览器 seek，不再静默 return
+   * 2. 未缓存位置重启下载后，由 onChunkComplete 消费 pendingSeekTime 回填播放位置
    */
   async seek(time: number): Promise<void> {
-    if (!this.audio || this.totalSize === 0) return;
+    if (!this.audio) return;
 
-    const duration = this.audio.duration || 1;
-    const clampedTime = Math.max(0, Math.min(time, duration));
+    const duration = this.audio.duration || 0;
+    const clampedTime = duration > 0 ? Math.max(0, Math.min(time, duration)) : Math.max(0, time);
 
     // v21.3: 加密流由浏览器自行处理 seek（blob URL 顺序增长）
     if (this.isEncryptedStream) {
       this.audio.currentTime = clampedTime;
+      return;
+    }
+
+    // v23-fix: 元数据缺失时直接 seek（已加载 blob 范围内生效），避免进度条回弹
+    if (this.totalSize === 0 || duration <= 0) {
+      try {
+        this.audio.currentTime = clampedTime;
+      } catch {
+        // ignore
+      }
       return;
     }
 
@@ -543,8 +558,11 @@ class StreamingAudioPlayer {
     }
 
     // 未缓存，需要重新从目标位置下载
+    // v23-fix: 先记录 seek 前的播放态，供数据到位后恢复
+    const wasPlaying = this.state === 'playing';
     this.setState('seeking');
     this.pendingSeekTime = clampedTime;
+    this.seekResumePlay = wasPlaying;
 
     // 停止当前下载
     await this.fetcher.stop();
@@ -552,10 +570,10 @@ class StreamingAudioPlayer {
     // 清理当前缓冲（保留已下载的数据）
     // 不清理 chunks，因为它们可能包含 seek 目标附近的数据
 
-    // 从 seek 位置重新开始下载
-    const url = this.fetcher['url']; // 从 fetcher 获取 URL
-    const headers = this.fetcher['headers'];
-    await this.fetcher.start(url, headers, bytePosition);
+    // 从 seek 位置重新开始下载（skipHead: totalSize 已知，省一次 HEAD 往返）
+    const url = this.fetcher.getUrl();
+    const headers = this.fetcher.getHeaders();
+    await this.fetcher.start(url, headers, bytePosition, { skipHead: true });
   }
 
   /**
@@ -652,6 +670,7 @@ class StreamingAudioPlayer {
     this.totalDownloaded = 0;
     this.totalSize = 0;
     this.pendingSeekTime = -1;
+    this.seekResumePlay = false;
     this.mseQueue = [];
     this.mseUpdating = false;
     this.cacheKey = '';
@@ -748,7 +767,11 @@ class StreamingAudioPlayer {
     if (allData.length === 0) {
       try {
         const newUrl = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
-        const currentTime = this.audio?.currentTime ?? 0;
+        // v23-fix: seek 未回填时优先用 seek 目标位置恢复
+        const currentTime = this.pendingSeekTime >= 0 ? this.pendingSeekTime : (this.audio?.currentTime ?? 0);
+        if (this.pendingSeekTime >= 0) {
+          this.pendingSeekTime = -1;
+        }
         if (this.blobUrl) {
           URL.revokeObjectURL(this.blobUrl);
         }
@@ -836,7 +859,12 @@ class StreamingAudioPlayer {
     }
 
     // 记录当前播放时间
-    const currentTime = this.audio?.currentTime ?? 0;
+    // v23-fix: seek 未回填时优先用 seek 目标位置恢复（否则刷新后回到旧位置 → 回弹）
+    const currentTime = this.pendingSeekTime >= 0 ? this.pendingSeekTime : (this.audio?.currentTime ?? 0);
+    const hadPendingSeek = this.pendingSeekTime >= 0;
+    if (hadPendingSeek) {
+      this.pendingSeekTime = -1;
+    }
 
     // 释放旧 URL
     if (this.blobUrl) {
@@ -1108,6 +1136,35 @@ class StreamingAudioPlayer {
 
         // 写入缓存
         await streamCacheEngine.appendData(this.cacheKey, data, chunk.start);
+
+        // v23-fix: seek 后首块数据到位 → 立即刷新 blob 并把播放位置回填到 seek 目标
+        // （此前 pendingSeekTime 只记录不消费，导致 seek 不生效、进度条回弹）
+        if (this.state === 'seeking' && this.pendingSeekTime >= 0) {
+          debugLogger.info('streaming', 'Seek target data ready, applying pending seek', {
+            pendingSeekTime: this.pendingSeekTime,
+            chunkStart: chunk.start,
+          });
+          await this.setupBlobPlayback();
+          if (this.pendingSeekTime >= 0) {
+            // setupBlobPlayback 未消费时（缓存分支）兜底回填
+            try {
+              this.audio!.currentTime = this.pendingSeekTime;
+            } catch {
+              // ignore
+            }
+            this.pendingSeekTime = -1;
+          }
+          // 按 seek 前的播放态恢复
+          if (this.seekResumePlay) {
+            this.setState('playing');
+            void this.audio?.play().catch(() => {
+              // 自动播放策略可能阻止
+            });
+          } else {
+            this.setState('paused');
+          }
+          return;
+        }
 
         // 首块完成 → 开始播放
         if (chunk.index === 0 && this.state === 'loading') {

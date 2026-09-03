@@ -1,11 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
   ListMusic, Mic2, Download, Repeat, Repeat1, Shuffle, Heart,
+  Loader2, RotateCcw,
 } from 'lucide-react';
 import { usePlayerStore } from '../../shared/store/playerStore';
 import { usePlaylistStore } from '../../shared/store/playlistStore';
 import { playerEngine } from '../../core/player';
+import { PLATFORM_DISPLAY_NAMES } from '../../core/platformPriority';
 import { lyricsManager } from '../../modules/music/lyrics';
 import { downloadEngine } from '../../core/download';
 import { useSettingsStore } from '../../shared/store/settingsStore';
@@ -34,7 +36,7 @@ const MODE_LABELS: Record<RepeatMode, string> = {
 };
 
 export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
-  const { state, currentTrack, currentTime, duration, volume, isMuted, queue, repeatMode, actualSourceId } = usePlayerStore();
+  const { state, currentTrack, currentTime, duration, volume, isMuted, queue, repeatMode, actualSourceId, isBuffering } = usePlayerStore();
   // 全屏播放页开关提升到全局 store：Android 返回键需要跨组件读取并关闭播放页
   const showFullScreen = usePlayerStore((s) => s.fullscreenOpen);
   const setShowFullScreen = usePlayerStore((s) => s.setFullscreenOpen);
@@ -91,6 +93,45 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
 
   const { toggleFavorite, isFavorite } = usePlaylistStore();
   const isFav = currentTrack ? isFavorite({ title: currentTrack.title, artist: currentTrack.artist }) : false;
+
+  // ===== v23: 进度条拖动（pointer 事件，拖动中仅更新视觉，松手才 seek）=====
+  const [dragPercent, setDragPercent] = useState<number | null>(null);
+  const progressVisualRef = useRef<HTMLDivElement>(null);
+
+  const percentFromClientX = useCallback((clientX: number): number | null => {
+    const bar = progressVisualRef.current;
+    if (!bar || !isFinite(duration) || duration <= 0) return null;
+    const rect = bar.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  }, [duration]);
+
+  const handleProgressPointerDown = useCallback((e: React.PointerEvent) => {
+    const percent = percentFromClientX(e.clientX);
+    if (percent === null) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDragPercent(percent);
+  }, [percentFromClientX]);
+
+  const handleProgressPointerMove = useCallback((e: React.PointerEvent) => {
+    if (dragPercent === null) return;
+    const percent = percentFromClientX(e.clientX);
+    if (percent !== null) setDragPercent(percent);
+  }, [dragPercent, percentFromClientX]);
+
+  const handleProgressPointerUp = useCallback((e: React.PointerEvent) => {
+    if (dragPercent === null) return;
+    const percent = percentFromClientX(e.clientX) ?? dragPercent;
+    setDragPercent(null);
+    playerEngine.seek(percent * duration);
+  }, [dragPercent, percentFromClientX, duration]);
+
+  // 拖动中显示拖动位置，否则显示实际进度
+  const shownPercent = dragPercent !== null ? dragPercent * 100 : progressPercent;
+  const shownTime = dragPercent !== null ? dragPercent * duration : currentTime;
+  // 音源友好名（v23: 降级换源后用户可感知当前音源）
+  const sourceName = actualSourceId
+    ? (PLATFORM_DISPLAY_NAMES[actualSourceId] || actualSourceId)
+    : null;
 
   const handlePrev = () => playerEngine.playPrevious();
   const handleNext = () => playerEngine.playNext();
@@ -173,27 +214,58 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
           isLandscape ? 'py-3.5 landscape-player' : 'py-2.5'
         }`}
       >
-        {/* Progress bar — 44px 触控热区 */}
+        {/* Progress bar — 44px 触控热区（v23: 支持拖动 seek，拖动中仅更新视觉，松手生效） */}
         <div
-          className="w-full rounded-full mb-1 cursor-pointer group relative"
-          style={{ height: '44px', display: 'flex', alignItems: 'center' }}
-          onClick={(e) => {
-            const bar = e.currentTarget.querySelector('.progress-visual-bar') as HTMLElement;
-            if (!bar) return;
-            const rect = bar.getBoundingClientRect();
-            const percent = (e.clientX - rect.left) / rect.width;
-            playerEngine.seek(percent * duration);
-          }}
+          className="w-full rounded-full mb-1 group relative"
+          style={{ height: '44px', display: 'flex', alignItems: 'center', touchAction: 'none' }}
+          onPointerDown={handleProgressPointerDown}
+          onPointerMove={handleProgressPointerMove}
+          onPointerUp={handleProgressPointerUp}
+          onPointerCancel={handleProgressPointerUp}
         >
-          <div className="w-full h-[2px] bg-[var(--bg-tertiary)] rounded-full progress-visual-bar relative">
+          <div ref={progressVisualRef} className="w-full h-[2px] bg-[var(--bg-tertiary)] rounded-full relative">
             <div
-              className="h-full bg-[var(--accent)] rounded-full group-hover:bg-[var(--accent-hover)] progress-bar-smooth relative"
-              style={{ width: `${progressPercent}%` }}
+              className="h-full bg-[var(--accent)] rounded-full relative"
+              style={{ width: `${shownPercent}%`, transition: dragPercent !== null ? 'none' : undefined }}
             >
-              <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2 h-2 bg-white rounded-full border-2 border-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity" />
+              {/* 拖动时始终显示拇指 + 拖动位置气泡（拖动视觉反馈） */}
+              <div
+                className={`absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full border-2 border-[var(--accent)] transition-opacity ${
+                  dragPercent !== null ? 'opacity-100 scale-110' : 'opacity-0 group-hover:opacity-100'
+                }`}
+              />
             </div>
+            {/* v23: 缓冲指示器 —— 进度条轻微闪烁 + 右上角"缓冲中"轻提示 */}
+            {isBuffering && dragPercent === null && (
+              <div className="absolute inset-y-0 left-0 rounded-full bg-[var(--accent)] opacity-20 animate-pulse" style={{ width: '100%' }} />
+            )}
           </div>
+          {isBuffering && dragPercent === null && (
+            <span className="absolute -top-0.5 right-0 flex items-center gap-1 text-[10px] text-[var(--text-tertiary)]">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              缓冲中
+            </span>
+          )}
+          {dragPercent !== null && (
+            <span
+              className="absolute -top-1 px-1.5 py-0.5 rounded-md bg-[var(--bg-tertiary)] text-[10px] tabular-nums text-[var(--text-primary)] pointer-events-none"
+              style={{ left: `clamp(0px, calc(${shownPercent}% - 14px), calc(100% - 34px))` }}
+            >
+              {formatTime(shownTime)}
+            </span>
+          )}
         </div>
+
+        {/* v23: 播放失败提示 + 重试入口 */}
+        {state === 'error' && currentTrack && (
+          <button
+            onClick={() => void playerEngine.retry()}
+            className="w-full mb-1 flex items-center justify-center gap-1.5 py-1.5 rounded-xl bg-red-500/10 border border-red-500/20 text-xs text-red-500 hover:bg-red-500/15 transition-colors focus-ring"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            播放失败，点击重试
+          </button>
+        )}
 
         <div className="flex items-center gap-3">
           {/* Track info */}
@@ -225,9 +297,9 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
               </div>
               <div className="text-xs text-[var(--text-tertiary)] truncate flex items-center gap-1.5">
                 <span>{currentTrack?.artist || '选择一首歌开始播放'}</span>
-                {actualSourceId && (
+                {sourceName && (
                   <span className="px-1 py-0.5 rounded text-[10px] bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
-                    {actualSourceId}
+                    {sourceName}
                   </span>
                 )}
               </div>
@@ -257,13 +329,24 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
             </button>
             <button
               onClick={() => {
+                if (state === 'loading') return; // v23: 起播中忽略重复点击
+                if (state === 'error') {
+                  void playerEngine.retry();
+                  return;
+                }
                 if (isPlaying) playerEngine.pause();
                 else if (currentTrack) playerEngine.resume();
               }}
-              className="player-control-btn p-2.5 rounded-full bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] play-btn-transition focus-ring"
-              title={isPlaying ? '暂停' : '播放'}
+              className="player-control-btn p-2.5 rounded-full bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] play-btn-transition focus-ring disabled:opacity-80"
+              title={
+                state === 'loading' ? '加载中' : state === 'error' ? '播放失败，点击重试' : isPlaying ? '暂停' : '播放'
+              }
             >
-              {isPlaying ? (
+              {state === 'loading' ? (
+                <Loader2 className={`${isLandscape ? 'w-6 h-6' : 'w-5 h-5'} animate-spin`} />
+              ) : state === 'error' ? (
+                <RotateCcw className={`${isLandscape ? 'w-6 h-6' : 'w-5 h-5'}`} />
+              ) : isPlaying ? (
                 <Pause className={`${isLandscape ? 'w-6 h-6' : 'w-5 h-5'} transition-transform duration-200`} />
               ) : (
                 <Play className={`${isLandscape ? 'w-6 h-6' : 'w-5 h-5'} ml-0.5 transition-transform duration-200`} />

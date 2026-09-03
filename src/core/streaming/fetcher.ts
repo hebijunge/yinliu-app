@@ -72,8 +72,14 @@ export class StreamFetcher {
    * @param url 音频文件 URL
    * @param headers 请求头（可能包含鉴权信息）
    * @param startByte 起始字节位置（默认 0）
+   * @param options.skipHead 已知 totalSize 时跳过 HEAD 预检（seek 重启下载时省一次往返）
    */
-  async start(url: string, headers: Record<string, string> = {}, startByte = 0): Promise<void> {
+  async start(
+    url: string,
+    headers: Record<string, string> = {},
+    startByte = 0,
+    options: { skipHead?: boolean } = {}
+  ): Promise<void> {
     if (this.state === 'fetching') {
       await this.stop();
     }
@@ -86,27 +92,29 @@ export class StreamFetcher {
     this.seekTargetByte = -1;
 
     // 1. 先获取文件总大小（HEAD 请求）
-    try {
-      const headResp = await platformFetch(url, {
-        method: 'HEAD',
-        headers,
-      });
-      const contentLength = headResp.headers.get('content-length');
-      if (contentLength) {
-        this.totalSize = parseInt(contentLength, 10);
-      }
-      // 检查是否支持 Range
-      const acceptRanges = headResp.headers.get('accept-ranges');
-      if (acceptRanges !== 'bytes') {
-        debugLogger.warn('streaming', 'Server may not support Range requests', {
-          acceptRanges,
-          url: url.slice(0, 80),
+    if (!(options.skipHead && this.totalSize > 0)) {
+      try {
+        const headResp = await platformFetch(url, {
+          method: 'HEAD',
+          headers,
+        });
+        const contentLength = headResp.headers.get('content-length');
+        if (contentLength) {
+          this.totalSize = parseInt(contentLength, 10);
+        }
+        // 检查是否支持 Range
+        const acceptRanges = headResp.headers.get('accept-ranges');
+        if (acceptRanges !== 'bytes') {
+          debugLogger.warn('streaming', 'Server may not support Range requests', {
+            acceptRanges,
+            url: url.slice(0, 80),
+          });
+        }
+      } catch (err) {
+        debugLogger.warn('streaming', 'HEAD request failed, proceeding without total size', {
+          error: err instanceof Error ? err.message : String(err),
         });
       }
-    } catch (err) {
-      debugLogger.warn('streaming', 'HEAD request failed, proceeding without total size', {
-        error: err instanceof Error ? err.message : String(err),
-      });
     }
 
     this.state = 'fetching';
@@ -118,6 +126,16 @@ export class StreamFetcher {
 
     // 2. 开始分块下载（后台执行，不阻塞）
     void this.downloadLoop();
+  }
+
+  /** 当前下载的 URL（seek 重启下载时复用） */
+  getUrl(): string {
+    return this.url;
+  }
+
+  /** 当前下载的请求头（seek 重启下载时复用） */
+  getHeaders(): Record<string, string> {
+    return this.headers;
   }
 
   /**

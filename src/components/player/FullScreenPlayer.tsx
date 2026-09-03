@@ -2,11 +2,13 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   X, Play, Pause, SkipBack, SkipForward, Volume2, ChevronDown,
   Mic2, ListMusic, Repeat, Repeat1, Shuffle, AudioLines, Heart,
+  Loader2, RotateCcw,
 } from 'lucide-react';
 import { usePlayerStore } from '../../shared/store/playerStore';
 import { usePlaylistStore } from '../../shared/store/playlistStore';
 import { useResponsiveLayout } from '../../shared/hooks/useResponsiveLayout';
 import { playerEngine } from '../../core/player';
+import { PLATFORM_DISPLAY_NAMES } from '../../core/platformPriority';
 import { lyricsManager } from '../../modules/music/lyrics';
 import QueuePanel from './QueuePanel';
 import QualitySelector, { qualityLabel } from './QualitySelector';
@@ -32,7 +34,7 @@ interface Props {
 }
 
 export default function FullScreenPlayer({ onClose }: Props) {
-  const { state, currentTrack, currentTime, duration, volume, queue, repeatMode, currentQuality, actualQuality, isPreview, actualSourceId } = usePlayerStore();
+  const { state, currentTrack, currentTime, duration, volume, queue, repeatMode, currentQuality, actualQuality, isPreview, actualSourceId, isBuffering } = usePlayerStore();
   const isPlaying = state === 'playing';
   const { isLandscape } = useResponsiveLayout();
 
@@ -44,8 +46,6 @@ export default function FullScreenPlayer({ onClose }: Props) {
 
   const lyricsScrollRef = useRef<HTMLDivElement>(null);
   const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const progressTouchRef = useRef<HTMLDivElement>(null);
-  const volumeTouchRef = useRef<HTMLDivElement>(null);
 
   // Load lyrics
   useEffect(() => {
@@ -109,23 +109,38 @@ export default function FullScreenPlayer({ onClose }: Props) {
 
   const ModeIcon = MODE_ICONS[repeatMode];
 
-  // ===== 进度条拖拽逻辑（支持扩展热区） =====
-  const handleProgressClick = useCallback((clientX: number, rect: DOMRect) => {
-    const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    playerEngine.seek(percent * duration);
+  // ===== 进度条拖拽逻辑（v23 重写：拖动中仅更新视觉 + 时间气泡，松手才 seek 一次）=====
+  // 修复：此前 touchmove 每帧直接 seek，未缓存位置每帧重启下载，既卡又回弹
+  const [dragPercent, setDragPercent] = useState<number | null>(null);
+  const progressTouchRef = useRef<HTMLDivElement>(null);
+  const volumeTouchRef = useRef<HTMLDivElement>(null);
+
+  const percentFromClientX = useCallback((clientX: number): number | null => {
+    const bar = progressTouchRef.current;
+    if (!bar || !isFinite(duration) || duration <= 0) return null;
+    const rect = bar.getBoundingClientRect();
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
   }, [duration]);
 
-  const handleProgressTouchStart = useCallback((e: React.TouchEvent) => {
-    if (!progressTouchRef.current) return;
-    const rect = progressTouchRef.current.getBoundingClientRect();
-    handleProgressClick(e.touches[0].clientX, rect);
-  }, [handleProgressClick]);
+  const handleProgressPointerDown = useCallback((e: React.PointerEvent) => {
+    const percent = percentFromClientX(e.clientX);
+    if (percent === null) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDragPercent(percent);
+  }, [percentFromClientX]);
 
-  const handleProgressTouchMove = useCallback((e: React.TouchEvent) => {
-    if (!progressTouchRef.current) return;
-    const rect = progressTouchRef.current.getBoundingClientRect();
-    handleProgressClick(e.touches[0].clientX, rect);
-  }, [handleProgressClick]);
+  const handleProgressPointerMove = useCallback((e: React.PointerEvent) => {
+    if (dragPercent === null) return;
+    const percent = percentFromClientX(e.clientX);
+    if (percent !== null) setDragPercent(percent);
+  }, [dragPercent, percentFromClientX]);
+
+  const handleProgressPointerUp = useCallback((e: React.PointerEvent) => {
+    if (dragPercent === null) return;
+    const percent = percentFromClientX(e.clientX) ?? dragPercent;
+    setDragPercent(null);
+    playerEngine.seek(percent * duration);
+  }, [dragPercent, percentFromClientX, duration]);
 
   // ===== 音量条拖拽逻辑 =====
   const handleVolumeClick = useCallback((clientX: number, rect: DOMRect) => {
@@ -214,17 +229,29 @@ export default function FullScreenPlayer({ onClose }: Props) {
   );
 
   // ===== 信息区 =====
+  const sourceName = actualSourceId
+    ? (PLATFORM_DISPLAY_NAMES[actualSourceId] || actualSourceId)
+    : null;
   const InfoArea = (
     <div className={`text-center ${isLandscape ? 'text-left' : ''}`}>
       <h2 className="text-xl font-semibold truncate text-[var(--text-primary)]">{currentTrack?.title || '未在播放'}</h2>
       <p className="text-[var(--text-secondary)] mt-1.5 text-sm">
         {currentTrack?.artist || '选择一首歌'}
-        {actualSourceId && (
+        {sourceName && (
           <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
-            {actualSourceId}
+            {sourceName}
           </span>
         )}
       </p>
+      {state === 'error' && currentTrack && (
+        <button
+          onClick={() => void playerEngine.retry()}
+          className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs bg-red-500/10 text-red-500 hover:bg-red-500/20 transition-colors focus-ring"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+          播放失败，点击重试
+        </button>
+      )}
       <button
         onClick={() => setShowQuality(true)}
         className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors focus-ring"
@@ -240,26 +267,52 @@ export default function FullScreenPlayer({ onClose }: Props) {
     </div>
   );
 
-  // ===== 进度条区（44px 触控热区） =====
+  // ===== 进度条区（44px 触控热区；v23: 拖动视觉反馈 + 缓冲指示） =====
+  const shownPercent = dragPercent !== null ? dragPercent * 100 : progressPercent;
+  const shownTime = dragPercent !== null ? dragPercent * duration : currentTime;
+
   const ProgressArea = (
     <div className="px-10 py-2">
       <div
         ref={progressTouchRef}
-        className="w-full rounded-full cursor-pointer group relative"
-        style={{ height: '44px', display: 'flex', alignItems: 'center' }}
-        onClick={(e) => {
-          const rect = progressTouchRef.current!.getBoundingClientRect();
-          handleProgressClick(e.clientX, rect);
-        }}
-        onTouchStart={handleProgressTouchStart}
-        onTouchMove={handleProgressTouchMove}
+        className="w-full rounded-full group relative"
+        style={{ height: '44px', display: 'flex', alignItems: 'center', touchAction: 'none' }}
+        onPointerDown={handleProgressPointerDown}
+        onPointerMove={handleProgressPointerMove}
+        onPointerUp={handleProgressPointerUp}
+        onPointerCancel={handleProgressPointerUp}
       >
         {/* 视觉进度条（保持细线） */}
         <div className="w-full h-[3px] bg-[var(--bg-tertiary)] rounded-full relative">
-          <div className="h-full bg-[var(--accent)] rounded-full progress-bar-smooth relative" style={{ width: `${progressPercent}%` }}>
-            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full border-2 border-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity" />
+          <div
+            className="h-full bg-[var(--accent)] rounded-full relative"
+            style={{ width: `${shownPercent}%`, transition: dragPercent !== null ? 'none' : undefined }}
+          >
+            <div
+              className={`absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full border-2 border-[var(--accent)] transition-opacity ${
+                dragPercent !== null ? 'opacity-100 scale-110' : 'opacity-0 group-hover:opacity-100'
+              }`}
+            />
           </div>
+          {/* v23: 缓冲指示器 —— 进度条脉冲闪烁 */}
+          {isBuffering && dragPercent === null && (
+            <div className="absolute inset-y-0 left-0 rounded-full bg-[var(--accent)] opacity-20 animate-pulse" style={{ width: '100%' }} />
+          )}
         </div>
+        {isBuffering && dragPercent === null && (
+          <span className="absolute -top-1 right-0 flex items-center gap-1 text-[10px] text-[var(--text-tertiary)]">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            缓冲中…
+          </span>
+        )}
+        {dragPercent !== null && (
+          <span
+            className="absolute -top-1 px-1.5 py-0.5 rounded-md bg-[var(--bg-tertiary)] text-[10px] tabular-nums text-[var(--text-primary)] pointer-events-none"
+            style={{ left: `clamp(0px, calc(${shownPercent}% - 14px), calc(100% - 34px))` }}
+          >
+            {formatTime(shownTime)}
+          </span>
+        )}
       </div>
       <div className="flex justify-between text-xs text-[var(--text-tertiary)] mt-1 tabular-nums">
         <span>{formatTime(currentTime)}</span>
@@ -281,14 +334,24 @@ export default function FullScreenPlayer({ onClose }: Props) {
       </button>
       <button
         onClick={() => {
+          if (state === 'loading') return; // 起播中忽略点击，防连点
+          if (state === 'error') { void playerEngine.retry(); return; }
           if (isPlaying) playerEngine.pause();
           else if (currentTrack) playerEngine.resume();
         }}
         className="p-5 rounded-full bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] play-btn-transition focus-ring"
         style={{ minWidth: '56px', minHeight: '56px' }}
-        title={isPlaying ? '暂停' : '播放'}
+        title={state === 'loading' ? '加载中' : state === 'error' ? '播放失败，点击重试' : isPlaying ? '暂停' : '播放'}
       >
-        {isPlaying ? <Pause className="w-8 h-8 transition-transform duration-200" /> : <Play className="w-8 h-8 ml-1 transition-transform duration-200" />}
+        {state === 'loading' ? (
+          <Loader2 className="w-8 h-8 animate-spin" />
+        ) : state === 'error' ? (
+          <RotateCcw className="w-8 h-8" />
+        ) : isPlaying ? (
+          <Pause className="w-8 h-8 transition-transform duration-200" />
+        ) : (
+          <Play className="w-8 h-8 ml-1 transition-transform duration-200" />
+        )}
       </button>
       <button
         onClick={handleNext}
