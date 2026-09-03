@@ -1,4 +1,5 @@
-import type { Quality, DownloadStatus, DownloadTask } from '@core/types';
+import { Quality } from '@core/types';
+import type { DownloadStatus, DownloadTask } from '@core/types';
 import { sourceRegistry } from '@providers/music/registry';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { getSqliteDb, flushDatabase } from '@shared/database';
