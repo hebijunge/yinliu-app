@@ -102,10 +102,10 @@ export default function FullScreenPlayer({ onClose }: Props) {
       title: currentTrack.title,
       artist: currentTrack.artist,
       source: currentTrack.sourceId,
-      quality: currentQuality,
+      quality: actualQuality ?? currentQuality,
     };
     void toggleFavorite(song);
-  }, [currentTrack, toggleFavorite]);
+  }, [currentTrack, currentQuality, actualQuality, toggleFavorite]);
 
   const ModeIcon = MODE_ICONS[repeatMode];
 

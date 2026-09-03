@@ -125,9 +125,11 @@ function App() {
       // 自动播放下一首（按当前播放模式）
       void playerEngine.playNext();
     });
-    const unsub3b = playerEngine.on('trackLoaded', ({ track, actualSourceId }) => {
+    const unsub3b = playerEngine.on('trackLoaded', ({ track, result, actualSourceId }) => {
       usePlayerStore.getState().setTrack(track || null);
       usePlayerStore.getState().setActualSourceId(actualSourceId || null);
+      usePlayerStore.getState().setActualQuality(result.quality);
+      usePlayerStore.getState().setPreview(result.isPreview ?? false);
     });
     const unsub3c = playerEngine.on('mediaAction', ({ action }) => {
       console.log('[App] media action from system control:', action);
