@@ -501,55 +501,71 @@ export class MiguSource extends BaseHttpSource {
   }
 
   /**
-   * 获取排行榜详情（v18：官方 rank-info 接口）
+   * 获取排行榜详情（官方 rank-info 接口）
    * 歌曲信息在 contents[].songData（JSON字符串需二次解析），部分条目缺 songData 时回退本层 txt/txt2/resId
+   * v19.1：pageSize 放大到 100（实测服务端单页上限 100，榜单 totalCount≤100 即一页全量），
+   * 并按 data.hasNextPage 继续翻页兜底（部分环境 pageNum 不推进时靠去重自然终止），不得只取 50 条
    */
   async getChartDetail(chartId: string) {
+    const PAGE_SIZE = 100;
+    const MAX_PAGES = 3;
+    const songs: SearchResult[] = [];
+    const seen = new Set<string>();
+
     try {
-      const url = `${this.apiBase}/pc/bmw/rank/rank-info/v1.0?rankId=${chartId}&pageSize=50&pageNum=1&channel=014X031`;
-      const response = await fetch(url, {
-        headers: {
-          Referer: 'https://music.migu.cn/',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-      });
-      if (!response.ok) return { id: chartId, name: '咪咕榜单', songs: [] };
+      for (let pageNum = 1; pageNum <= MAX_PAGES; pageNum++) {
+        const url = `${this.apiBase}/pc/bmw/rank/rank-info/v1.0?rankId=${chartId}&pageSize=${PAGE_SIZE}&pageNum=${pageNum}&channel=014X031`;
+        const response = await fetch(url, {
+          headers: {
+            Referer: 'https://music.migu.cn/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          },
+        });
+        if (!response.ok) break;
+        const data = await response.json();
+        const contents = data?.data?.contents || [];
+        if (!contents.length) break;
 
-      const data = await response.json();
-      const contents = data?.data?.contents || [];
-
-      const songs: SearchResult[] = [];
-      for (const item of contents) {
-        if (item?.songData) {
-          try {
-            const song = typeof item.songData === 'string' ? JSON.parse(item.songData) : item.songData;
-            songs.push(this.mapRankSong(song));
-            continue;
-          } catch {
-            // fallthrough
+        let added = 0;
+        for (const item of contents) {
+          let song: SearchResult | null = null;
+          if (item?.songData) {
+            try {
+              const parsed = typeof item.songData === 'string' ? JSON.parse(item.songData) : item.songData;
+              song = this.mapRankSong(parsed);
+            } catch {
+              // fallthrough
+            }
+          }
+          // 兜底：本层字段（榜单分组页内嵌歌曲）
+          if (!song && item?.resId && item?.txt) {
+            song = {
+              id: `migu_${item.resId}`,
+              type: 'song',
+              title: item.txt || '未知歌曲',
+              artist: item.txt2 || '未知歌手',
+              album: item.txt3 || '',
+              duration: 0,
+              coverUrl: '',
+              sourceId: this.id,
+              sourceSongId: String(item.resId),
+              quality: Quality.STANDARD,
+              bitrate: 128,
+            };
+          }
+          if (song && !seen.has(song.sourceSongId)) {
+            seen.add(song.sourceSongId);
+            songs.push(song);
+            added++;
           }
         }
-        // 兜底：本层字段（榜单分组页内嵌歌曲）
-        if (item?.resId && item?.txt) {
-          songs.push({
-            id: `migu_${item.resId}`,
-            type: 'song',
-            title: item.txt || '未知歌曲',
-            artist: item.txt2 || '未知歌手',
-            album: item.txt3 || '',
-            duration: 0,
-            coverUrl: '',
-            sourceId: this.id,
-            sourceSongId: String(item.resId),
-            quality: Quality.STANDARD,
-            bitrate: 128,
-          });
-        }
+        // hasNextPage=false 或该页无新增 → 已取全，终止
+        if (added === 0 || data?.data?.hasNextPage !== true) break;
       }
 
       return { id: chartId, name: '咪咕榜单', songs };
     } catch {
-      return { id: chartId, name: '咪咕榜单', songs: [] };
+      return { id: chartId, name: '咪咕榜单', songs };
     }
   }
 

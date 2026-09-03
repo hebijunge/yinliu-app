@@ -362,13 +362,31 @@ export class NeteaseSource extends BaseHttpSource {
   }
 
   /**
-   * 榜单详情：/api/toplist/detail?id=（无分页，一次返回全量）
+   * 榜单详情：/api/toplist/detail?id=（一次返回榜单信息）
    * tracks 为 h/m/l {br,size} 结构，parseSong 已兼容并提取文件大小
+   * v19.1：完整性校验——若 trackCount 大于返回条数（接口截断），用 v6 歌单详情（n=1000）补全
    */
   async getChartDetail(chartId: string) {
     const data = await this.httpGetJson(`${this.HOST}/api/toplist/detail?id=${chartId}`, { Referer: this.REF });
     const pl = data?.playlist;
-    const tracks = pl?.tracks || [];
+    let tracks = pl?.tracks || [];
+
+    // v19.1 完整性兜底：接口截断（trackCount > 返回条数）或响应形状异常（缺 playlist，
+    // 部分网络环境该端点会退化为榜单列表）时，用 v6 歌单详情（n=1000）补全/替换
+    const trackCount = Number(pl?.trackCount || 0);
+    if (!pl || trackCount > tracks.length) {
+      try {
+        const full = await this.httpGetJson(
+          `${this.HOST}/api/v6/playlist/detail?id=${chartId}&n=1000&s=0`,
+          { Referer: this.REF }
+        );
+        const fullTracks = full?.playlist?.tracks || [];
+        if (fullTracks.length > tracks.length) tracks = fullTracks;
+      } catch {
+        // 补全失败时保留 toplist 结果
+      }
+    }
+
     return {
       id: String(chartId),
       name: pl?.name || '网易榜单',

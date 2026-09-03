@@ -545,14 +545,17 @@ export class QqSource extends BaseHttpSource {
   }
 
   /**
-   * 获取排行榜列表
+   * 获取排行榜列表（v19.1 修正）
+   * 实测：module 必须为 musicToplist.ToplistInfoServer（小写 toplist 返回 500003），
+   * method=GetAll，榜单在 data.group[].toplist[]（含 topId/title），原 GetToplistList+list 路径取不到数据
    */
   async getCharts() {
     try {
       const reqBody = {
+        comm: { ct: '24', cv: '0' },
         req_1: {
-          method: 'GetToplistList',
-          module: 'music.toplist.ToplistInfoServer',
+          method: 'GetAll',
+          module: 'musicToplist.ToplistInfoServer',
           param: {},
         },
       };
@@ -570,10 +573,13 @@ export class QqSource extends BaseHttpSource {
       const charts: Array<{ id: string; name: string; description?: string }> = [];
 
       for (const group of groups) {
-        for (const item of group.list || []) {
+        for (const item of group.toplist || group.list || []) {
+          const id = item.topId?.toString() || item.id;
+          const name = item.title || item.listName || item.name;
+          if (!id || !name) continue;
           charts.push({
-            id: item.topId?.toString() || item.id,
-            name: item.title || item.name,
+            id,
+            name,
             description: group.groupName,
           });
         }
@@ -586,39 +592,72 @@ export class QqSource extends BaseHttpSource {
   }
 
   /**
-   * 获取排行榜详情
+   * 获取排行榜详情（v19.1 修正+分页取全量）
+   * 实测：module=musicToplist.ToplistInfoServer（小写 toplist 返回 500003），
+   * 歌曲在 data.songInfoList（原 songInfo.list 路径永远为空）；
+   * 分页 param{offset,num:100} 循环取全量（最多 5 页 / 500 条），不得只取第一页
    */
   async getChartDetail(chartId: string) {
-    const reqBody = {
-      req_1: {
-        method: 'GetDetail',
-        module: 'music.toplist.ToplistInfoServer',
-        param: {
-          topId: parseInt(chartId, 10),
-          offset: 0,
-          num: 100,
-        },
-      },
-    };
+    const PAGE_SIZE = 100;
+    const MAX_PAGES = 5;
+    const topId = parseInt(chartId, 10);
+    const songs: SearchResult[] = [];
+    const seen = new Set<string>();
 
     try {
-      const response = await fetch(this.baseUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Referer': 'https://y.qq.com' },
-        body: JSON.stringify(reqBody),
-      });
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const reqBody = {
+          comm: { ct: '24', cv: '0' },
+          req_1: {
+            method: 'GetDetail',
+            module: 'musicToplist.ToplistInfoServer',
+            param: {
+              topId,
+              offset: page * PAGE_SIZE,
+              num: PAGE_SIZE,
+              period: '',
+            },
+          },
+        };
 
-      if (!response.ok) {
-        throw new YinliuError(ErrorCode.SOURCE_ERROR, '获取排行榜失败', 502);
+        const response = await fetch(this.baseUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Referer': 'https://y.qq.com' },
+          body: JSON.stringify(reqBody),
+        });
+
+        if (!response.ok) {
+          if (page === 0) throw new YinliuError(ErrorCode.SOURCE_ERROR, '获取排行榜失败', 502);
+          break;
+        }
+
+        const data = await response.json();
+        const songList = data?.req_1?.data?.songInfoList || [];
+        if (!songList.length) break;
+
+        let added = 0;
+        for (const item of songList) {
+          const s = this.mapSearchResult({
+            ...item,
+            // 榜单接口音质档在 item.file（size_128mp3 等），映射成搜索接口的顶层字段
+            size128: item.size128 || item.file?.size_128mp3 || 0,
+            size320: item.size320 || item.file?.size_320mp3 || 0,
+            sizeflac: item.sizeflac || item.file?.size_flac || 0,
+            sizehires: item.sizehires || item.file?.size_hires || 0,
+          });
+          if (s && !seen.has(s.sourceSongId)) {
+            seen.add(s.sourceSongId);
+            songs.push(s);
+            added++;
+          }
+        }
+        if (songList.length < PAGE_SIZE) break;
       }
-
-      const data = await response.json();
-      const songList = data?.req_1?.data?.songInfo?.list || [];
 
       return {
         id: chartId,
         name: 'QQ音乐排行榜',
-        songs: songList.map((item: any) => this.mapSearchResult(item)),
+        songs,
       };
     } catch (err) {
       if (err instanceof YinliuError) throw err;

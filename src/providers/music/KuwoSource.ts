@@ -645,54 +645,67 @@ export class KuwoSource extends BaseHttpSource {
   /**
    * 榜单歌曲：kbangserver.kuwo.cn/ksong.s（Python dict格式，容错解析）
    * musiclist[] 条目字段为小写 id/name/artist/album/duration
+   * v19.1：分页循环取全量（rn=100，pn 递增，最多 5 页 / 500 条），不得只取第一页
    */
   async getChartDetail(chartId: string): Promise<ChartDetail> {
-    const url = `https://kbangserver.kuwo.cn/ksong.s?from=pc&type=bang&id=${chartId}&pn=0&rn=100`;
-    const resp = await this.httpGet(url, { Referer: 'https://www.kuwo.cn/' });
-    if (!resp || !resp.ok) {
-      return { id: String(chartId), name: '酷我榜单', description: '', songs: [] };
-    }
-
-    let text: string;
-    try { text = await resp.text(); } catch { return { id: String(chartId), name: '酷我榜单', description: '', songs: [] }; }
-
-    let data: any;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      // Python dict风格解析（与 searchRs 相同的容错策略）
-      try {
-        const normalized = text
-          .replace(/'/g, '"')
-          .replace(/\bNone\b/g, 'null')
-          .replace(/\bTrue\b/g, 'true')
-          .replace(/\bFalse\b/g, 'false')
-          .replace(/;\s*$/, '');
-        data = JSON.parse(normalized);
-      } catch {
-        return { id: String(chartId), name: '酷我榜单', description: '', songs: [] };
-      }
-    }
-
-    const musiclist = data?.musiclist || [];
+    const PAGE_SIZE = 100;
+    const MAX_PAGES = 5;
     const songs: SearchResult[] = [];
-    for (const o of musiclist) {
-      const rid = (o.id || o.musicrid || o.MUSICRID || '').toString().replace(/^MUSIC_/, '');
-      const name = (o.name || o.NAME || o.songname || '').toString().replace(/&nbsp;/g, ' ').trim();
-      if (!rid || !name) continue;
-      songs.push({
-        id: `kw_${rid}`,
-        type: 'song',
-        title: name,
-        artist: (o.artist || o.ARTIST || '').toString().replace(/&nbsp;/g, ' ').trim() || '未知歌手',
-        album: (o.album || o.ALBUM || '').toString().trim(),
-        duration: parseInt((o.duration || o.DURATION || '0').toString(), 10) || 0,
-        coverUrl: (o.pic || o.albumpic || '').toString().startsWith('http') ? (o.pic || o.albumpic) : '',
-        sourceId: this.id,
-        sourceSongId: rid,
-        quality: Quality.STANDARD,
-        bitrate: 128,
-      });
+    const seen = new Set<string>();
+
+    const fetchPageMusiclist = async (pn: number): Promise<any[]> => {
+      const url = `https://kbangserver.kuwo.cn/ksong.s?from=pc&type=bang&id=${chartId}&pn=${pn}&rn=${PAGE_SIZE}`;
+      const resp = await this.httpGet(url, { Referer: 'https://www.kuwo.cn/' });
+      if (!resp || !resp.ok) return [];
+      let text: string;
+      try { text = await resp.text(); } catch { return []; }
+
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // Python dict风格解析（与 searchRs 相同的容错策略）
+        try {
+          const normalized = text
+            .replace(/'/g, '"')
+            .replace(/\bNone\b/g, 'null')
+            .replace(/\bTrue\b/g, 'true')
+            .replace(/\bFalse\b/g, 'false')
+            .replace(/;\s*$/, '');
+          data = JSON.parse(normalized);
+        } catch {
+          return [];
+        }
+      }
+      return data?.musiclist || [];
+    };
+
+    for (let pn = 0; pn < MAX_PAGES; pn++) {
+      const musiclist = await fetchPageMusiclist(pn);
+      if (!musiclist.length) break;
+
+      let added = 0;
+      for (const o of musiclist) {
+        const rid = (o.id || o.musicrid || o.MUSICRID || '').toString().replace(/^MUSIC_/, '');
+        const name = (o.name || o.NAME || o.songname || '').toString().replace(/&nbsp;/g, ' ').trim();
+        if (!rid || !name || seen.has(rid)) continue;
+        seen.add(rid);
+        songs.push({
+          id: `kw_${rid}`,
+          type: 'song',
+          title: name,
+          artist: (o.artist || o.ARTIST || '').toString().replace(/&nbsp;/g, ' ').trim() || '未知歌手',
+          album: (o.album || o.ALBUM || '').toString().trim(),
+          duration: parseInt((o.duration || o.DURATION || '0').toString(), 10) || 0,
+          coverUrl: (o.pic || o.albumpic || '').toString().startsWith('http') ? (o.pic || o.albumpic) : '',
+          sourceId: this.id,
+          sourceSongId: rid,
+          quality: Quality.STANDARD,
+          bitrate: 128,
+        });
+        added++;
+      }
+      if (musiclist.length < PAGE_SIZE) break;
     }
 
     return { id: String(chartId), name: '酷我榜单', description: '', songs };

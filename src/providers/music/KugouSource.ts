@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality, YinliuError, ErrorCode } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail, PlaylistSummary, QualityOption } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistDetail, Chart, ChartDetail, PlaylistSummary, QualityOption } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { debugLogger } from '@shared/utils/debugLogger';
@@ -335,6 +335,61 @@ export class KugouSource extends BaseHttpSource {
     } catch {
       return null;
     }
+  }
+
+  // ===================== 榜单（v18） =====================
+
+  /**
+   * 榜单列表：m.kugou.com/rank/list&json=true（55个榜单）
+   */
+  async getCharts(): Promise<Chart[]> {
+    const data = await this.httpGetJson(`${this.M_HOST}/rank/list&json=true`, { Referer: this.M_REF });
+    const list = data?.rank?.list || data?.list || [];
+    return list.map((o: any) => ({
+      id: String(o.rankid),
+      name: o.rankname || '',
+      description: '',
+    }));
+  }
+
+  /**
+   * 榜单详情（v19.1）：mobilecdn.kugou.com/api/v3/rank/song?rankid=&page=&pagesize=100
+   * m.kugou.com/rank/info 实测服务端硬限 5 页（仅150条），改用 v3 接口分页取全量
+   * （TOP500 total=500，5 页×100 条取完；page 翻页推进正常、无重叠）。
+   * data.info[] 字段与 v3 搜索一致（hash/320hash/sqhash/songname），parseSong 直接复用
+   */
+  async getChartDetail(chartId: string): Promise<ChartDetail> {
+    const PAGE_SIZE = 100;
+    const MAX_PAGES = 6;
+    const songs: SearchResult[] = [];
+    const seen = new Set<string>();
+
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const data = await this.httpGetJson(
+        `${this.SEARCH_HOST}/rank/song?rankid=${chartId}&page=${page}&pagesize=${PAGE_SIZE}`,
+        { Referer: this.M_REF }
+      );
+      const list = data?.data?.info || [];
+      if (!list.length) break;
+
+      let added = 0;
+      for (const o of list) {
+        const s = this.parseSong({ ...o, album_img: o.album_sizable_cover || o.album_img || '' });
+        if (s && !seen.has(s.sourceSongId)) {
+          seen.add(s.sourceSongId);
+          songs.push(s);
+          added++;
+        }
+      }
+      if (added === 0 || list.length < PAGE_SIZE) break;
+    }
+
+    return {
+      id: String(chartId),
+      name: '酷狗榜单',
+      description: '',
+      songs,
+    };
   }
 
   // ===================== 歌单 =====================
