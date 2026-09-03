@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Play, X, Check, Download, Loader2, Music } from 'lucide-react';
+import { Play, X, Check, Download, Loader2 } from 'lucide-react';
 import { toast } from '../../shared/components/Toast';
 import { downloadEngine } from '../../core/download';
 import { sourceRegistry } from '../../providers/music/registry';
@@ -13,25 +13,23 @@ import type { QualityTier, QualityOption } from '../../core/types';
 import type { AggregatedSearchResult } from '../../core/search';
 import {
   PLATFORM_DISPLAY_NAMES,
-  PLATFORM_COLORS,
 } from '../../core/platformPriority';
 
 /**
- * 音质弹窗（v19.2，骨架屏 + UI 升级）：
+ * 音质弹窗（v20：按参考图重做——档位横排区块 + 平台逐行列表）：
  * 底部抽屉「下载音质（多平台）」：
- * - 头部：▶ 播放按钮 + 标题 + × 关闭
- * - 按 Hi-Res/无损/320K/192K/128K 分组，每组内为「平台名 + 文件大小」的可选块
+ * - 头部：标题 + ▶ 播放按钮 + × 关闭
+ * - 按 Hi-Res/无损/320K/192K/128K 分区块，每区块左侧色块标识
+ *   区块内逐行列出「平台名 + 文件大小」，整行可选中
  * - 底部：全选 + 「下载选中 (n)」
  *
- * 数据来源（v19.1 修正：各源音质/大小必须按源区分）：
- * 1. 首屏快照：聚合结果里各源自带的 sizes（搜索/榜单时已抓到，仅用于立即展示）
- * 2. 打开弹窗时对【全部源】并行调 getQualityOptions 实时取真实档位与大小
- *    （酷我=musicpay MINFO、网易云=v3/song/detail、咪咕=resourceinfo.do、
- *     酷狗=v3/song/info、QQ=resolve-url level取链、汽水=分享页Range探测）
- * 3. 实时结果按源整块替换快照；取不到的源保留快照；两者皆无的源不显示（不编造数据）
+ * 数据来源（保留 v19.x 逻辑）：
+ * 1. 首屏快照：聚合结果里各源自带的 sizes
+ * 2. 打开弹窗时对全部源并行调 getQualityOptions 实时取真实档位与大小
+ * 3. 实时结果按源整块替换快照；取不到的源保留快照
  */
 
-/** 弹窗内单个可选块 */
+/** 弹窗内单个可选项 */
 interface OptionBlock {
   key: string;           // sourceId:tier
   sourceId: string;
@@ -47,7 +45,7 @@ interface QualitySizeSheetProps {
   onPlay?: (song: AggregatedSearchResult) => void;
 }
 
-/** 分组色（参考图：Hi-Res/无损 黄、320K 红、192K 紫、128K 蓝） */
+/** 档位左侧色块（参考图：Hi-Res/无损 黄、320K 红、192K 紫、128K 蓝） */
 const TIER_COLORS: Record<QualityTier, string> = {
   hires: 'bg-amber-500',
   lossless: 'bg-yellow-500',
@@ -56,14 +54,13 @@ const TIER_COLORS: Record<QualityTier, string> = {
   '128k': 'bg-blue-500',
 };
 
-/** 平台图标背景色（浅色底） */
-const PLATFORM_ICON_BG: Record<string, string> = {
-  kuwo: 'bg-blue-100 text-blue-600',
-  migu: 'bg-amber-100 text-amber-700',
-  netease: 'bg-red-100 text-red-600',
-  kugou: 'bg-cyan-100 text-cyan-600',
-  qq: 'bg-green-100 text-green-600',
-  qishui: 'bg-purple-100 text-purple-600',
+/** 档位文字颜色（与色块对应，用于标题） */
+const TIER_TEXT_COLORS: Record<QualityTier, string> = {
+  hires: 'text-amber-400',
+  lossless: 'text-yellow-400',
+  '320k': 'text-red-400',
+  '192k': 'text-purple-400',
+  '128k': 'text-blue-400',
 };
 
 function formatSize(bytes?: number): string {
@@ -74,27 +71,26 @@ function formatSize(bytes?: number): string {
   return `${Math.max(1, Math.round(bytes / 1024))}KB`;
 }
 
-/** 骨架屏：与真实布局一致的分组 + 卡片占位 */
+/** 骨架屏：与新布局一致的档位区块 + 逐行占位 */
 function QualitySizeSheetSkeleton() {
   return (
-    <div className="px-4 py-3 space-y-4">
+    <div className="px-4 py-3 space-y-5">
       {QUALITY_TIER_ORDER.map((tier) => (
         <div key={tier}>
+          {/* 档位标题占位 */}
           <div className="flex items-center gap-2 mb-2">
-            <div className={`w-2.5 h-2.5 rounded-sm ${TIER_COLORS[tier]} opacity-30`} />
-            <div className="h-3.5 w-14 rounded-md bg-[var(--bg-tertiary)] skeleton-shimmer" />
+            <div className={`w-3 h-3 rounded-sm ${TIER_COLORS[tier]} opacity-30`} />
+            <div className="h-4 w-16 rounded-md bg-[var(--bg-tertiary)] skeleton-shimmer" />
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          {/* 平台行占位 */}
+          <div className="space-y-1.5">
             {[0, 1].map((i) => (
               <div
                 key={`${tier}-${i}`}
-                className="flex flex-col gap-1.5 px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)]"
+                className="flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-[var(--bg-secondary)]"
               >
-                <div className="flex items-center gap-1.5">
-                  <div className="w-5 h-5 rounded-md bg-[var(--bg-tertiary)] skeleton-shimmer" />
-                  <div className="h-4 w-16 rounded-md bg-[var(--bg-tertiary)] skeleton-shimmer" />
-                </div>
-                <div className="h-3 w-10 rounded-md bg-[var(--bg-tertiary)] skeleton-shimmer opacity-50" />
+                <div className="h-4 w-16 rounded-md bg-[var(--bg-tertiary)] skeleton-shimmer" />
+                <div className="h-3 w-12 rounded-md bg-[var(--bg-tertiary)] skeleton-shimmer opacity-50" />
               </div>
             ))}
           </div>
@@ -148,7 +144,7 @@ export default function QualitySizeSheet({ song, open, onClose, onPlay }: Qualit
     }
     setBlocks(initial);
 
-    // v19.1：对全部源实时取真实音质/大小（并行、best-effort），成功则按源整块替换快照
+    // 对全部源实时取真实音质/大小（并行、best-effort），成功则按源整块替换快照
     let cancelled = false;
     setLoading(true);
     (async () => {
@@ -283,33 +279,34 @@ export default function QualitySizeSheet({ song, open, onClose, onPlay }: Qualit
         onClick={(e) => e.stopPropagation()}
         className="relative w-full max-w-lg bg-[var(--bg-primary)] rounded-t-2xl shadow-2xl max-h-[80vh] flex flex-col"
       >
-        {/* 头部：▶ 标题 × */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-[var(--border)]">
-          <button
-            onClick={() => onPlay?.(song)}
-            className="p-1.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-            title="播放"
-            aria-label="播放"
-          >
-            <Play className="w-4 h-4" />
-          </button>
+        {/* 头部：标题 + ▶ + × */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-[var(--text-primary)] truncate">下载音质（多平台）</div>
-            <div className="text-xs text-[var(--text-tertiary)] truncate">
-              {song.title} {song.artist && `· ${song.artist}`}
+            <div className="text-base font-semibold text-[var(--text-primary)] truncate">
+              下载音质（多平台）
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-            title="关闭"
-            aria-label="关闭"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => onPlay?.(song)}
+              className="p-2 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+              title="播放"
+              aria-label="播放"
+            >
+              <Play className="w-5 h-5" />
+            </button>
+            <button
+              onClick={onClose}
+              className="p-2 rounded-full text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+              title="关闭"
+              aria-label="关闭"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
-        {/* 分组列表 */}
+        {/* 分组列表：档位区块 + 平台逐行 */}
         <div className="flex-1 overflow-y-auto">
           {loading && grouped.length === 0 ? (
             <QualitySizeSheetSkeleton />
@@ -318,49 +315,44 @@ export default function QualitySizeSheet({ song, open, onClose, onPlay }: Qualit
               暂无可用的音质信息
             </div>
           ) : (
-            <div className="px-4 py-3 space-y-4">
+            <div className="px-4 py-3 space-y-5">
               {grouped.map(({ tier, items }) => (
                 <div key={tier}>
+                  {/* 档位标题：色块 + 档位名 */}
                   <div className="flex items-center gap-2 mb-2">
-                    <span className={`w-2.5 h-2.5 rounded-sm ${TIER_COLORS[tier]}`} />
-                    <span className="text-xs font-medium text-[var(--text-secondary)]">
+                    <span className={`w-3 h-3 rounded-sm ${TIER_COLORS[tier]}`} />
+                    <span className={`text-sm font-semibold ${TIER_TEXT_COLORS[tier]}`}>
                       {QUALITY_TIER_LABELS[tier]}
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {/* 平台列表：逐行排列 */}
+                  <div className="space-y-1.5">
                     {items.map((b) => {
                       const isSel = selected.has(b.key);
-                      const iconStyle = PLATFORM_ICON_BG[b.sourceId] || 'bg-gray-100 text-gray-500';
                       const displayName = PLATFORM_DISPLAY_NAMES[b.sourceId] || b.sourceName;
-                      const firstChar = displayName.charAt(0);
                       return (
                         <button
                           key={b.key}
                           onClick={() => toggle(b.key)}
-                          className={`relative flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-xl border text-left transition-all active:scale-[0.98] ${
+                          className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-left transition-all active:scale-[0.98] ${
                             isSel
-                              ? 'border-[var(--accent)] bg-[var(--accent-soft)] shadow-sm'
-                              : 'border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)]'
+                              ? 'bg-[var(--accent-soft)] border border-[var(--accent)]'
+                              : 'bg-[var(--bg-secondary)] border border-transparent hover:bg-[var(--bg-tertiary)]'
                           }`}
                         >
-                          {isSel && (
-                            <span className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-[var(--accent)] flex items-center justify-center shadow-sm">
-                              <Check className="w-3 h-3 text-white" />
-                            </span>
-                          )}
-                          <div className="flex items-center gap-1.5">
-                            <span
-                              className={`inline-flex items-center justify-center w-5 h-5 rounded-md text-[10px] font-bold flex-shrink-0 ${iconStyle}`}
-                            >
-                              {firstChar}
-                            </span>
-                            <span className="text-sm font-medium text-[var(--text-primary)] truncate">
-                              {displayName}
-                            </span>
-                          </div>
-                          <span className="text-[10px] text-[var(--text-tertiary)] pl-7">
-                            {formatSize(b.sizeBytes) || QUALITY_TIER_LABELS[b.tier]}
+                          <span className="text-sm font-medium text-[var(--text-primary)]">
+                            {displayName}
                           </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-[var(--text-tertiary)]">
+                              {formatSize(b.sizeBytes) || QUALITY_TIER_LABELS[b.tier]}
+                            </span>
+                            {isSel && (
+                              <span className="w-5 h-5 rounded-full bg-[var(--accent)] flex items-center justify-center flex-shrink-0">
+                                <Check className="w-3 h-3 text-white" />
+                              </span>
+                            )}
+                          </div>
                         </button>
                       );
                     })}
@@ -371,21 +363,25 @@ export default function QualitySizeSheet({ song, open, onClose, onPlay }: Qualit
           )}
         </div>
 
-        {/* 底部：全选 + 下载选中 */}
-        <div className="flex items-center gap-3 px-4 py-3 border-t border-[var(--border)] bg-[var(--bg-primary)]">
+        {/* 底部操作区：全选 + 下载选中 */}
+        <div className="flex items-center justify-between px-4 py-3 border-t border-[var(--border)] bg-[var(--bg-primary)]">
           <button
             onClick={handleSelectAll}
             disabled={blocks.length === 0}
-            className="px-4 py-2 rounded-full text-sm font-medium bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-40 transition-colors"
+            className="px-4 py-2 rounded-full text-sm font-medium text-[var(--text-secondary)] bg-[var(--bg-tertiary)] hover:bg-[var(--bg-secondary)] disabled:opacity-40 transition-colors"
           >
             {selected.size === blocks.length && blocks.length > 0 ? '取消全选' : '全选'}
           </button>
           <button
             onClick={handleDownload}
             disabled={selected.size === 0 || downloading}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-full text-sm font-medium text-white bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 transition-colors shadow-sm"
+            className="flex items-center gap-2 px-5 py-2 rounded-full text-sm font-medium text-white bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 transition-colors shadow-sm"
           >
-            {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            {downloading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Download className="w-4 h-4" />
+            )}
             下载选中 ({selected.size})
           </button>
         </div>
