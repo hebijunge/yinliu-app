@@ -129,6 +129,8 @@ export interface PlayUrlResult {
   accurate?: boolean;
   /** 加密文件的 ekey（酷我 mflac/mgg 需要） */
   ekey?: string;
+  /** CENC 解密密钥（汽水音乐 track.php 返回的 decrypt_key） */
+  decryptKey?: string;
 }
 
 export interface SongDetail {
