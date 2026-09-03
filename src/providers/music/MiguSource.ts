@@ -1,7 +1,8 @@
 import type { PlaylistSummary } from '../../core/types';
 import { BaseHttpSource, type ResolvedCandidate } from './BaseHttpSource';
 import { Quality } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, TierSizes, QualityOption, QualityTier, PlayUrlResult, FileSizeResult } from '@core/types';
+import type { FileSizeResult } from './types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, TierSizes, QualityOption, QualityTier, PlayUrlResult } from '@core/types';
 import { YinliuError, ErrorCode } from '@core/types';
 import { debugLogger } from '@shared/utils/debugLogger';
 import { decryptH5v24Response } from '@shared/audio/crypto';
@@ -37,7 +38,7 @@ export class MiguSource extends BaseHttpSource {
   private currentCopyrightId: string | null = null;
 
   // === 实例级缓存与锁（替代父类多候选竞速）===
-  private static readonly CACHE_TTL = 25 * 60 * 1000;      // 25 分钟
+  private static readonly MIGU_CACHE_TTL = 25 * 60 * 1000;      // 25 分钟
   private static readonly PQ_CACHE_TTL = 25 * 60 * 1000;   // PQ 直链缓存 25 分钟
   /** songId_quality → PlayUrlResult 缓存 */
   private playUrlCache = new Map<string, { result: PlayUrlResult; expiresAt: number }>();
@@ -92,7 +93,7 @@ export class MiguSource extends BaseHttpSource {
       .then((result) => {
         const ttl = result.expiresAt
           ? result.expiresAt - Date.now()
-          : MiguSource.CACHE_TTL;
+          : MiguSource.MIGU_CACHE_TTL;
         if (ttl > 0) {
           this.playUrlCache.set(lockKey, { result, expiresAt: Date.now() + ttl });
         }
