@@ -1,5 +1,5 @@
 import { BaseHttpSource } from './BaseHttpSource';
-import { Quality } from '@core/types';
+import { Quality, qualityRank } from '@core/types';
 import type {
   SearchParams,
   SearchResult,
@@ -29,8 +29,12 @@ import { debugLogger } from '@shared/utils/debugLogger';
 export class QishuiSource extends BaseHttpSource {
   readonly id = 'qishui';
   readonly name = '汽水音乐';
-  /** 分享页直链音质档位不明确（文档5.6），按最高 320K 档注册 */
-  readonly maxQuality = Quality.HIGH;
+  /**
+   * 分享页直链实测约 470KB/首（文档5.6：音质档位不明确，可能是试听版）。
+   * 按 128K AAC 档注册，避免在 HIGH/LOSSLESS 请求中抢其他源的高音质。
+   * 实测 2026-09-03：孤勇者 470KB/256s、晴天 487KB/238s，Content-Type=audio/mp4。
+   */
+  readonly maxQuality = Quality.STANDARD;
 
   private readonly apiBase = 'https://api.qishui.com';
   private readonly apiBackupBase = 'https://api5-lf.qishui.com';
@@ -253,11 +257,12 @@ export class QishuiSource extends BaseHttpSource {
 
             return {
               url: parsed.url,
-              quality: Quality.HIGH,
-              bitrate: 320,
+              quality: Quality.STANDARD,
+              bitrate: 128,
               format: 'aac',
               headers: {},
-              accurate: false, // 音质档位不明确（文档5.6）
+              accurate: false, // 音质档位不明确（文档5.6），实测约128K试听版
+              isPreview: true,
             };
           } catch (err) {
             debugLogger.warn('network', '汽水分享页解析失败', { err: String(err) });
@@ -269,11 +274,15 @@ export class QishuiSource extends BaseHttpSource {
   }
 
   /**
-   * 分享页直链音质档位不明确，跳过基类码率校验，只要有 URL 即可。
-   * 汽水在播放优先级表中排最后，不会抢其他源的高音质请求。
+   * 分享页直链音质档位不明确，保留 URL 非空与音质等级兜底校验，
+   * 允许 accurate=false 的汽水结果通过（已知为试听版，不冒充高音质）。
    */
-  protected validateQuality(result: PlayUrlResult, _target: Quality): boolean {
-    return !!result.url;
+  protected validateQuality(result: PlayUrlResult, target: Quality): boolean {
+    if (!result.url) return false;
+    if (qualityRank(result.quality) < qualityRank(target)) return false;
+    if (result.accurate === true) return true;
+    if (result.accurate === false) return true; // 汽水试听版允许通过
+    return this.validateBitrateAndFormat(result.bitrate, result.format, target);
   }
 
   /**
@@ -308,16 +317,16 @@ export class QishuiSource extends BaseHttpSource {
   }
 
   /**
-   * 音质选项：分享页直链仅一档（音质不明确，按 320K 档归组），大小通过 Range 探测
+   * 音质选项：分享页直链仅一档（实测约 128K 试听版），大小通过 Range 探测
    */
   async getQualityOptions(songId: string): Promise<QualityOption[]> {
     const trackId = this.extractTrackId(songId);
     const option: QualityOption = {
       sourceId: this.id,
       sourceName: '汽水',
-      tier: '320k',
+      tier: '128k',
       format: 'aac',
-      isPreview: false,
+      isPreview: true,
     };
 
     // best-effort 探测文件大小
@@ -422,8 +431,8 @@ export class QishuiSource extends BaseHttpSource {
       coverUrl: this.buildCoverUrl(track?.url_cover || track?.album?.url_cover) || '',
       sourceId: this.id,
       sourceSongId: trackId,
-      quality: Quality.HIGH,
-      bitrate: 320,
+      quality: Quality.STANDARD,
+      bitrate: 128,
     };
   }
 
