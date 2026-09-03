@@ -80,7 +80,7 @@ export class DownloadEngine {
   /** 等待调度的任务队列 */
   private pendingQueue: string[] = [];
   /** 默认下载音质 */
-  private defaultQuality: Quality = 'standard';
+  private defaultQuality: Quality = Quality.STANDARD;
   /** 防止 scheduleNext 重入 */
   private scheduling = false;
 
