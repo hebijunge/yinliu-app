@@ -10,13 +10,14 @@ import type {
 } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { getWbiKeys, signWbi } from './BiliWbiSigner';
+import { loadCredential, buildCookieHeader } from './BiliLogin';
 
 /**
  * 哔哩哔哩（B站）音频音源 Provider
  * 基于视频 DASH 音频流提取
  *
  * 搜索：WBI 签名版视频搜索 (/x/web-interface/wbi/search/type)
- * 取链：旧版 playurl（免登录，bvid+cid）+ 第三方 GDAPI 并发竞速
+ * 取链：旧版 playurl（免登录，bvid+cid）+ WBI 签名版 + 第三方 GDAPI 并发竞速
  * 音质：30280/30232/30216 AAC（免登录），30251/30250 需大会员
  */
 export class BiliSource extends BaseHttpSource {
@@ -47,6 +48,16 @@ export class BiliSource extends BaseHttpSource {
     [Quality.LOW]: 30216,
   };
 
+  /** 构造带登录 Cookie 的请求头（若用户已登录） */
+  private getAuthHeaders(): Record<string, string> {
+    const headers: Record<string, string> = { Referer: this.REF };
+    const cred = loadCredential();
+    if (cred) {
+      headers.Cookie = buildCookieHeader(cred);
+    }
+    return headers;
+  }
+
   async search(params: SearchParams): Promise<SearchResult[]> {
     const keyword = params.keyword.trim();
     if (!keyword) return [];
@@ -68,7 +79,7 @@ export class BiliSource extends BaseHttpSource {
         Object.entries(signed).map(([k, v]) => [k, String(v)])
       ).toString();
       const url = `${this.API_HOST}/x/web-interface/wbi/search/type?${qs}`;
-      const data = await this.httpGetJson(url, { Referer: this.REF });
+      const data = await this.httpGetJson(url, this.getAuthHeaders());
 
       const results: SearchResult[] = [];
       const list = data?.data?.result || [];
@@ -125,7 +136,7 @@ export class BiliSource extends BaseHttpSource {
   async getSongDetail(songId: string): Promise<SongDetail> {
     const bvid = this.extractBvid(songId);
     const url = `${this.API_HOST}/x/web-interface/view?bvid=${bvid}`;
-    const data = await this.httpGetJson(url, { Referer: this.REF });
+    const data = await this.httpGetJson(url, this.getAuthHeaders());
 
     if (data?.code !== 0 || !data?.data) {
       throw new YinliuError(ErrorCode.SONG_NOT_FOUND, `B站视频详情获取失败: ${bvid}`);
@@ -155,7 +166,7 @@ export class BiliSource extends BaseHttpSource {
       throw new YinliuError(ErrorCode.SONG_NOT_FOUND, `无法获取 B站视频 CID: ${bvid}`);
     }
 
-    const candidates = this.buildEndpointCandidatesWithCid(songId, quality, cid);
+    const candidates = await this.buildEndpointCandidatesAsync(songId, quality, cid);
     if (candidates.length === 0) {
       throw new YinliuError(ErrorCode.LINK_RACE_FAILED, `No endpoints for ${this.id}`, 503);
     }
@@ -174,6 +185,7 @@ export class BiliSource extends BaseHttpSource {
   ): ResolvedCandidate[] {
     const bvid = this.extractBvid(songId);
     const candidates: ResolvedCandidate[] = [];
+    const headers = this.getAuthHeaders();
 
     if (cid > 0) {
       candidates.push({
@@ -181,7 +193,7 @@ export class BiliSource extends BaseHttpSource {
         method: 'GET',
         timeout: 10000,
         priority: 1,
-        headers: { Referer: this.REF },
+        headers,
         resolve: async (resp) => this.resolvePlayurl(resp, quality),
       });
     }
@@ -191,6 +203,73 @@ export class BiliSource extends BaseHttpSource {
       method: 'GET',
       timeout: 5000,
       priority: 2,
+      key: 'gdstudio',
+      resolve: async (resp) => {
+        const data = await resp.json().catch(() => null);
+        const url = data?.url || data?.data?.url;
+        if (!url) return null;
+        return {
+          url,
+          quality,
+          bitrate: this.qualityToBitrate(quality),
+          format: this.guessFormat(url),
+        };
+      },
+    });
+
+    return candidates;
+  }
+
+  /** 异步构建候选端点（支持 WBI 签名版 playurl，用于 getPlayUrl） */
+  private async buildEndpointCandidatesAsync(
+    songId: string,
+    quality: Quality,
+    cid: number
+  ): Promise<ResolvedCandidate[]> {
+    const bvid = this.extractBvid(songId);
+    const candidates: ResolvedCandidate[] = [];
+    const headers = this.getAuthHeaders();
+
+    // 1. 旧版 playurl（免登录，最简单）
+    candidates.push({
+      url: `${this.API_HOST}/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=16&fnval=16`,
+      method: 'GET',
+      timeout: 10000,
+      priority: 1,
+      headers,
+      resolve: async (resp) => this.resolvePlayurl(resp, quality),
+    });
+
+    // 2. WBI 签名版 playurl（作为备选，登录态下更稳定）
+    try {
+      const { imgKey, subKey } = await getWbiKeys();
+      const signed = signWbi(
+        { bvid, cid, qn: 16, fnval: 16, fnver: 0, fourk: 0 },
+        imgKey,
+        subKey
+      );
+      const qs = new URLSearchParams(
+        Object.entries(signed).map(([k, v]) => [k, String(v)])
+      ).toString();
+      candidates.push({
+        url: `${this.API_HOST}/x/player/wbi/playurl?${qs}`,
+        method: 'GET',
+        timeout: 10000,
+        priority: 2,
+        headers,
+        key: 'wbi_playurl',
+        resolve: async (resp) => this.resolvePlayurl(resp, quality),
+      });
+    } catch (e) {
+      console.warn('[BiliSource] WBI playurl 签名失败:', e);
+    }
+
+    // 3. GDAPI 第三方备选
+    candidates.push({
+      url: `https://music-api.gdstudio.xyz/api.php?types=url&source=bilibili&id=${bvid}&br=320`,
+      method: 'GET',
+      timeout: 5000,
+      priority: 3,
       key: 'gdstudio',
       resolve: async (resp) => {
         const data = await resp.json().catch(() => null);
@@ -253,7 +332,7 @@ export class BiliSource extends BaseHttpSource {
 
     try {
       const url = `${this.API_HOST}/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=16&fnval=16`;
-      const data = await this.httpGetJson(url, { Referer: this.REF });
+      const data = await this.httpGetJson(url, this.getAuthHeaders());
       const audioList = data?.data?.dash?.audio || [];
       if (!audioList.length) return [];
 
@@ -283,7 +362,7 @@ export class BiliSource extends BaseHttpSource {
   private async getVideoInfo(bvid: string): Promise<{ cid: number; duration: number } | null> {
     try {
       const url = `${this.API_HOST}/x/web-interface/view?bvid=${bvid}`;
-      const data = await this.httpGetJson(url, { Referer: this.REF });
+      const data = await this.httpGetJson(url, this.getAuthHeaders());
       if (data?.code !== 0 || !data?.data) return null;
       return {
         cid: data.data.cid,
@@ -326,7 +405,7 @@ export class BiliSource extends BaseHttpSource {
   async healthCheck(): Promise<HealthStatus> {
     try {
       const url = `${this.API_HOST}/x/web-interface/view?bvid=BV1d4411N7zD`;
-      const data = await this.httpGetJson(url, { Referer: this.REF });
+      const data = await this.httpGetJson(url, this.getAuthHeaders());
       if (data?.code === 0) {
         return { healthy: true, latency: 0, message: 'B站接口正常' };
       }
