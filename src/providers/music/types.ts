@@ -10,6 +10,7 @@ import type {
   HealthStatus,
   Quality,
   QualityOption,
+  SearchType,
 } from '@core/types';
 
 export interface FileSizeResult {
@@ -22,6 +23,8 @@ export interface MusicSource {
   readonly name: string;
   readonly maxQuality: Quality;
   enabled: boolean;
+  /** 该源支持的搜索类型（缺省仅 song）；搜索引擎按此过滤不支持该类型的源 */
+  readonly supportedSearchTypes?: SearchType[];
 
   search(params: SearchParams): Promise<SearchResult[]>;
   getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal): Promise<PlayUrlResult>;

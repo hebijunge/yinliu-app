@@ -1,7 +1,7 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import type { EndpointCandidate } from './types';
 import { Quality } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistSummary, TierSizes, QualityOption, QualityTier, MvQuality, MvUrlResult } from '@core/types';
+import type { SearchParams, SearchResult, SearchType, SongDetail, HealthStatus, PlayUrlResult, PlaylistSummary, TierSizes, QualityOption, QualityTier, MvQuality, MvUrlResult } from '@core/types';
 import { YinliuError, ErrorCode } from '@core/types';
 
 /**
@@ -14,6 +14,7 @@ export class QqSource extends BaseHttpSource {
   readonly id = 'qq';
   readonly name = 'QQ音乐';
   readonly maxQuality = Quality.HIFI;
+  readonly supportedSearchTypes: SearchType[] = ["song", "artist", "album", "mv"];
   private readonly baseUrl = 'https://u.y.qq.com/cgi-bin/musicu.fcg';
 
   // 13档音质降级链（从高到低）

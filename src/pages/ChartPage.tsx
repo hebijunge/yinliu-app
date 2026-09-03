@@ -5,6 +5,8 @@ import { aggregateChartsByCategory, mergeChartSongsByCategory, type SourceChartR
 import type { AggregatedChartSong } from '@modules/chart/aggregator';
 import { playerEngine } from '@core/player';
 import { useSearchStore } from '@shared/store/searchStore';
+import { toast } from '@shared/components/Toast';
+import EmptyState from '../components/common/EmptyState';
 
 const SOURCE_BADGE_COLORS: Record<string, string> = {
   netease: 'bg-red-500',
@@ -20,15 +22,22 @@ export default function ChartPage() {
   const [loading, setLoading] = useState(false);
   const [sourceResults, setSourceResults] = useState<SourceChartResult[]>([]);
   const [mergedSongs, setMergedSongs] = useState<AggregatedChartSong[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const { selectedQuality } = useSearchStore();
 
   const loadCategory = useCallback(async (catId: string) => {
     setLoading(true);
+    setLoadError(null);
     try {
       const results = await aggregateChartsByCategory(catId);
       setSourceResults(results);
       const merged = await mergeChartSongsByCategory(catId, 20);
       setMergedSongs(merged);
+    } catch (err) {
+      console.error('榜单加载失败:', err);
+      setSourceResults([]);
+      setMergedSongs([]);
+      setLoadError(err instanceof Error ? err.message : '榜单加载失败，请稍后重试');
     } finally {
       setLoading(false);
     }
@@ -41,17 +50,22 @@ export default function ChartPage() {
   const activeCatName = CHART_CATEGORIES.find((c) => c.id === activeCategory)?.name || '';
 
   const handlePlay = async (song: AggregatedChartSong) => {
-    await playerEngine.playTrack({
-      id: song.id,
-      title: song.title,
-      artist: song.artist,
-      album: song.album,
-      coverUrl: song.coverUrl,
-      duration: song.duration,
-      sourceId: song.sourceId,
-      sourceSongId: song.sourceSongId,
-      uri: `stream://${song.sourceId}/${song.sourceSongId}`,
-    }, selectedQuality);
+    try {
+      await playerEngine.playTrack({
+        id: song.id,
+        title: song.title,
+        artist: song.artist,
+        album: song.album,
+        coverUrl: song.coverUrl,
+        duration: song.duration,
+        sourceId: song.sourceId,
+        sourceSongId: song.sourceSongId,
+        uri: `stream://${song.sourceId}/${song.sourceSongId}`,
+      }, selectedQuality);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '播放失败';
+      toast.error('播放失败', msg);
+    }
   };
 
   return (
@@ -110,13 +124,24 @@ export default function ChartPage() {
         </div>
       )}
 
-      {/* Empty */}
-      {!loading && sourceResults.length > 0 && sourceResults.every((r) => r.songs.length === 0) && (
-        <div className="flex flex-col items-center justify-center py-12 text-[var(--text-tertiary)]">
-          <AlertCircle className="w-10 h-10 mb-3" />
-          <p>「{activeCatName}」分类下暂无文档映射的固定榜单ID</p>
-          <p className="text-sm mt-1">该分类在各源的对应榜单ID未在文档中明确给出</p>
-        </div>
+      {/* Load Error：错误态 + 重试 */}
+      {!loading && loadError && (
+        <EmptyState
+          icon={AlertCircle}
+          title="榜单加载失败"
+          description={loadError}
+          onRetry={() => void loadCategory(activeCategory)}
+        />
+      )}
+
+      {/* Empty：用户可读文案 */}
+      {!loading && !loadError && sourceResults.length > 0 && sourceResults.every((r) => r.songs.length === 0) && (
+        <EmptyState
+          icon={Music}
+          title={`暂无相关榜单（${activeCatName}）`}
+          description="该分类下暂时没有可用的榜单内容"
+          onRetry={() => void loadCategory(activeCategory)}
+        />
       )}
 
       {/* Merged View */}

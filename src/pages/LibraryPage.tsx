@@ -5,6 +5,8 @@ import { aggregateChartsByCategory, type SourceChartResult, type AggregatedChart
 import { aggregatePlaylistsByCategory, type SourcePlaylistResult } from '@modules/playlist/aggregator';
 import { playerEngine } from '@core/player';
 import { useSearchStore } from '@shared/store/searchStore';
+import { toast } from '@shared/components/Toast';
+import EmptyState from '../components/common/EmptyState';
 
 const SOURCE_BADGE_COLORS: Record<string, string> = {
   netease: 'bg-red-500',
@@ -34,13 +36,19 @@ export default function LibraryPage() {
   const [chartResults, setChartResults] = useState<SourceChartResult[]>([]);
   const [expandedChartSource, setExpandedChartSource] = useState<string | null>(null);
   const [chartsLoaded, setChartsLoaded] = useState(false);
+  const [chartError, setChartError] = useState<string | null>(null);
 
   const loadCharts = useCallback(async (catId: string) => {
     setChartLoading(true);
     setExpandedChartSource(null);
+    setChartError(null);
     try {
       const results = await aggregateChartsByCategory(catId);
       setChartResults(results);
+    } catch (err) {
+      console.error('榜单加载失败:', err);
+      setChartResults([]);
+      setChartError(err instanceof Error ? err.message : '榜单加载失败，请稍后重试');
     } finally {
       setChartLoading(false);
     }
@@ -52,13 +60,19 @@ export default function LibraryPage() {
   const [playlistResults, setPlaylistResults] = useState<SourcePlaylistResult[]>([]);
   const [expandedPlaylist, setExpandedPlaylist] = useState<string | null>(null);
   const [playlistsLoaded, setPlaylistsLoaded] = useState(false);
+  const [playlistError, setPlaylistError] = useState<string | null>(null);
 
   const loadPlaylists = useCallback(async (catId: string) => {
     setPlaylistLoading(true);
     setExpandedPlaylist(null);
+    setPlaylistError(null);
     try {
       const results = await aggregatePlaylistsByCategory(catId);
       setPlaylistResults(results);
+    } catch (err) {
+      console.error('歌单加载失败:', err);
+      setPlaylistResults([]);
+      setPlaylistError(err instanceof Error ? err.message : '歌单加载失败，请稍后重试');
     } finally {
       setPlaylistLoading(false);
     }
@@ -93,17 +107,22 @@ export default function LibraryPage() {
   }, [playlistCat, activeTab, playlistsLoaded, loadPlaylists]);
 
   const handlePlay = async (song: AggregatedChartSong) => {
-    await playerEngine.playTrack({
-      id: song.id,
-      title: song.title,
-      artist: song.artist,
-      album: song.album,
-      coverUrl: song.coverUrl,
-      duration: song.duration,
-      sourceId: song.sourceId,
-      sourceSongId: song.sourceSongId,
-      uri: `stream://${song.sourceId}/${song.sourceSongId}`,
-    }, selectedQuality);
+    try {
+      await playerEngine.playTrack({
+        id: song.id,
+        title: song.title,
+        artist: song.artist,
+        album: song.album,
+        coverUrl: song.coverUrl,
+        duration: song.duration,
+        sourceId: song.sourceId,
+        sourceSongId: song.sourceSongId,
+        uri: `stream://${song.sourceId}/${song.sourceSongId}`,
+      }, selectedQuality);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '播放失败';
+      toast.error('播放失败', msg);
+    }
   };
 
   const chartCatName = CHART_CATEGORIES.find((c) => c.id === chartCat)?.name || '';
@@ -162,11 +181,20 @@ export default function LibraryPage() {
               <Loader2 className="w-6 h-6 animate-spin text-[var(--text-tertiary)]" />
               <span className="ml-2 text-sm text-[var(--text-tertiary)]">加载中…</span>
             </div>
+          ) : chartError ? (
+            <EmptyState
+              icon={AlertCircle}
+              title="榜单加载失败"
+              description={chartError}
+              onRetry={() => void loadCharts(chartCat)}
+            />
           ) : chartResults.length > 0 && chartResults.every((r) => r.songs.length === 0) ? (
-            <div className="flex flex-col items-center justify-center py-12 text-[var(--text-tertiary)]">
-              <AlertCircle className="w-8 h-8 mb-2" />
-              <p className="text-sm">「{chartCatName}」分类下暂无文档映射的固定榜单ID</p>
-            </div>
+            <EmptyState
+              icon={Music}
+              title={`暂无相关榜单（${chartCatName}）`}
+              description="该分类下暂时没有可用的榜单内容"
+              onRetry={() => void loadCharts(chartCat)}
+            />
           ) : (
             <div className="space-y-4">
               {chartResults.map((result) => (
@@ -283,11 +311,20 @@ export default function LibraryPage() {
               <Loader2 className="w-6 h-6 animate-spin text-[var(--text-tertiary)]" />
               <span className="ml-2 text-sm text-[var(--text-tertiary)]">加载中…</span>
             </div>
+          ) : playlistError ? (
+            <EmptyState
+              icon={AlertCircle}
+              title="歌单加载失败"
+              description={playlistError}
+              onRetry={() => void loadPlaylists(playlistCat)}
+            />
           ) : playlistResults.length > 0 && playlistResults.every((r) => r.playlists.length === 0) ? (
-            <div className="flex flex-col items-center justify-center py-12 text-[var(--text-tertiary)]">
-              <AlertCircle className="w-8 h-8 mb-2" />
-              <p className="text-sm">「{playlistCatName}」分类下暂无文档映射的固定歌单/榜单</p>
-            </div>
+            <EmptyState
+              icon={ListMusic}
+              title={`暂无相关歌单（${playlistCatName}）`}
+              description="该分类下暂时没有可用的歌单内容"
+              onRetry={() => void loadPlaylists(playlistCat)}
+            />
           ) : (
             <div className="space-y-4">
               {playlistResults.map((result) => (
@@ -332,17 +369,22 @@ export default function LibraryPage() {
                               {playlist.songs.map((song, idx) => (
                                 <div
                                   key={`${song.id}-${idx}`}
-                                  onClick={() => playerEngine.playTrack({
-                                    id: song.id,
-                                    title: song.title,
-                                    artist: song.artist,
-                                    album: song.album,
-                                    coverUrl: song.coverUrl,
-                                    duration: song.duration,
-                                    sourceId: song.sourceId,
-                                    sourceSongId: song.sourceSongId,
-                                    uri: `stream://${song.sourceId}/${song.sourceSongId}`,
-                                  }, selectedQuality)}
+                                  onClick={() => {
+                                    playerEngine.playTrack({
+                                      id: song.id,
+                                      title: song.title,
+                                      artist: song.artist,
+                                      album: song.album,
+                                      coverUrl: song.coverUrl,
+                                      duration: song.duration,
+                                      sourceId: song.sourceId,
+                                      sourceSongId: song.sourceSongId,
+                                      uri: `stream://${song.sourceId}/${song.sourceSongId}`,
+                                    }, selectedQuality).catch((err) => {
+                                      const msg = err instanceof Error ? err.message : '播放失败';
+                                      toast.error('播放失败', msg);
+                                    });
+                                  }}
                                   className="flex items-center gap-2 p-1.5 rounded hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer"
                                 >
                                   <span className="w-4 text-center text-[10px] text-[var(--text-tertiary)]">{idx + 1}</span>

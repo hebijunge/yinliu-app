@@ -37,6 +37,15 @@ interface SourceResult {
 export interface SearchEngineOptions {
   sources?: string[];
   timeout?: number;
+  /**
+   * 分源到达回调：每个音源返回（或超时/失败）时立即触发一次，
+   * 携带「已到达源」的聚合快照。搜索页用它做分源渐进展示，
+   * 不必等最慢的源。
+   */
+  onPartial?: (snapshot: {
+    results: AggregatedSearchResult[];
+    sourceStats: Record<string, { total: number; latency: number; error?: string; errorType?: string }>;
+  }) => void;
 }
 
 /**
@@ -141,7 +150,16 @@ export class SearchEngine {
       ? options.sources.map((id) => sourceRegistry.get(id)).filter(Boolean) as MusicSource[]
       : sourceRegistry.getEnabled();
 
-    const sourcePromises = sources.map(async (source) => {
+    const searchType = params.type || 'song';
+
+    // 非 song 类型时，过滤掉不支持该类型的源（避免源侧忽略 type 而返回歌曲结果污染列表）
+    const usableSources = searchType === 'song'
+      ? sources
+      : sources.filter((s) => s.supportedSearchTypes?.includes(searchType));
+
+    const fulfilled: SourceResult[] = [];
+
+    const sourcePromises = usableSources.map(async (source) => {
       const sStart = Date.now();
       try {
         const results = await Promise.race([
@@ -150,29 +168,37 @@ export class SearchEngine {
             setTimeout(() => reject(new Error('Timeout')), options.timeout || 10000)
           ),
         ]);
-        return {
+        const sr: SourceResult = {
           source,
           results,
           latency: Date.now() - sStart,
           error: null as string | null,
         };
+        fulfilled.push(sr);
+        options.onPartial?.(this.buildSnapshot(fulfilled, searchType));
+        return sr;
       } catch (err) {
-        return {
+        const sr: SourceResult = {
           source,
           results: [] as SearchResult[],
           latency: Date.now() - sStart,
           error: err instanceof Error ? err.message : 'Unknown error',
         };
+        fulfilled.push(sr);
+        options.onPartial?.(this.buildSnapshot(fulfilled, searchType));
+        return sr;
       }
     });
 
-    const sourceResults = await Promise.allSettled(sourcePromises);
-    const fulfilled = sourceResults
-      .filter((r): r is PromiseFulfilledResult<SourceResult> => r.status === 'fulfilled')
-      .map((r) => r.value);
+    await Promise.allSettled(sourcePromises);
+    return this.buildSnapshot(fulfilled, searchType);
+  }
 
-    const searchType = params.type || 'song';
-
+  /** 按已到达的源集合产出聚合快照（分源渐进展示与最终返回共用） */
+  private buildSnapshot(fulfilled: SourceResult[], searchType: string): {
+    results: AggregatedSearchResult[];
+    sourceStats: Record<string, { total: number; latency: number; error?: string; errorType?: string }>;
+  } {
     if (searchType === 'song') {
       return this.mergeSongResults(fulfilled);
     }

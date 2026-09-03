@@ -28,6 +28,8 @@ interface PlaylistStore {
   removePlaylist: (id: string) => Promise<void>;
   renamePlaylist: (id: string, name: string) => Promise<void>;
   setCurrentPlaylist: (id: string | null) => void;
+  /** 歌单无封面且有歌曲时，取第一首歌封面作为歌单封面（懒补齐并持久化） */
+  refreshPlaylistCovers: () => Promise<void>;
 
   // 歌曲操作
   addSongToPlaylist: (playlistId: string, song: PlaylistSongInput) => Promise<void>;
@@ -112,6 +114,34 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
 
   setCurrentPlaylist: (id) => set({ currentPlaylistId: id }),
 
+  refreshPlaylistCovers: async () => {
+    const playlists = get().playlists;
+    // 仅处理「无封面但有歌曲」的歌单；本地 sqlite 查询，逐个补齐即可
+    const pending = playlists.filter((p) => !p.coverUrl && p.songCount > 0);
+    let changed = false;
+    const covers = new Map<string, string>();
+    for (const p of pending) {
+      try {
+        const songs = await playlistService.getPlaylistSongs(p.id);
+        const firstCover = songs.find((s) => s.coverUrl)?.coverUrl;
+        if (firstCover) {
+          covers.set(p.id, firstCover);
+          await playlistService.setPlaylistCover(p.id, firstCover);
+          changed = true;
+        }
+      } catch {
+        // 单个歌单封面补齐失败不影响其余
+      }
+    }
+    if (changed) {
+      set((s) => ({
+        playlists: s.playlists.map((p) =>
+          covers.has(p.id) ? { ...p, coverUrl: covers.get(p.id) } : p
+        ),
+      }));
+    }
+  },
+
   addSongToPlaylist: async (playlistId, song) => {
     // 同歌单同源去重：同一平台同一 songId 不重复添加
     const exists = get().currentPlaylistSongs.some(
@@ -121,6 +151,15 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
       return;
     }
     await playlistService.addSongToPlaylist(playlistId, song);
+    // 歌单无封面时取第一首歌封面作为歌单封面
+    const target = get().playlists.find((p) => p.id === playlistId);
+    if (!target?.coverUrl && song.coverUrl) {
+      try {
+        await playlistService.setPlaylistCover(playlistId, song.coverUrl);
+      } catch {
+        // 封面写入失败不影响加歌主流程
+      }
+    }
     await get().loadPlaylistSongs(playlistId);
     await get().loadPlaylists(); // 刷新 songCount
   },

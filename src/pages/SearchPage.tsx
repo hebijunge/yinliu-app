@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play, User, Disc, Video } from 'lucide-react';
+import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play, User, Disc, Video, X, SearchX } from 'lucide-react';
 import { toast } from '../shared/components/Toast';
 import { useSearchStore } from '../shared/store/searchStore';
 import { searchEngine } from '../core/search';
@@ -11,9 +11,12 @@ import { usePlayHistoryStore } from '../shared/store/playHistoryStore';
 import type { AggregatedSearchResult } from '../core/search';
 import { Quality, type SearchType } from '../core/types';
 import { useMvPlayerStore } from '../shared/store/mvPlayerStore';
+import { sourceRegistry } from '@providers/music/registry';
 import MvPlayerPage from './MvPlayerPage';
 import SongRow from '../components/song/SongRow';
 import QualitySizeSheet from '../components/song/QualitySizeSheet';
+import EmptyState from '../components/common/EmptyState';
+import { SkeletonSearchResult } from '../components/ui/Skeleton';
 
 function formatRelativeTime(ts: number): string {
   const now = Date.now();
@@ -29,10 +32,10 @@ function formatRelativeTime(ts: number): string {
 export default function SearchPage() {
   const {
     keyword, results, isSearching, sourceStats, selectedSources, selectedQuality, searchHistory,
-    setKeyword, setResults, setSearching, setSourceStats, addToHistory, setQuality, searchType, setSearchType,
+    setKeyword, setResults, setSearching, setSourceStats, addToHistory, removeHistory, clearHistory, setQuality, searchType, setSearchType,
   } = useSearchStore();
 
-  const { playlists, addPlaylist, isFavorite, favorites } = usePlaylistStore();
+  const { playlists, addPlaylist, isFavorite, favorites, refreshPlaylistCovers } = usePlaylistStore();
   const { records: historyRecords } = usePlayHistoryStore();
 
   const [inputValue, setInputValue] = useState(keyword);
@@ -43,6 +46,12 @@ export default function SearchPage() {
   const [qualitySheetSong, setQualitySheetSong] = useState<AggregatedSearchResult | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // 歌单封面懒补齐（取第一首歌封面），让自建/收藏歌单卡有封面可显示
+  useEffect(() => {
+    void refreshPlaylistCovers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // v16: 搜索结果分页加载
   const PAGE_SIZE = 15;
   const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
@@ -50,6 +59,13 @@ export default function SearchPage() {
 
   // 搜索后自动滚动到结果
   const resultSectionRef = useRef<HTMLDivElement>(null);
+
+  // 竞态保护：请求序号，仅最新一次搜索允许写入结果
+  const searchSeqRef = useRef(0);
+  // 最近一次成功发起搜索的词（重试按钮用）
+  const lastTermRef = useRef('');
+  // 搜索失败状态（错误提示 + 重试）
+  const [searchError, setSearchError] = useState<string | null>(null);
 
   // v18: 搜索结果变化时重置分页
   useEffect(() => {
@@ -74,24 +90,61 @@ export default function SearchPage() {
   const handleSearch = useCallback(async (termOverride?: string) => {
     const term = (termOverride ?? inputValue).trim();
     if (!term) return;
+    // 新搜索发起时递增序号，旧请求的回包（含分源回调）一律丢弃
+    const seq = ++searchSeqRef.current;
+    const isLatest = () => searchSeqRef.current === seq;
+    lastTermRef.current = term;
+    setSearchError(null);
     setKeyword(term);
     setSearching(true);
+    setResults([]);
+    setSourceStats({});
     addToHistory(term);
     try {
+      // 从 store 直接取最新值，避免 Tab 切换后 setTimeout 触发的搜索用到旧闭包里的类型/音源
+      const latest = useSearchStore.getState();
       const { results, sourceStats } = await searchEngine.search(
-        { keyword: term, page: 0, pageSize: 30 },
-        { sources: selectedSources, timeout: 10000 }
+        { keyword: term, page: 0, pageSize: 30, type: latest.searchType },
+        {
+          sources: latest.selectedSources,
+          timeout: 10000,
+          // 分源到达分源展示：谁先回来先合并展示谁，不等最慢的源
+          onPartial: (snapshot) => {
+            if (!isLatest()) return;
+            setResults(snapshot.results);
+            setSourceStats(snapshot.sourceStats);
+          },
+        }
       );
+      if (!isLatest()) return;
       setResults(results);
       setSourceStats(sourceStats);
-      // 滚动到结果区域
-      setTimeout(() => {
-        resultSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 100);
+      // 全部音源都失败时按错误处理，给错误态而非空态
+      const allFailed =
+        Object.keys(sourceStats).length > 0 &&
+        Object.values(sourceStats).every((st) => st.error) &&
+        results.length === 0;
+      if (allFailed) {
+        setSearchError('所有音源均搜索失败，请检查网络后重试');
+        setResults([]);
+        setSourceStats({});
+      } else {
+        // 滚动到结果区域
+        setTimeout(() => {
+          resultSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 100);
+      }
     } catch (err) {
       console.error('Search failed:', err);
+      if (isLatest()) {
+        setSearchError(err instanceof Error ? err.message : '搜索失败，请稍后重试');
+        setResults([]);
+        setSourceStats({});
+      }
     } finally {
-      setSearching(false);
+      if (isLatest()) {
+        setSearching(false);
+      }
     }
   }, [inputValue, selectedSources, searchType, setKeyword, setSearching, addToHistory, setResults, setSourceStats]);
 
@@ -312,12 +365,12 @@ export default function SearchPage() {
         </div>
       )}
 
-      {/* Source Stats */}
+      {/* Source Stats：只展示源名称与结果数，不透出原始 id / 延迟毫秒 */}
       {Object.keys(sourceStats).length > 0 && (
         <div className="flex gap-3 mb-4 flex-wrap">
           {Object.entries(sourceStats).map(([id, stat]) => (
             <div key={id} className="text-xs px-2 py-1 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)]">
-              {id}: {stat.total}条 {stat.latency}ms {stat.error && <span className="text-red-500">(错误)</span>}
+              {sourceRegistry.get(id)?.name || id}: {stat.total} 条{stat.error && <span className="text-red-500">（失败）</span>}
             </div>
           ))}
         </div>
@@ -398,8 +451,12 @@ export default function SearchPage() {
             }}
             className="yinliu-card-hover flex items-center gap-4 group"
           >
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-500/20 to-pink-500/20 flex items-center justify-center flex-shrink-0 border border-red-500/20">
-              <Heart className="w-7 h-7 text-red-500 fill-current" />
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-500/20 to-pink-500/20 flex items-center justify-center flex-shrink-0 border border-red-500/20 overflow-hidden">
+              {favoritesPlaylist?.coverUrl ? (
+                <img src={favoritesPlaylist.coverUrl} alt="我喜欢的音乐" className="w-full h-full object-cover" loading="lazy" />
+              ) : (
+                <Heart className="w-7 h-7 text-red-500 fill-current" />
+              )}
             </div>
             <div className="flex-1 min-w-0">
               <div className="font-medium text-[var(--text-primary)]">我喜欢的音乐</div>
@@ -442,7 +499,11 @@ export default function SearchPage() {
                 className="yinliu-card-hover text-left group"
               >
                 <div className="aspect-square w-full rounded-xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden">
-                  <ListMusic className="w-8 h-8 text-[var(--text-tertiary)] group-hover:text-[var(--accent)] transition-colors" />
+                  {pl.coverUrl ? (
+                    <img src={pl.coverUrl} alt={pl.name} className="w-full h-full object-cover" loading="lazy" />
+                  ) : (
+                    <ListMusic className="w-8 h-8 text-[var(--text-tertiary)] group-hover:text-[var(--accent)] transition-colors" />
+                  )}
                 </div>
                 <div className="text-sm font-medium truncate text-[var(--text-primary)]">{pl.name}</div>
                 <div className="text-xs text-[var(--text-tertiary)] mt-0.5">{pl.songCount} 首</div>
@@ -501,19 +562,38 @@ export default function SearchPage() {
         </section>
       )}
 
-      {/* Search history */}
+      {/* Search history：点击直接搜索；支持逐条删除与一键清空（已持久化到 localStorage） */}
       {searchHistory.length > 0 && results.length === 0 && !isSearching && !keyword && (
         <div className="mb-4">
-          <div className="text-sm text-[var(--text-secondary)] mb-2">搜索历史</div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm text-[var(--text-secondary)]">搜索历史</div>
+            <button
+              onClick={() => clearHistory()}
+              className="text-xs text-[var(--text-tertiary)] hover:text-red-500 transition-colors"
+            >
+              清空
+            </button>
+          </div>
           <div className="flex gap-2 flex-wrap">
             {searchHistory.map((h) => (
-              <button
+              <div
                 key={h}
-                onClick={() => { setInputValue(h); }}
-                className="px-3 py-1 rounded-full text-sm bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]"
+                className="flex items-center gap-1 pl-3 pr-1.5 py-1 rounded-full text-sm bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]"
               >
-                {h}
-              </button>
+                <button
+                  onClick={() => { setInputValue(h); handleSearch(h); }}
+                  className="hover:text-[var(--text-primary)]"
+                >
+                  {h}
+                </button>
+                <button
+                  onClick={() => removeHistory(h)}
+                  className="p-0.5 rounded-full text-[var(--text-tertiary)] hover:text-red-500 transition-colors"
+                  aria-label={`删除历史「${h}」`}
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
             ))}
           </div>
         </div>
@@ -644,11 +724,29 @@ export default function SearchPage() {
         )}
       </div>
 
-      {/* Empty state */}
-      {!isSearching && results.length === 0 && keyword && (
-        <div className="text-center py-12 text-[var(--text-tertiary)]">
-          未找到相关结果，请尝试其他关键词
-        </div>
+      {/* 骨架屏：搜索进行中且尚无结果时展示 */}
+      {isSearching && results.length === 0 && (
+        <SkeletonSearchResult count={6} />
+      )}
+
+      {/* 搜索失败：错误提示 + 重试按钮 */}
+      {searchError && !isSearching && (
+        <EmptyState
+          icon={SearchX}
+          title="搜索失败"
+          description={searchError}
+          onRetry={() => handleSearch(lastTermRef.current || undefined)}
+        />
+      )}
+
+      {/* Empty state：图标 + 文案 + 重试按钮 */}
+      {!isSearching && !searchError && results.length === 0 && keyword && (
+        <EmptyState
+          icon={SearchX}
+          title="未找到相关结果"
+          description="请尝试其他关键词，或检查搜索类型是否正确"
+          onRetry={() => handleSearch(keyword)}
+        />
       )}
 
       {/* 音质/大小下载弹窗（⋮ 按钮） */}

@@ -11,13 +11,16 @@ import {
   Settings,
   ChevronRight,
 } from 'lucide-react';
+import { useSettingsStore } from '@shared/store/settingsStore';
 
 /** 我的：功能入口页 */
 export default function MinePage() {
   const navigate = useNavigate();
+  const debugMode = useSettingsStore((s) => s.debugMode);
 
+  // 「我喜欢的音乐」直达收藏歌单详情；「我的歌单」进歌单列表页，两者不再指向同一视图
   const entries = [
-    { icon: Heart, label: '我喜欢的音乐', to: '/playlists' },
+    { icon: Heart, label: '我喜欢的音乐', to: '/playlists?id=favorites' },
     { icon: Heart, label: '收藏歌单', to: '/favorite-playlists' },
     { icon: ListMusic, label: '我的歌单', to: '/playlists' },
     { icon: Clock, label: '最近播放', to: '/history' },
@@ -25,7 +28,8 @@ export default function MinePage() {
     { icon: FolderOpen, label: '本地音乐', to: '/local' },
     { icon: BookOpen, label: '书架', to: '/reading' },
     { icon: AudioLines, label: '均衡器', to: '/eq' },
-    { icon: Terminal, label: '调试日志', to: '/debug' },
+    // 调试日志仅 debug 模式可见，普通用户不暴露开发工具入口
+    ...(debugMode ? [{ icon: Terminal, label: '调试日志', to: '/debug' }] : []),
     { icon: Settings, label: '设置', to: '/settings' },
   ];
 

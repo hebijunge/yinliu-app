@@ -13,6 +13,8 @@ import QualitySizeSheet from '../components/song/QualitySizeSheet';
 import { playerEngine } from '../core/player';
 import { useSearchStore } from '../shared/store/searchStore';
 import { toast } from '../shared/components/Toast';
+import EmptyState from '../components/common/EmptyState';
+import { SkeletonSearchResult } from '../components/ui/Skeleton';
 
 /** 下拉刷新触发阈值（px） */
 const PULL_THRESHOLD = 72;
@@ -266,13 +268,13 @@ export default function HomePage() {
       )}
 
       {loading ? (
-        <div className="flex items-center justify-center py-16 text-[var(--text-tertiary)]">
-          <Loader2 className="w-6 h-6 animate-spin" />
-        </div>
+        <SkeletonSearchResult count={8} />
       ) : songs.length === 0 ? (
-        <div className="text-center py-12 text-[var(--text-tertiary)]">
-          热歌榜暂无数据，下拉可重试
-        </div>
+        <EmptyState
+          title="热歌榜暂无数据"
+          description="可能是网络异常或各音源暂不可用，点击重试或下拉刷新"
+          onRetry={() => void triggerRefresh()}
+        />
       ) : (
         songs.slice(0, 100).map((result) => (
           <SongRow

@@ -1,16 +1,17 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Plus, Trash2, Edit3, ListMusic, Play, Link2, Loader2, CheckCircle2, AlertCircle, X, Music2, ArrowLeft, Clock, CloudDownload } from 'lucide-react';
 import { usePlaylistStore } from '../shared/store/playlistStore';
 import { usePlayerStore } from '../shared/store/playerStore';
 import { playerEngine } from '../core/player';
 import { useSearchParams, Link } from 'react-router-dom';
 import { SkeletonPlaylistGrid } from '../components/ui/Skeleton';
+import EmptyState from '../components/common/EmptyState';
 import { toast } from '../shared/components/Toast';
 import { playlistImporter } from '../modules/music/playlistImporter';
 import type { ImportReport } from '../modules/music/playlistImporter';
 
 export default function PlaylistPage() {
-  const { playlists, addPlaylist, removePlaylist, renamePlaylist, isImporting, lastImportReport, importPlaylistFromUrl, clearLastImportReport, currentPlaylistSongs, loadPlaylistSongs } = usePlaylistStore();
+  const { playlists, addPlaylist, removePlaylist, renamePlaylist, isImporting, lastImportReport, importPlaylistFromUrl, clearLastImportReport, currentPlaylistSongs, loadPlaylistSongs, refreshPlaylistCovers } = usePlaylistStore();
   const [searchParams, setSearchParams] = useSearchParams();
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
@@ -25,6 +26,12 @@ export default function PlaylistPage() {
 
   const selectedId = searchParams.get('id');
   const selectedPlaylist = playlists.find((p) => p.id === selectedId);
+
+  // 歌单封面懒补齐：无封面且有歌曲的歌单，取第一首歌封面作为歌单封面
+  useEffect(() => {
+    void refreshPlaylistCovers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const closeImport = () => {
     setShowImport(false);
@@ -225,8 +232,12 @@ export default function PlaylistPage() {
               className="group relative rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] overflow-hidden hover:border-[var(--accent)]/30 transition-all duration-200"
             >
               <Link to={`/playlists?id=${pl.id}`} className="block">
-                <div className="aspect-square bg-[var(--bg-tertiary)] flex items-center justify-center">
-                  <ListMusic className="w-12 h-12 text-[var(--text-tertiary)]" />
+                <div className="aspect-square bg-[var(--bg-tertiary)] flex items-center justify-center overflow-hidden">
+                  {pl.coverUrl ? (
+                    <img src={pl.coverUrl} alt={pl.name} className="w-full h-full object-cover" loading="lazy" />
+                  ) : (
+                    <ListMusic className="w-12 h-12 text-[var(--text-tertiary)]" />
+                  )}
                 </div>
               </Link>
               <div className="p-4">
@@ -267,7 +278,13 @@ export default function PlaylistPage() {
                     <Edit3 className="w-3.5 h-3.5" />
                   </button>
                   <button
-                    onClick={() => removePlaylist(pl.id)}
+                    onClick={() => {
+                      if (window.confirm(`确定删除歌单「${pl.name}」吗？删除后无法恢复。`)) {
+                        removePlaylist(pl.id).catch((err) => {
+                          toast.error('删除歌单失败', err instanceof Error ? err.message : '未知错误');
+                        });
+                      }
+                    }}
                     className="p-1.5 rounded-xl bg-black/40 text-white hover:bg-red-500/70 backdrop-blur-sm transition-colors focus-ring"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -362,11 +379,16 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
   const { currentPlaylistSongs, loadPlaylistSongs, removeSongFromPlaylist, addSongToPlaylist, isLoading } = usePlaylistStore();
   const { currentQuality } = usePlayerStore();
   const [filter, setFilter] = useState<'all' | 'playable' | 'failed'>('all');
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  // 加载歌单歌曲
-  if (currentPlaylistSongs.length === 0 && !isLoading) {
-    loadPlaylistSongs(playlistId);
-  }
+  // 加载歌单歌曲（副作用移入 effect；失败给错误态 + 重试，避免整块白板）
+  useEffect(() => {
+    setLoadError(null);
+    loadPlaylistSongs(playlistId).catch((err) => {
+      console.error('歌单加载失败:', err);
+      setLoadError(err instanceof Error ? err.message : '歌单加载失败，请稍后重试');
+    });
+  }, [playlistId, loadPlaylistSongs]);
 
   const songs = currentPlaylistSongs;
   const failedCount = songs.filter((s) => s.matchStatus === 'failed').length;
@@ -403,6 +425,20 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
 
       {songs.length === 0 && isLoading && (
         <div className="text-center py-12 text-[var(--text-tertiary)] text-sm">加载中…</div>
+      )}
+
+      {loadError && !isLoading && (
+        <EmptyState
+          icon={AlertCircle}
+          title="歌单加载失败"
+          description={loadError}
+          onRetry={() => {
+            setLoadError(null);
+            loadPlaylistSongs(playlistId).catch((err) => {
+              setLoadError(err instanceof Error ? err.message : '歌单加载失败，请稍后重试');
+            });
+          }}
+        />
       )}
 
       {songs.length === 0 && !isLoading && (
@@ -486,7 +522,13 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
                   </button>
                 )}
                 <button
-                  onClick={() => removeSongFromPlaylist(playlistId, s.songId)}
+                  onClick={() => {
+                    if (window.confirm(`确定从歌单中移除「${s.title}」吗？`)) {
+                      removeSongFromPlaylist(playlistId, s.songId).catch((err) => {
+                        toast.error('移除歌曲失败', err instanceof Error ? err.message : '未知错误');
+                      });
+                    }
+                  }}
                   className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-red-500 transition-all"
                   aria-label="移除"
                 >

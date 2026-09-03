@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Loader2, Music2, ListMusic } from 'lucide-react';
 import { ZONES, getZoneChartGroups, getZonePlaylists, type Zone } from '../core/zones';
 import type { ClassifiedChart } from '../core/charts';
@@ -42,6 +42,13 @@ export default function ZonePage() {
   // 详情歌曲列表（点榜单/歌单后展开）
   const [detail, setDetail] = useState<DetailState | null>(null);
   const [sheetSong, setSheetSong] = useState<AggregatedSearchResult | null>(null);
+  // 详情区锚点：点击榜单/歌单后平滑滚动到详情列表，给出「点了有反应」的引导
+  const detailRef = useRef<HTMLDivElement | null>(null);
+  const scrollToDetail = () => {
+    setTimeout(() => {
+      detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 100);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -115,6 +122,7 @@ export default function ZonePage() {
 
   const openChart = async (chart: ClassifiedChart) => {
     setDetail({ title: `${chart.sourceName} · ${chart.chartName}`, loading: true, songs: [] });
+    scrollToDetail();
     try {
       const source = sourceRegistry.get(chart.sourceId);
       if (!source?.getChartDetail) {
@@ -135,6 +143,7 @@ export default function ZonePage() {
 
   const openPlaylist = async (sourceId: string, sourceName: string, pl: PlaylistSummary) => {
     setDetail({ title: pl.title, loading: true, songs: [] });
+    scrollToDetail();
     try {
       const source = sourceRegistry.get(sourceId);
       if (!source?.getPlaylist) {
@@ -249,7 +258,7 @@ export default function ZonePage() {
 
       {/* 榜单/歌单详情歌曲列表 */}
       {detail && (
-        <div className="mt-6">
+        <div className="mt-6" ref={detailRef}>
           {detail.title && <h3 className="text-base font-bold mb-2">{detail.title}</h3>}
           {detail.loading ? (
             <Spinner />

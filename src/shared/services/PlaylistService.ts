@@ -93,6 +93,16 @@ class PlaylistService {
     await flushDatabase();
   }
 
+  /** 写入歌单封面（歌单有歌曲时取第一首歌封面作为歌单封面） */
+  async setPlaylistCover(id: string, coverUrl: string): Promise<void> {
+    const sqliteDb = getSqliteDb();
+    sqliteDb.run(
+      `UPDATE playlists SET cover_url = ?, updated_at = ? WHERE id = ?`,
+      [coverUrl, Date.now(), id]
+    );
+    await flushDatabase();
+  }
+
   async deletePlaylist(id: string): Promise<void> {
     const sqliteDb = getSqliteDb();
     // 先删关联歌曲

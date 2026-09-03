@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality, YinliuError, ErrorCode } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, TierSizes, PlaylistSummary, QualityOption, MvQuality, MvUrlResult } from '@core/types';
+import type { SearchParams, SearchResult, SearchType, SongDetail, HealthStatus, PlayUrlResult, TierSizes, PlaylistSummary, QualityOption, MvQuality, MvUrlResult } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { sizeCache } from './sizeCache';
@@ -17,6 +17,7 @@ export class NeteaseSource extends BaseHttpSource {
   readonly id = 'netease';
   readonly name = '网易云音乐';
   readonly maxQuality = Quality.HIRES;
+  readonly supportedSearchTypes: SearchType[] = ["song", "artist", "album", "mv"];
 
   private readonly HOST = 'https://music.163.com';
   private readonly REF = 'https://music.163.com/';
