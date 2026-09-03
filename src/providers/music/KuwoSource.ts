@@ -4,6 +4,7 @@ import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResul
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { debugLogger } from '@shared/utils/debugLogger';
+import { sizeCache } from './sizeCache';
 
 /**
  * 酷我音乐音源Provider
@@ -261,6 +262,27 @@ export class KuwoSource extends BaseHttpSource {
       duration: 0,
       coverUrl: '',
     };
+  }
+
+  /**
+   * v20.1-fix: 覆写期望大小获取。
+   * 优先从 sizeCache 读取；其次以 durationCache 中的歌曲时长按目标码率估算。
+   */
+  protected async getExpectedSize(songId: string, quality: Quality): Promise<number | null> {
+    const cached = sizeCache.get(this.id, songId, quality);
+    if (cached) return cached.size;
+
+    const rid = songId.replace(/^kw_/, '');
+    const duration = this.durationCache.get(rid) || 0;
+    if (duration > 0) {
+      const expectedBitrate = this.qualityToExpectedBitrate(quality);
+      const estimated = Math.round((duration * expectedBitrate * 1000) / 8);
+      if (estimated > 0) {
+        sizeCache.set(this.id, songId, quality, { size: estimated });
+        return estimated;
+      }
+    }
+    return null;
   }
 
   // ===================== 取链（核心）=====================

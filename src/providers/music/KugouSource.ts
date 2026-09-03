@@ -4,6 +4,7 @@ import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResul
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { debugLogger } from '@shared/utils/debugLogger';
+import { sizeCache } from './sizeCache';
 
 /**
  * 酷狗音乐音源Provider
@@ -26,8 +27,8 @@ export class KugouSource extends BaseHttpSource {
   private readonly LYRICS_DOWNLOAD = 'http://lyrics.kugou.com/download';
   private readonly M_REF = 'http://m.kugou.com/';
 
-  // hash缓存：自增id -> hash信息
-  private hashCache = new Map<string, { hash: string; hash320: string; hashFlac: string; name: string; artist: string; duration: number }>();
+  // hash缓存：自增id -> hash信息（含可选filesize，用于大小校验）
+  private hashCache = new Map<string, { hash: string; hash320: string; hashFlac: string; name: string; artist: string; duration: number; filesize?: number }>();
   private nextId = 1;
 
   /**
@@ -81,7 +82,9 @@ export class KugouSource extends BaseHttpSource {
     if (cover) cover = cover.replace('{size}', '400');
 
     const id = `kg_${this.nextId++}`;
-    this.hashCache.set(id, { hash, hash320, hashFlac, name, artist, duration: dur });
+    const filesizeRaw = parseInt((o.filesize || '0').toString(), 10);
+    const filesize = filesizeRaw > 0 ? filesizeRaw : undefined;
+    this.hashCache.set(id, { hash, hash320, hashFlac, name, artist, duration: dur, filesize });
 
     return {
       id,
@@ -191,6 +194,76 @@ export class KugouSource extends BaseHttpSource {
     }
 
     throw new Error(`酷狗歌曲详情获取失败：hash=${hash} 无返回数据`);
+  }
+
+  /**
+   * v20.1-fix: 覆写期望大小获取。
+   * 优先从 sizeCache 读取；其次调用 getSongInfo.php 获取精确大小；
+   * 最后以 hashCache 中的时长按码率估算。
+   */
+  protected async getExpectedSize(songId: string, quality: Quality): Promise<number | null> {
+    const cached = sizeCache.get(this.id, songId, quality);
+    if (cached) return cached.size;
+
+    const hash = this.getHashForQuality(songId, quality);
+    if (!hash) return null;
+
+    try {
+      const url = `${this.GET_SONG_INFO}?cmd=playInfo&hash=${hash}`;
+      const data = await this.httpGetJson(url, { Referer: this.M_REF });
+      if (data) {
+        const fileSize = parseInt(data.fileSize || data.filesize || data.size || '0', 10);
+        if (fileSize > 0) {
+          sizeCache.set(this.id, songId, quality, { size: fileSize });
+          return fileSize;
+        }
+        const duration = parseInt(data.timeLength || '0', 10);
+        const bitrate = parseInt(data.bitRate || data.bitrate || '0', 10);
+        if (duration > 0 && bitrate > 0) {
+          const estimated = Math.round((duration * bitrate * 1000) / 8);
+          if (estimated > 0) {
+            sizeCache.set(this.id, songId, quality, { size: estimated });
+            return estimated;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // Fallback: hashCache duration + expected bitrate
+    const cachedHash = this.hashCache.get(songId);
+    if (cachedHash?.duration) {
+      const expectedBitrate = this.qualityToExpectedBitrate(quality);
+      const estimated = Math.round((cachedHash.duration * expectedBitrate * 1000) / 8);
+      if (estimated > 0) {
+        sizeCache.set(this.id, songId, quality, { size: estimated });
+        return estimated;
+      }
+    }
+
+    return null;
+  }
+
+  /** 按音质选取对应 hash */
+  private getHashForQuality(songId: string, quality: Quality): string | null {
+    const cached = this.hashCache.get(songId);
+    if (!cached) {
+      if (/^[a-f0-9]{32}$/i.test(songId)) return songId;
+      const cleanId = songId.replace(/^kg_/, '');
+      if (/^[a-f0-9]{32}$/i.test(cleanId)) return cleanId;
+      return null;
+    }
+    switch (quality) {
+      case Quality.LOSSLESS:
+      case Quality.HIFI:
+      case Quality.HIRES:
+        return cached.hashFlac || cached.hash320 || cached.hash;
+      case Quality.HIGH:
+        return cached.hash320 || cached.hash;
+      default:
+        return cached.hash;
+    }
   }
 
   // ===================== 取链（核心）=====================
@@ -716,7 +789,9 @@ export class KugouSource extends BaseHttpSource {
     const hashFlac = relateGoods.find((g: any) => g.bitrate > 1000)?.hash || '';
 
     const id = `kg_${this.nextId++}`;
-    this.hashCache.set(id, { hash: bestHash, hash320, hashFlac, name, artist, duration: dur });
+    const filesizeRaw = parseInt((o.filesize || best?.filesize || '0').toString(), 10);
+    const filesize = filesizeRaw > 0 ? filesizeRaw : undefined;
+    this.hashCache.set(id, { hash: bestHash, hash320, hashFlac, name, artist, duration: dur, filesize });
 
     return {
       id,
