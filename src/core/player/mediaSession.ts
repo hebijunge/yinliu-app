@@ -14,6 +14,7 @@
  * - 插件未安装时（开发期 / CI 首次同步前）：自动降级到 Web MediaSession
  */
 import { Capacitor } from '@capacitor/core';
+import { MediaSession as MediaSessionNative } from '@jofr/capacitor-media-session';
 
 interface MediaSessionPluginShape {
   setMetadata(options: {
@@ -56,30 +57,17 @@ let isInitialized = false;
 let lastNotifiedPlaybackState: 'none' | 'paused' | 'playing' = 'none';
 
 function getPlugin(): MediaSessionPluginShape | null {
-  if (pluginInstance) return pluginInstance;
+  if (pluginInstance !== null) return pluginInstance;
   try {
-    // 动态 require：避免静态导入在插件包缺失时直接抛错
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const req: any = (typeof require !== 'undefined' ? require : null);
-    let mod: any = null;
-    if (req) {
-      try {
-        mod = req('@jofr/capacitor-media-session');
-      } catch {
-        mod = null;
-      }
+    // v20：改为静态导入。原动态 require 在 vite ESM 打包产物中不存在，
+    // 导致原生端从未真正拿到插件实例（通知栏/锁屏/前台服务全部空转）。
+    const candidate = MediaSessionNative as unknown as MediaSessionPluginShape | undefined;
+    if (candidate && typeof candidate.setMetadata === 'function') {
+      pluginInstance = candidate;
+      return pluginInstance;
     }
-    if (!mod) {
-      pluginInstance = null;
-      return null;
-    }
-    const candidate = (mod && (mod.MediaSession || mod.default || mod)) || null;
-    if (!candidate || typeof candidate.setMetadata !== 'function') {
-      pluginInstance = null;
-      return null;
-    }
-    pluginInstance = candidate as MediaSessionPluginShape;
-    return pluginInstance;
+    pluginInstance = null;
+    return null;
   } catch (err) {
     pluginInstance = null;
     return null;
@@ -162,7 +150,19 @@ export async function updateMetadata(meta: {
       });
       return;
     } catch (err) {
-      console.warn('[mediaSession] setMetadata (plugin) failed, fallback to web:', err);
+      console.warn('[mediaSession] setMetadata with artwork failed, retry without artwork:', err);
+      // v20 容错：封面加载失败（如防盗链 URL）不应让整条元数据丢失
+      try {
+        await plugin.setMetadata({
+          title: meta.title || '未知曲目',
+          artist: meta.artist || '未知艺术家',
+          album: meta.album || '',
+          artwork: [],
+        });
+        return;
+      } catch (err2) {
+        console.warn('[mediaSession] setMetadata (plugin) failed, fallback to web:', err2);
+      }
     }
   }
 

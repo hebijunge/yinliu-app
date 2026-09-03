@@ -671,6 +671,25 @@ export class PlayerEngine {
     });
   }
 
+  /**
+   * v20：系统原因导致的暂停（音频焦点丢失 / 耳机拔出）。
+   * 与用户主动暂停的区别：不改写用户播放意图，焦点恢复后可自动续播。
+   */
+  pauseBySystem(): void {
+    if (this.isStreaming) {
+      streamingAudioPlayer.pause();
+    } else if (this.audio) {
+      this.audio.pause();
+    }
+    if (this.state === 'playing') {
+      this.setState('paused', 'system');
+    }
+    this.stopProgressTracking();
+    debugLogger.info('player', '系统原因暂停播放（焦点/耳机）', {
+      track: this.currentTrack?.title,
+    });
+  }
+
   resume(): void {
     if (this.isStreaming) {
       void streamingAudioPlayer.play();

@@ -47,4 +47,6 @@
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- v20：Android 13+ 通知栏媒体卡片 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>
