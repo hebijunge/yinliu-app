@@ -1,3 +1,4 @@
+import type { PlaylistSummary } from '../../core/types';
 import { BaseHttpSource, type ResolvedCandidate } from './BaseHttpSource';
 import { Quality } from '@core/types';
 import type { SearchParams, SearchResult, SongDetail, HealthStatus, TierSizes, QualityOption, QualityTier, PlayUrlResult } from '@core/types';
@@ -41,9 +42,10 @@ export class MiguSource extends BaseHttpSource {
     const contentId = this.extractContentId(songId);
     let copyrightId = this.copyrightIdCache.get(contentId);
     if (!copyrightId) {
-      copyrightId = await this.fetchCopyrightId(contentId);
-      if (copyrightId) {
-        this.copyrightIdCache.set(contentId, copyrightId);
+      const fetched = await this.fetchCopyrightId(contentId);
+      if (fetched) {
+        copyrightId = fetched;
+        this.copyrightIdCache.set(contentId, fetched);
       }
     }
     this.currentCopyrightId = copyrightId || contentId;

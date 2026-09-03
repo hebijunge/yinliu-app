@@ -107,7 +107,10 @@ export default function PlaylistAggregationPage() {
       sourceSongId: s.sourceSongId,
       uri: `stream://${s.sourceId}/${s.sourceSongId}`,
     }));
-    void playerEngine.playQueue(tracks, selectedQuality);
+    if (tracks.length > 0) {
+      playerEngine.setQueue(tracks, 0);
+      void playerEngine.playTrack(tracks[0], selectedQuality);
+    }
   }, [selectedQuality]);
 
   return (
