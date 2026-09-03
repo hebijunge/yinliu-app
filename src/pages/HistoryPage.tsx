@@ -33,7 +33,7 @@ function formatDuration(s?: number): string {
 
 export default function HistoryPage() {
   const { records, isLoading, loadRecords, clearHistory, removeRecord } = usePlayHistoryStore();
-  const { playlists, addSongToPlaylist, toggleFavorite, favorites } = usePlaylistStore();
+  const { playlists, addSongToPlaylist, toggleFavorite, isFavorite } = usePlaylistStore();
   const [pickerFor, setPickerFor] = useState<HistoryRecord | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const { currentQuality } = usePlayerStore();
@@ -157,7 +157,7 @@ export default function HistoryPage() {
       ) : (
         <div className="space-y-1.5">
           {records.map((record) => {
-            const isFav = favorites.has(record.songId);
+            const isFav = isFavorite({ title: record.title, artist: record.artist });
             return (
               <div
                 key={record.id}

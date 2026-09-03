@@ -1,12 +1,19 @@
 import { create } from 'zustand';
+import { normalizeTitle, normalizeArtist } from '@core/search';
 import { playlistService, type Playlist, type PlaylistSong } from '@shared/services/PlaylistService';
 import { playlistImporter, type ImportReport, type PreviewResult } from '@modules/music/playlistImporter';
+
+/** 跨源归一化收藏键：基于歌名+歌手归一化，同一首歌不同平台共享同一键 */
+function makeFavoriteKey(title: string, artist?: string): string {
+  return `${normalizeTitle(title)}|${normalizeArtist(artist || '')}`;
+}
 
 interface PlaylistStore {
   playlists: Playlist[];
   currentPlaylistId: string | null;
   currentPlaylistSongs: PlaylistSong[];
-  favorites: Set<string>; // songId set for quick lookup
+  /** 收藏归一化键集合（跨源去重：同一首歌不同平台视为同一收藏） */
+  favorites: Set<string>;
   isLoading: boolean;
   /** v14: 歌单导入流程状态 */
   isImporting: boolean;
@@ -26,6 +33,8 @@ interface PlaylistStore {
   addSongToPlaylist: (playlistId: string, song: PlaylistSongInput) => Promise<void>;
   removeSongFromPlaylist: (playlistId: string, songId: string) => Promise<void>;
   toggleFavorite: (song: PlaylistSongInput) => Promise<void>;
+  /** 按归一化键判断歌曲是否已收藏（支持跨源） */
+  isFavorite: (song: { title: string; artist?: string }) => boolean;
 
   // v14: 多平台歌单导入
   previewPlaylistUrl: (url: string) => Promise<PreviewResult>;
@@ -75,7 +84,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
 
   loadFavorites: async () => {
     const songs = await playlistService.getPlaylistSongs('favorites');
-    const favSet = new Set(songs.map((s) => s.songId));
+    const favSet = new Set(songs.map((s) => makeFavoriteKey(s.title, s.artist)));
     set({ favorites: favSet });
   },
 
@@ -104,6 +113,13 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   setCurrentPlaylist: (id) => set({ currentPlaylistId: id }),
 
   addSongToPlaylist: async (playlistId, song) => {
+    // 同歌单同源去重：同一平台同一 songId 不重复添加
+    const exists = get().currentPlaylistSongs.some(
+      (s) => s.playlistId === playlistId && s.songId === song.songId && s.source === song.source
+    );
+    if (exists) {
+      return;
+    }
     await playlistService.addSongToPlaylist(playlistId, song);
     await get().loadPlaylistSongs(playlistId);
     await get().loadPlaylists(); // 刷新 songCount
@@ -118,19 +134,20 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   },
 
   toggleFavorite: async (song) => {
-    const isFav = await playlistService.isFavorite(song.songId);
+    const normKey = makeFavoriteKey(song.title, song.artist);
+    const isFav = get().favorites.has(normKey);
     if (isFav) {
-      await playlistService.removeFromFavorites(song.songId);
+      await playlistService.removeFromFavoritesByNormKey(song.title, song.artist);
       set((s) => {
         const newFav = new Set(s.favorites);
-        newFav.delete(song.songId);
+        newFav.delete(normKey);
         return { favorites: newFav };
       });
     } else {
       await playlistService.addToFavorites(song);
       set((s) => {
         const newFav = new Set(s.favorites);
-        newFav.add(song.songId);
+        newFav.add(normKey);
         return { favorites: newFav };
       });
     }
@@ -139,6 +156,10 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
     if (currentPlaylistId) {
       await get().loadPlaylistSongs(currentPlaylistId);
     }
+  },
+
+  isFavorite: (song) => {
+    return get().favorites.has(makeFavoriteKey(song.title, song.artist));
   },
 
   // === v14: 多平台歌单导入 ===

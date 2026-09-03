@@ -32,7 +32,7 @@ export default function SearchPage() {
     setKeyword, setResults, setSearching, setSourceStats, addToHistory, setQuality, searchType, setSearchType,
   } = useSearchStore();
 
-  const { playlists, addPlaylist, favorites } = usePlaylistStore();
+  const { playlists, addPlaylist, isFavorite, favorites } = usePlaylistStore();
   const { records: historyRecords } = usePlayHistoryStore();
 
   const [inputValue, setInputValue] = useState(keyword);
@@ -362,7 +362,7 @@ export default function SearchPage() {
                 title={`${record.title} - ${record.artist || ''}`}
               >
                 <div className="aspect-square w-32 rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors relative">
-                  {favorites.has(record.songId) && (
+                  {isFavorite({ title: record.title, artist: record.artist }) && (
                     <div className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-black/40 flex items-center justify-center">
                       <Heart className="w-3 h-3 text-red-500 fill-current" />
                     </div>

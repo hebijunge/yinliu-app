@@ -88,8 +88,8 @@ export default function FullScreenPlayer({ onClose }: Props) {
 
   const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
 
-  const { toggleFavorite, favorites } = usePlaylistStore();
-  const isFav = currentTrack ? favorites.has(currentTrack.sourceSongId) : false;
+  const { toggleFavorite, isFavorite } = usePlaylistStore();
+  const isFav = currentTrack ? isFavorite({ title: currentTrack.title, artist: currentTrack.artist }) : false;
 
   const handlePrev = useCallback(() => playerEngine.playPrevious(), []);
   const handleNext = useCallback(() => playerEngine.playNext(), []);
@@ -102,10 +102,10 @@ export default function FullScreenPlayer({ onClose }: Props) {
       title: currentTrack.title,
       artist: currentTrack.artist,
       source: currentTrack.sourceId,
-      quality: actualQuality ?? currentQuality,
+      quality: 'standard',
     };
     void toggleFavorite(song);
-  }, [currentTrack, currentQuality, actualQuality, toggleFavorite]);
+  }, [currentTrack, toggleFavorite]);
 
   const ModeIcon = MODE_ICONS[repeatMode];
 

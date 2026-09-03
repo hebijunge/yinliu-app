@@ -34,7 +34,7 @@ const MODE_LABELS: Record<RepeatMode, string> = {
 };
 
 export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
-  const { state, currentTrack, currentTime, duration, volume, isMuted, queue, repeatMode, actualSourceId, currentQuality, actualQuality } = usePlayerStore();
+  const { state, currentTrack, currentTime, duration, volume, isMuted, queue, repeatMode, actualSourceId } = usePlayerStore();
   // 全屏播放页开关提升到全局 store：Android 返回键需要跨组件读取并关闭播放页
   const showFullScreen = usePlayerStore((s) => s.fullscreenOpen);
   const setShowFullScreen = usePlayerStore((s) => s.setFullscreenOpen);
@@ -89,8 +89,8 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
     );
   }, [currentTrack]);
 
-  const { toggleFavorite, favorites } = usePlaylistStore();
-  const isFav = currentTrack ? favorites.has(currentTrack.sourceSongId) : false;
+  const { toggleFavorite, isFavorite } = usePlaylistStore();
+  const isFav = currentTrack ? isFavorite({ title: currentTrack.title, artist: currentTrack.artist }) : false;
 
   const handlePrev = () => playerEngine.playPrevious();
   const handleNext = () => playerEngine.playNext();
@@ -103,10 +103,10 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
       title: currentTrack.title,
       artist: currentTrack.artist,
       source: currentTrack.sourceId,
-      quality: actualQuality ?? currentQuality,
+      quality: 'standard',
     };
     void toggleFavorite(song);
-  }, [currentTrack, currentQuality, actualQuality, toggleFavorite]);
+  }, [currentTrack, toggleFavorite]);
 
   const ModeIcon = MODE_ICONS[repeatMode];
 

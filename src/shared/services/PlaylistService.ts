@@ -1,4 +1,5 @@
 import { getDb, getSqliteDb, flushDatabase } from '@shared/database';
+import { normalizeTitle, normalizeArtist } from '@core/search';
 
 export interface PlaylistSong {
   id: number;
@@ -27,6 +28,11 @@ export interface Playlist {
   createdAt: number;
   updatedAt: number;
   songCount: number;
+}
+
+/** 跨源归一化收藏键：基于歌名+歌手归一化 */
+function makeFavoriteKey(title: string, artist?: string): string {
+  return `${normalizeTitle(title)}|${normalizeArtist(artist || '')}`;
 }
 
 class PlaylistService {
@@ -224,20 +230,11 @@ class PlaylistService {
     source: string;
     quality: string;
   }): Promise<void> {
-    // 先检查是否已存在
-    const sqliteDb = getSqliteDb();
-    const checkStmt = sqliteDb.prepare(
-      `SELECT COUNT(*) as cnt FROM playlist_songs WHERE playlist_id = 'favorites' AND song_id = ?`
-    );
-    checkStmt.bind([song.songId]);
-    let exists = false;
-    if (checkStmt.step()) {
-      exists = Number((checkStmt.getAsObject() as Record<string, unknown>).cnt || 0) > 0;
-    }
-    checkStmt.free();
-
-    if (exists) {
-      // 已存在，不做任何事（幂等）
+    // 跨源去重：基于归一化歌名+歌手判断是否已收藏
+    const existing = await this.getPlaylistSongs('favorites');
+    const normKey = makeFavoriteKey(song.title, song.artist);
+    const alreadyExists = existing.some((s) => makeFavoriteKey(s.title, s.artist) === normKey);
+    if (alreadyExists) {
       return;
     }
 
@@ -248,18 +245,21 @@ class PlaylistService {
     await this.removeSongFromPlaylist('favorites', songId);
   }
 
-  async isFavorite(songId: string): Promise<boolean> {
-    const sqliteDb = getSqliteDb();
-    const stmt = sqliteDb.prepare(
-      `SELECT COUNT(*) as cnt FROM playlist_songs WHERE playlist_id = 'favorites' AND song_id = ?`
-    );
-    stmt.bind([songId]);
-    let exists = false;
-    if (stmt.step()) {
-      exists = Number((stmt.getAsObject() as Record<string, unknown>).cnt || 0) > 0;
+  /** 按归一化键移除收藏（跨源：移除同一首歌的所有平台版本） */
+  async removeFromFavoritesByNormKey(title: string, artist?: string): Promise<void> {
+    const existing = await this.getPlaylistSongs('favorites');
+    const normKey = makeFavoriteKey(title, artist);
+    for (const s of existing) {
+      if (makeFavoriteKey(s.title, s.artist) === normKey) {
+        await this.removeSongFromPlaylist('favorites', s.songId);
+      }
     }
-    stmt.free();
-    return exists;
+  }
+
+  async isFavorite(title: string, artist?: string): Promise<boolean> {
+    const existing = await this.getPlaylistSongs('favorites');
+    const normKey = makeFavoriteKey(title, artist);
+    return existing.some((s) => makeFavoriteKey(s.title, s.artist) === normKey);
   }
 }
 
