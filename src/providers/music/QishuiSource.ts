@@ -1,5 +1,5 @@
 import { BaseHttpSource } from './BaseHttpSource';
-import { Quality, qualityRank } from '@core/types';
+import { Quality, qualityRank, YinliuError, ErrorCode } from '@core/types';
 import type {
   SearchParams,
   SearchResult,
@@ -16,31 +16,31 @@ import type {
 import { debugLogger } from '@shared/utils/debugLogger';
 
 /**
- * 汽水音乐音源Provider（v18 新增）
+ * 汽水音乐音源 Provider（v21 — track.php 多档加密流方案）
  *
- * 接口依据《汽水音乐接口完整文档_实测整合版》：
- * - 搜索：GET api.qishui.com/luna/search/track（免登录，PC客户端公共参数）
- * - 榜单：GET api.qishui.com/luna/pc/charts/{chart_id}（4大官方榜单）
- * - 歌单：GET api.qishui.com/luna/playlist/detail（歌单详情）
- *   分类歌单：discover/mix 需登录态，实测免登录返回 EMPTY_RESULT，故不提供分类歌单（见下方说明）
- * - 取链：分享页 _ROUTER_DATA 明文直链（music.douyin.com/qishui/share/track）
- * - 歌词：分享页逐字歌词 sentences[] → LRC
+ * 接口依据《汽水音乐接口完整文档_实测整合版》5.x：
+ * - 搜索/榜单/歌单：api.qishui.com/luna/*（沿用 v18 实现）
+ * - 取链：track.php（唯一取链方式，弃用分享页 _ROUTER_DATA 直链）
+ *   · endpoint: GET https://qishui.lxmapi.icu/apis/track.php?track_id={id}
+ *   · 响应为 Base64 编码的 AES-128-CBC 密文
+ *   · 解密后 JSON：data.audios[]（level, url, decrypt_key, raw_size）+ data.lyrics
+ *   · 音频流为 CENC 加密 MP4 容器，需 AES-128-CTR 解密才能播放
+ * - 歌词：track.php 响应中的 data.lyrics
  */
 export class QishuiSource extends BaseHttpSource {
   readonly id = 'qishui';
   readonly name = '汽水音乐';
   /**
-   * 分享页直链实测约 470KB/首（文档5.6：音质档位不明确，可能是试听版）。
-   * 按 128K AAC 档注册，避免在 HIGH/LOSSLESS 请求中抢其他源的高音质。
-   * 实测 2026-09-03：孤勇者 470KB/256s、晴天 487KB/238s，Content-Type=audio/mp4。
+   * track.php 返回 4 档音质：lossless / highest / higher / medium，
+   * 最高支持无损，因此注册 maxQuality = LOSSLESS。
    */
-  readonly maxQuality = Quality.STANDARD;
+  readonly maxQuality = Quality.LOSSLESS;
 
   private readonly apiBase = 'https://api.qishui.com';
   private readonly apiBackupBase = 'https://api5-lf.qishui.com';
-  private readonly shareBase = 'https://music.douyin.com/qishui/share/track';
+  private readonly trackPhpBase = 'https://qishui.lxmapi.icu/apis/track.php';
 
-  /** PC客户端公共参数（文档 2.1） */
+  /** PC 客户端公共参数（文档 2.1） */
   private readonly commParams: Record<string, string> = {
     aid: '386088',
     app_name: 'luna_pc',
@@ -60,7 +60,11 @@ export class QishuiSource extends BaseHttpSource {
     Accept: 'application/json',
   };
 
-  /** 官方4大榜单（文档 9.2） */
+  /** track.php 响应 AES-128-CBC 密钥与 IV（文档 5.x） */
+  private readonly trackPhpKey = 'seekmusicv260409';
+  private readonly trackPhpIv = '260409seekmusicv';
+
+  /** 官方 4 大榜单（文档 9.2） */
   private static readonly CHARTS: { id: string; name: string; description: string; cover: string }[] = [
     {
       id: '7036274230471712007',
@@ -88,13 +92,15 @@ export class QishuiSource extends BaseHttpSource {
     },
   ];
 
-  /** 分享页数据缓存：trackId → { url, lrc, fetchedAt }（URL 短时效，10分钟过期） */
-  private shareCache = new Map<string, { url: string; lrc: string | null; fetchedAt: number }>();
-  private static readonly SHARE_CACHE_TTL = 5 * 60 * 1000; // 直链时效约3分钟，缓存5分钟
+  /** track.php 响应缓存：trackId → { data, fetchedAt } */
+  private trackCache = new Map<string, { data: any; fetchedAt: number }>();
+  private static readonly TRACK_CACHE_TTL = 3 * 60 * 1000; // 3 分钟（URL 短时效）
 
-  /**
-   * 搜索歌曲（文档 3.1）
-   */
+  /** 并发去重锁：trackId → Promise（避免同一 trackId 并发多次请求 track.php） */
+  private static trackPending = new Map<string, Promise<any>>();
+
+  // ==================== 搜索 / 榜单 / 歌单（沿用 v18） ====================
+
   async search(params: SearchParams): Promise<SearchResult[]> {
     const page = params.page || 0;
     const pageSize = params.pageSize || 30;
@@ -121,18 +127,6 @@ export class QishuiSource extends BaseHttpSource {
       .map((track: any) => this.mapTrack(track));
   }
 
-  /**
-   * 汽水歌单分类说明（v19.1）：
-   * 汽水的分类-歌单接口为 POST /luna/pc/discover/mix（sub_channel_id 标签），
-   * 实测免登录态返回 ERR_DISCOVER_PLAYLIST_MIX_EMPTY_RESULT（文档 8.5 亦标注"可能需要登录态"），
-   * 因此不提供按分类取歌单能力，也不再用歌单搜索结果冒充分类数据。
-   * 若未来拿到登录态，可在此实现 getPlaylistsByCategory。
-   */
-
-
-  /**
-   * 官方4大榜单（文档 9）
-   */
   async getCharts(): Promise<Chart[]> {
     return QishuiSource.CHARTS.map((c) => ({ id: c.id, name: c.name, description: c.description }));
   }
@@ -149,7 +143,6 @@ export class QishuiSource extends BaseHttpSource {
   }
 
   private async fetchChartTracks(chartId: string): Promise<SearchResult[]> {
-    // 主域名 + 备用域名（文档 9.1）
     const urls = [
       `${this.apiBase}/luna/pc/charts/${chartId}?${new URLSearchParams(this.commParams).toString()}`,
       `${this.apiBackupBase}/luna/charts/${chartId}?charge=0&${new URLSearchParams(this.commParams).toString()}`,
@@ -168,9 +161,6 @@ export class QishuiSource extends BaseHttpSource {
     return [];
   }
 
-  /**
-   * 歌单详情（文档 3.5；注意 track 多一层 track_wrapper）
-   */
   async getPlaylist(playlistId: string): Promise<PlaylistDetail> {
     const qs = new URLSearchParams({
       ...this.commParams,
@@ -197,9 +187,6 @@ export class QishuiSource extends BaseHttpSource {
     };
   }
 
-  /**
-   * 歌曲详情：官方无 track/detail 接口（文档 3.6），用 SEO/H5 接口（文档 10）
-   */
   async getSongDetail(songId: string): Promise<SongDetail> {
     const trackId = this.extractTrackId(songId);
 
@@ -226,46 +213,45 @@ export class QishuiSource extends BaseHttpSource {
     return { id: songId, title: '未知歌曲', artist: '', album: '', duration: 0 };
   }
 
-  /**
-   * 取链：分享页 _ROUTER_DATA 明文直链（文档 5）
-   */
-  protected buildEndpointCandidates(songId: string, _quality: Quality) {
+  // ==================== 取链：track.php 多档方案 ====================
+
+  protected buildEndpointCandidates(songId: string, quality: Quality) {
     const trackId = this.extractTrackId(songId);
-    const shareUrl = `${this.shareBase}?track_id=${trackId}`;
+    const trackUrl = `${this.trackPhpBase}?track_id=${trackId}`;
     return [
       {
-        url: shareUrl,
+        url: trackUrl,
         method: 'GET' as const,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          Accept: '*/*',
         },
-        timeout: 10000,
+        timeout: 15000,
         priority: 1,
         resolve: async (response: Response): Promise<PlayUrlResult | null> => {
           try {
-            const html = await response.text();
-            const parsed = this.parseSharePage(html);
-            if (!parsed?.url) return null;
+            const base64 = await response.text();
+            const data = await this.fetchTrackPhpWithDedup(trackId, base64);
+            if (!data) return null;
 
-            // 缓存分享页数据（歌词复用）
-            this.shareCache.set(trackId, {
-              url: parsed.url,
-              lrc: parsed.lrc,
-              fetchedAt: Date.now(),
-            });
+            const audios: any[] = data?.data?.audios || [];
+            if (!Array.isArray(audios) || audios.length === 0) {
+              debugLogger.warn('network', '汽水 track.php 无音频数据', { trackId });
+              return null;
+            }
 
-            return {
-              url: parsed.url,
-              quality: Quality.STANDARD,
-              bitrate: 128,
-              format: 'aac',
-              headers: {},
-              accurate: false, // 音质档位不明确（文档5.6），实测约128K试听版
-              isPreview: true,
-            };
+            const result = this.pickAudioByQuality(audios, quality);
+            if (!result) {
+              debugLogger.warn('network', '汽水 track.php 无可匹配音质', { trackId, quality });
+              return null;
+            }
+
+            return result;
           } catch (err) {
-            debugLogger.warn('network', '汽水分享页解析失败', { err: String(err) });
+            debugLogger.warn('network', '汽水 track.php 解析失败', {
+              trackId,
+              err: err instanceof Error ? err.message : String(err),
+            });
             return null;
           }
         },
@@ -274,83 +260,94 @@ export class QishuiSource extends BaseHttpSource {
   }
 
   /**
-   * 分享页直链音质档位不明确，保留 URL 非空与音质等级兜底校验，
-   * 允许 accurate=false 的汽水结果通过（已知为试听版，不冒充高音质）。
+   * 音质校验：恢复标准校验逻辑，不再为试听版开特殊通道。
+   * track.php 返回的音质由 API 明确标注，accurate=true 信任子类标注。
    */
   protected validateQuality(result: PlayUrlResult, target: Quality): boolean {
     if (!result.url) return false;
     if (qualityRank(result.quality) < qualityRank(target)) return false;
     if (result.accurate === true) return true;
-    if (result.accurate === false) return true; // 汽水试听版允许通过
     return this.validateBitrateAndFormat(result.bitrate, result.format, target);
   }
 
   /**
-   * 歌词：优先复用分享页缓存；否则单独请求分享页
+   * 歌词：优先从 track.php 响应获取；失败则返回 null。
+   * （v21 起不再依赖分享页，track.php 已包含歌词字段。）
    */
   async getLyrics(songId: string): Promise<string | null> {
     const trackId = this.extractTrackId(songId);
 
-    const cached = this.shareCache.get(trackId);
-    if (cached && Date.now() - cached.fetchedAt < QishuiSource.SHARE_CACHE_TTL) {
-      return cached.lrc;
+    // 1. 复用缓存
+    const cached = this.trackCache.get(trackId);
+    if (cached && Date.now() - cached.fetchedAt < QishuiSource.TRACK_CACHE_TTL) {
+      return cached.data?.data?.lyrics ?? null;
     }
 
+    // 2. 请求 track.php
     try {
-      const shareUrl = `${this.shareBase}?track_id=${trackId}`;
-      const resp = await fetch(shareUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-          Accept: 'text/html',
-        },
+      const resp = await fetch(`${this.trackPhpBase}?track_id=${trackId}`, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
       });
       if (!resp.ok) return null;
-      const html = await resp.text();
-      const parsed = this.parseSharePage(html);
-      if (parsed?.url) {
-        this.shareCache.set(trackId, { url: parsed.url, lrc: parsed.lrc, fetchedAt: Date.now() });
-      }
-      return parsed?.lrc ?? null;
+      const base64 = await resp.text();
+      const data = await this.decryptTrackPhpResponse(base64);
+      const parsed = JSON.parse(data);
+      this.trackCache.set(trackId, { data: parsed, fetchedAt: Date.now() });
+      return parsed?.data?.lyrics ?? null;
     } catch {
       return null;
     }
   }
 
   /**
-   * 音质选项：分享页直链仅一档（实测约 128K 试听版），大小通过 Range 探测
+   * 音质选项：返回 track.php 提供的全部档位及真实文件大小。
    */
   async getQualityOptions(songId: string): Promise<QualityOption[]> {
     const trackId = this.extractTrackId(songId);
-    const option: QualityOption = {
-      sourceId: this.id,
-      sourceName: '汽水',
-      tier: '128k',
-      format: 'aac',
-      isPreview: true,
-    };
 
-    // best-effort 探测文件大小
-    try {
-      const cached = this.shareCache.get(trackId);
-      let url = cached?.url;
-      if (!url || Date.now() - cached!.fetchedAt >= QishuiSource.SHARE_CACHE_TTL) {
-        const lrc = await this.getLyrics(songId);
-        url = this.shareCache.get(trackId)?.url;
-        if (lrc === null && !url) return [option];
+    let data: any;
+    const cached = this.trackCache.get(trackId);
+    if (cached && Date.now() - cached.fetchedAt < QishuiSource.TRACK_CACHE_TTL) {
+      data = cached.data;
+    } else {
+      try {
+        const resp = await fetch(`${this.trackPhpBase}?track_id=${trackId}`, {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        });
+        if (!resp.ok) return [];
+        const base64 = await resp.text();
+        const decrypted = await this.decryptTrackPhpResponse(base64);
+        data = JSON.parse(decrypted);
+        this.trackCache.set(trackId, { data, fetchedAt: Date.now() });
+      } catch {
+        return [];
       }
-      if (url) {
-        const resp = await fetch(url, { method: 'GET', headers: { Range: 'bytes=0-1' } });
-        const range = resp.headers.get('content-range'); // bytes 0-1/12345678
-        if (range) {
-          const total = parseInt(range.split('/')[1] || '0', 10);
-          if (total > 0) option.sizeBytes = total;
-        }
-      }
-    } catch {
-      // 大小探测失败不影响选项本身
     }
 
-    return [option];
+    const audios: any[] = data?.data?.audios || [];
+    if (!Array.isArray(audios)) return [];
+
+    const options: QualityOption[] = [];
+    for (const audio of audios) {
+      const level = String(audio?.level || '');
+      const mapping = LEVEL_TO_QUALITY[level];
+      if (!mapping) continue;
+
+      options.push({
+        sourceId: this.id,
+        sourceName: '汽水',
+        tier: mapping.tier,
+        format: 'mp4',
+        sizeBytes: typeof audio?.raw_size === 'number' ? audio.raw_size : 0,
+        isPreview: false,
+      });
+    }
+
+    // 按音质从高到低排序
+    const tierOrder = ['lossless', '320k', '192k', '128k'];
+    options.sort((a, b) => tierOrder.indexOf(a.tier) - tierOrder.indexOf(b.tier));
+
+    return options;
   }
 
   async healthCheck(): Promise<HealthStatus> {
@@ -375,48 +372,160 @@ export class QishuiSource extends BaseHttpSource {
     }
   }
 
-  // ===== 内部工具 =====
+  // ==================== 内部工具 ====================
 
   /**
-   * 解析分享页 HTML → { url, lrc }（文档 5.2 / 5.5）
+   * 带并发去重的 track.php 请求解析。
+   * 若 resolve 已拿到原始 base64 文本，直接解密；否则发起新请求。
    */
-  private parseSharePage(html: string): { url: string; lrc: string | null } | null {
-    const m = html.match(/_ROUTER_DATA\s*=\s*({[\s\S]*?});\s*<\/script>/) || html.match(/_ROUTER_DATA\s*=\s*({[\s\S]*?});/);
-    if (!m) return null;
-
-    let data: any;
-    try {
-      data = JSON.parse(m[1]);
-    } catch {
-      return null;
+  private async fetchTrackPhpWithDedup(trackId: string, base64Text?: string): Promise<any> {
+    // 先查缓存
+    const cached = this.trackCache.get(trackId);
+    if (cached && Date.now() - cached.fetchedAt < QishuiSource.TRACK_CACHE_TTL) {
+      return cached.data;
     }
 
-    const audio = data?.loaderData?.track_page?.audioWithLyricsOption || {};
-    const url: string = audio?.url || '';
+    // 并发去重：同一 trackId 正在请求中，等待结果
+    const pending = QishuiSource.trackPending.get(trackId);
+    if (pending) {
+      return pending;
+    }
 
-    // 逐字歌词 → LRC
-    let lrc: string | null = null;
-    const sentences = audio?.lyrics?.sentences;
-    if (Array.isArray(sentences) && sentences.length > 0) {
-      const lines: string[] = [];
-      for (const s of sentences) {
-        const startMs = s?.startMs || 0;
-        const words = (s?.words || []).map((w: any) => w?.text || '').join('');
-        if (!words) continue;
-        const mm = Math.floor(startMs / 60000);
-        const ss = Math.floor((startMs % 60000) / 1000);
-        const cs = startMs % 1000;
-        lines.push(`[${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(cs).padStart(3, '0')}]${words}`);
+    const promise = (async () => {
+      try {
+        let text = base64Text;
+        if (!text) {
+          const resp = await fetch(`${this.trackPhpBase}?track_id=${trackId}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+          });
+          if (!resp.ok) throw new Error(`track.php HTTP ${resp.status}`);
+          text = await resp.text();
+        }
+        const decrypted = await this.decryptTrackPhpResponse(text);
+        const parsed = JSON.parse(decrypted);
+        this.trackCache.set(trackId, { data: parsed, fetchedAt: Date.now() });
+        return parsed;
+      } finally {
+        QishuiSource.trackPending.delete(trackId);
       }
-      if (lines.length > 0) lrc = lines.join('\n');
-    }
+    })();
 
-    return url ? { url, lrc } : null;
+    QishuiSource.trackPending.set(trackId, promise);
+    return promise;
   }
 
   /**
-   * 搜索/榜单 track 结构 → SearchResult
+   * AES-128-CBC 解密 track.php 响应（PKCS7 padding）。
    */
+  private async decryptTrackPhpResponse(base64Ciphertext: string): Promise<string> {
+    const cipherBytes = Uint8Array.from(atob(base64Ciphertext.trim()), (c) => c.charCodeAt(0));
+    const keyBytes = new TextEncoder().encode(this.trackPhpKey);
+    const ivBytes = new TextEncoder().encode(this.trackPhpIv);
+
+    const cryptoKey = await crypto.subtle.importKey(
+      'raw',
+      keyBytes,
+      { name: 'AES-CBC', length: 128 },
+      false,
+      ['decrypt']
+    );
+
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-CBC', iv: ivBytes },
+      cryptoKey,
+      cipherBytes
+    );
+
+    // 去除 PKCS7 padding
+    const padded = new Uint8Array(decrypted);
+    const padLen = padded[padded.length - 1];
+    if (padLen > 16 || padLen === 0) {
+      throw new Error('Invalid PKCS7 padding');
+    }
+    // 验证 padding
+    for (let i = 0; i < padLen; i++) {
+      if (padded[padded.length - 1 - i] !== padLen) {
+        throw new Error('Invalid PKCS7 padding');
+      }
+    }
+    const unpadded = padded.slice(0, padded.length - padLen);
+    return new TextDecoder('utf-8').decode(unpadded);
+  }
+
+  /**
+   * 从 audios[] 中挑选最匹配请求音质的条目。
+   * 优先精确匹配，其次返回更高一档，最后返回最高可用档。
+   */
+  private pickAudioByQuality(audios: any[], targetQuality: Quality): PlayUrlResult | null {
+    // 按音质从高到低排序
+    const levelOrder = ['lossless', 'highest', 'higher', 'medium'];
+    const sorted = [...audios].sort((a, b) => {
+      return levelOrder.indexOf(a?.level) - levelOrder.indexOf(b?.level);
+    });
+
+    // 建立 level → audio 映射
+    const map = new Map<string, any>();
+    for (const audio of sorted) {
+      const level = String(audio?.level || '');
+      if (level && !map.has(level)) map.set(level, audio);
+    }
+
+    // 目标 level
+    const targetLevel = QUALITY_TO_LEVEL[targetQuality];
+
+    // 1. 精确匹配
+    if (targetLevel && map.has(targetLevel)) {
+      return this.buildPlayUrlResult(map.get(targetLevel)!, targetQuality, true);
+    }
+
+    // 2. 找更高一档
+    const targetIdx = levelOrder.indexOf(targetLevel || '');
+    if (targetIdx >= 0) {
+      for (let i = targetIdx - 1; i >= 0; i--) {
+        const level = levelOrder[i];
+        if (map.has(level)) {
+          const audio = map.get(level)!;
+          const mapping = LEVEL_TO_QUALITY[level];
+          return this.buildPlayUrlResult(audio, mapping?.quality || Quality.LOSSLESS, false);
+        }
+      }
+    }
+
+    // 3. 返回最高可用档
+    for (const level of levelOrder) {
+      if (map.has(level)) {
+        const audio = map.get(level)!;
+        const mapping = LEVEL_TO_QUALITY[level];
+        return this.buildPlayUrlResult(audio, mapping?.quality || Quality.LOSSLESS, false);
+      }
+    }
+
+    return null;
+  }
+
+  private buildPlayUrlResult(audio: any, quality: Quality, accurate: boolean): PlayUrlResult {
+    const level = String(audio?.level || '');
+    const mapping = LEVEL_TO_QUALITY[level];
+    const bitrate = mapping?.bitrate || 128;
+
+    return {
+      url: audio?.url || '',
+      quality,
+      bitrate,
+      format: 'mp4',
+      headers: {
+        // CENC 加密 MP4 的 Content-Type 为 video/mp4，需按原样请求
+        Accept: 'video/mp4,audio/mp4,*/*',
+      },
+      accurate,
+      isPreview: false,
+      isEncrypted: true,
+      decryptKey: audio?.decrypt_key || undefined,
+    };
+  }
+
+  // ==================== 数据映射 ====================
+
   private mapTrack(track: any): SearchResult {
     const trackId = String(track?.id || '');
     const durationMs = track?.duration || 0;
@@ -436,9 +545,6 @@ export class QishuiSource extends BaseHttpSource {
     };
   }
 
-  /**
-   * 封面 URL 构造：base + uri + ~noop.image（文档 第8节示例）
-   */
   private buildCoverUrl(urlCover: any): string | null {
     if (!urlCover) return null;
     if (typeof urlCover === 'string') return urlCover;
@@ -448,9 +554,34 @@ export class QishuiSource extends BaseHttpSource {
     return null;
   }
 
-  /** qishui_{trackId} → trackId；兼容裸 trackId */
   private extractTrackId(songId: string): string {
     if (songId.startsWith('qishui_')) return songId.slice('qishui_'.length);
     return songId;
   }
 }
+
+/** track.php level → App 音质体系映射 */
+interface LevelMapping {
+  quality: Quality;
+  tier: 'lossless' | '320k' | '192k' | '128k';
+  bitrate: number;
+}
+
+const LEVEL_TO_QUALITY: Record<string, LevelMapping> = {
+  lossless: { quality: Quality.LOSSLESS, tier: 'lossless', bitrate: 1000 },
+  highest: { quality: Quality.HIGH, tier: '320k', bitrate: 320 },
+  higher: { quality: Quality.HIGHER, tier: '192k', bitrate: 192 },
+  medium: { quality: Quality.STANDARD, tier: '128k', bitrate: 128 },
+};
+
+const QUALITY_TO_LEVEL: Record<Quality, string> = {
+  [Quality.LOSSLESS]: 'lossless',
+  [Quality.HIGH]: 'highest',
+  [Quality.HIGHER]: 'higher',
+  [Quality.STANDARD]: 'medium',
+  [Quality.LOW]: 'medium',
+  [Quality.HIRES]: 'lossless',
+  [Quality.HIFI]: 'lossless',
+  [Quality.SKY]: 'lossless',
+  [Quality.JYEFFECT]: 'highest',
+};
