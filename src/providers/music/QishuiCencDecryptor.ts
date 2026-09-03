@@ -542,10 +542,6 @@ function readUint32(data: Uint8Array, offset: number): number {
   ) >>> 0;
 }
 
-function readUint16(data: Uint8Array, offset: number): number {
-  return (data[offset] << 8) | data[offset + 1];
-}
-
 function readUint24(data: Uint8Array, offset: number): number {
   return (data[offset] << 16) | (data[offset + 1] << 8) | data[offset + 2];
 }

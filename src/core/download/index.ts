@@ -269,7 +269,7 @@ export class DownloadEngine {
           // 3b-2. CENC 解密（汽水音乐 track.php 返回的加密 MP4 流）
           if (playUrl.decryptKey) {
             try {
-              const decrypted = await decryptCencMp4(bytes.buffer, playUrl.decryptKey);
+              const decrypted = await decryptCencMp4(bytes.buffer as ArrayBuffer, playUrl.decryptKey);
               bytes = new Uint8Array(decrypted.data);
               playUrl.format = decrypted.format;
               console.log(

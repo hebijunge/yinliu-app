@@ -259,7 +259,7 @@ class StreamingAudioPlayer {
 
     this.encryptedStreamAbortController = new AbortController();
 
-    const response = await fetch(options.url, {
+    const response = await fetch(options.url!, {
       method: 'GET',
       headers: options.headers,
       signal: this.encryptedStreamAbortController.signal,
