@@ -433,7 +433,7 @@ export class PlayerEngine {
 
       // v14.4: 在线播放且不是本地文件/已下载文件 → 使用流式播放
       if (!isLocal && track.sourceId !== 'local') {
-        await this.loadAndPlayStreaming(url, result.headers || {}, track, result.format);
+        await this.loadAndPlayStreaming(url, result.headers || {}, track, result.format, actualSourceId);
       } else {
         await this.loadAndPlay(url, track);
       }
@@ -528,13 +528,15 @@ export class PlayerEngine {
     url: string,
     headers: Record<string, string>,
     track: PlayerTrack,
-    format?: string
+    format?: string,
+    actualSourceId?: string,
   ): Promise<void> {
     this.isStreaming = true;
     this.streamingCurrentUrl = url;
     this.streamingHeaders = headers;
 
-    const cacheKey = `${track.sourceId}_${track.sourceSongId}_${this.lastQuality}`;
+    // v20.1-fix: 降级后缓存 key 用实际源，避免 kuwo 前缀残留导致缓存串读
+    const cacheKey = `${actualSourceId || track.sourceId}_${track.sourceSongId}_${this.lastQuality}`;
 
     // v18 EQ：流式引擎每创建新 audio 元素时通知均衡器挂接
     streamingAudioPlayer.setAudioElementListener((el) => {
@@ -634,7 +636,7 @@ export class PlayerEngine {
       // 取链下一首（按优先级 酷我>咪咕>网易云>酷狗>QQ）
       const { url, result, actualSourceId } = await this.resolvePlayUrl(nextTrack, this.lastQuality);
 
-      // 存入预加载缓存
+      // 存入预加载缓存（key 保持 track.sourceId 用于去重查询）
       this.prefetchCache.set(cacheKey, { url, result, actualSourceId });
       debugLogger.info('player', 'v16 预加载成功', {
         title: nextTrack.title,
@@ -646,10 +648,12 @@ export class PlayerEngine {
       // 流式模式下同时预取首块数据
       if (nextTrack.sourceId !== 'local') {
         try {
+          // v20.1-fix: 流式缓存 key 用 actualSourceId，避免降级后缓存串读
+          const streamCacheKey = `${actualSourceId}_${nextTrack.sourceSongId}_${this.lastQuality}`;
           await streamingAudioPlayer.prefetchNext({
             url,
             headers: result.headers || {},
-            cacheKey,
+            cacheKey: streamCacheKey,
             format: result.format,
           });
         } catch (streamErr) {

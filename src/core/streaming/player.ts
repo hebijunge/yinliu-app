@@ -18,7 +18,6 @@ import { StreamFetcher, type ChunkInfo, type FetcherCallbacks } from './fetcher'
 import { streamCacheEngine, type CacheEntry } from './cache';
 import { detectMSECapability, isMSEAvailable } from './mseDetector';
 import { debugLogger } from '@shared/utils/debugLogger';
-import { useEqStore } from '@core/player/equalizer';
 
 export type StreamingState =
   | 'idle'
@@ -320,21 +319,17 @@ class StreamingAudioPlayer {
    */
   private async playFromCache(): Promise<void> {
     let url: string;
-    // v18 EQ：均衡器开启时优先同源 blob URL（file:// URI 无法安全挂接 WebAudio，会静音）
-    const preferBlob = useEqStore.getState().enabled;
+    // v18-fix: Android WebView 禁止 <audio> 加载 file:// 本地文件，默认优先 blob URL
+    // EQ 挂接在 audio 元素创建时处理，不依赖 URL 类型
     try {
-      url = preferBlob
-        ? await streamCacheEngine.readAsBlobUrl(this.cacheKey)
-        : await streamCacheEngine.readAsFileUrl(this.cacheKey);
-      debugLogger.info('streaming', `Playing from complete cache (${preferBlob ? 'blob URL' : 'file URL'})`, {
+      url = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
+      debugLogger.info('streaming', 'Playing from complete cache (blob URL)', {
         cacheKey: this.cacheKey,
       });
     } catch {
-      // 回退到另一种 URL（EQ 开启但只有 file URI 可用时，挂接层会自动跳过保持直出）
-      url = preferBlob
-        ? await streamCacheEngine.readAsFileUrl(this.cacheKey)
-        : await streamCacheEngine.readAsBlobUrl(this.cacheKey);
-      debugLogger.info('streaming', `Playing from complete cache (${preferBlob ? 'file URL' : 'blob URL'} fallback)`, {
+      // 回退到 file URL（仅当 blob 不可用）
+      url = await streamCacheEngine.readAsFileUrl(this.cacheKey);
+      debugLogger.info('streaming', 'Playing from complete cache (file URL fallback)', {
         cacheKey: this.cacheKey,
       });
     }
@@ -392,30 +387,26 @@ class StreamingAudioPlayer {
       });
     }
 
-    // 获取播放URL：优先使用本地文件URI（更稳定），回退到Blob URL
-    // v18 EQ：均衡器开启时优先同源 blob URL（file:// URI 无法安全挂接 WebAudio）
+    // 获取播放URL：默认优先 blob URL（不受 WebView file:// 安全策略限制）
+    // v18-fix: Android WebView 禁止 <audio> 加载 file:// 本地文件
     let newUrl: string;
-    const preferBlob = useEqStore.getState().enabled;
     try {
-      newUrl = preferBlob
-        ? await streamCacheEngine.readAsBlobUrl(this.cacheKey)
-        : await streamCacheEngine.readAsFileUrl(this.cacheKey);
-      debugLogger.info('streaming', `Using ${preferBlob ? 'blob' : 'file'} URL for playback`, {
+      newUrl = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
+      debugLogger.info('streaming', 'Using blob URL for playback', {
         cacheKey: this.cacheKey,
       });
     } catch {
       try {
-        newUrl = preferBlob
-          ? await streamCacheEngine.readAsFileUrl(this.cacheKey)
-          : await streamCacheEngine.readAsBlobUrl(this.cacheKey);
-        debugLogger.info('streaming', `Using ${preferBlob ? 'file' : 'blob'} URL for playback (fallback)`, {
+        // 回退到 file URL（仅当 blob 不可用）
+        newUrl = await streamCacheEngine.readAsFileUrl(this.cacheKey);
+        debugLogger.info('streaming', 'Using file URL for playback (blob fallback)', {
           cacheKey: this.cacheKey,
         });
       } catch {
         // 最终回退：用内存数据构造 Blob URL
         const blob = new Blob([allData as unknown as BlobPart], { type: this.mimeType });
         newUrl = URL.createObjectURL(blob);
-        debugLogger.info('streaming', 'Using blob URL for playback (file URL unavailable)', {
+        debugLogger.info('streaming', 'Using blob URL for playback (cache read unavailable)', {
           cacheKey: this.cacheKey,
         });
       }

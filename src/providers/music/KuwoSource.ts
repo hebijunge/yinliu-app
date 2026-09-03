@@ -481,11 +481,9 @@ export class KuwoSource extends BaseHttpSource {
         isTheft = true;
         reason = `估算时长(${estimatedDuration}s) < 歌曲时长(${songDuration}s)的40%`;
       }
-    } else if (estimatedDuration > 0 && estimatedDuration < 30) {
-      // 无参考时长：保守阈值 < 30s
-      isTheft = true;
-      reason = `估算时长(${estimatedDuration}s) < 30s（无参考时长）`;
     }
+    // 无参考时长时：不再仅凭估算时长拒绝，由后续魔数校验和文件大小综合判断
+    // 酷我部分正常短歌/片段会被 <30s 阈值误杀（如 181KB 文件估算 11s）
 
     // 4. 魔数校验（辅助，非决定性）
     let magic = 'unknown';
