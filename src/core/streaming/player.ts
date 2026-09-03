@@ -321,18 +321,39 @@ class StreamingAudioPlayer {
 
   /**
    * 从完整缓存直接播放
+   * v21.2 修复：增加缓存完整性校验，防止播放不完整/损坏的缓存文件
    */
   private async playFromCache(): Promise<void> {
     let url: string;
+    let blobSize = 0;
+
     // v18-fix: Android WebView 禁止 <audio> 加载 file:// 本地文件，默认优先 blob URL
     // EQ 挂接在 audio 元素创建时处理，不依赖 URL 类型
     try {
       url = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
+      // v21.2 校验：读取到的 blob 大小必须与预期一致
+      const entry = streamCacheEngine.getEntry(this.cacheKey);
+      if (entry?.expectedTotalSize && entry.expectedTotalSize > 0) {
+        // 通过 fetch 验证 blob 的实际大小（readAsBlobUrl 已读取全部字节到内存，这里取 blob 长度）
+        // 由于 readAsBlobUrl 内部已用 readFileBytes 读取，直接检查 entry.totalSize 更轻量
+        blobSize = entry.totalSize;
+        if (blobSize !== entry.expectedTotalSize) {
+          throw new Error(
+            `Cache size mismatch: actual=${blobSize}, expected=${entry.expectedTotalSize}`
+          );
+        }
+      }
       debugLogger.info('streaming', 'Playing from complete cache (blob URL)', {
         cacheKey: this.cacheKey,
+        blobSize,
+        expectedSize: entry?.expectedTotalSize,
       });
-    } catch {
-      // 回退到 file URL（仅当 blob 不可用）
+    } catch (err) {
+      // 如果 blob 读取或校验失败，尝试 file URL 回退
+      debugLogger.warn('streaming', 'Blob URL cache failed, trying file URL fallback', {
+        cacheKey: this.cacheKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
       url = await streamCacheEngine.readAsFileUrl(this.cacheKey);
       debugLogger.info('streaming', 'Playing from complete cache (file URL fallback)', {
         cacheKey: this.cacheKey,
@@ -341,6 +362,14 @@ class StreamingAudioPlayer {
 
     this.blobUrl = url;
     await this.setupAudioWithReadyWait(url);
+
+    // v21.2 修复：校验 audio 是否进入 error 状态（缓存损坏/不完整的常见表现）
+    if (this.audio?.error) {
+      const errCode = this.audio.error.code;
+      const errMsg = this.audio.error.message || 'unknown';
+      throw new Error(`Audio element entered error state during cache playback: code=${errCode}, msg=${errMsg}`);
+    }
+
     this.setState('ready');
     await this.play();
   }
@@ -726,6 +755,12 @@ class StreamingAudioPlayer {
         // 更新总大小（如果从响应中获取到）
         if (progress.overallTotalBytes > this.totalSize) {
           this.totalSize = progress.overallTotalBytes;
+          // v21.2 修复：将预期总大小写入缓存元数据，供后续 isCacheComplete/playFromCache 校验
+          if (this.cacheKey && this.totalSize > 0) {
+            streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize).catch(() => {
+              // 静默忽略元数据写入失败，不影响播放
+            });
+          }
         }
       },
 
@@ -776,6 +811,17 @@ class StreamingAudioPlayer {
    */
   private isCacheComplete(): boolean {
     if (!this.cacheEntry || this.cacheEntry.totalSize === 0) return false;
+
+    // v21.2 修复：如果有预期总大小，必须校验实际缓存大小是否匹配
+    // 防止中断下载后 cacheEntry.totalSize 停留在中间值，导致误判为已缓存
+    if (
+      this.cacheEntry.expectedTotalSize &&
+      this.cacheEntry.expectedTotalSize > 0 &&
+      this.cacheEntry.totalSize < this.cacheEntry.expectedTotalSize
+    ) {
+      return false;
+    }
+
     return streamCacheEngine.isRangeDownloaded(
       this.cacheKey,
       0,

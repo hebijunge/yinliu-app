@@ -17,6 +17,8 @@ export interface CacheEntry {
   filePath: string;
   format: string;
   totalSize: number;
+  /** 预期的完整文件大小（来自 HTTP Content-Length，用于校验缓存是否真正完整） */
+  expectedTotalSize?: number;
   /** 已下载的区间列表（有序、不重叠） */
   downloadedRanges: Array<{ start: number; end: number }>;
   createdAt: number;
@@ -105,6 +107,19 @@ class StreamCacheEngine {
       entry.lastAccessedAt = Date.now();
     }
     return entry;
+  }
+
+  /**
+   * 设置预期的完整文件大小（来自 HTTP Content-Length）
+   * 用于校验缓存是否真正完整，防止中断下载后被误判为已缓存
+   */
+  async setExpectedTotalSize(key: string, size: number): Promise<void> {
+    const entry = this.entries.get(key);
+    if (!entry) return;
+    if (size > 0 && entry.expectedTotalSize !== size) {
+      entry.expectedTotalSize = size;
+      await this.saveMeta();
+    }
   }
 
   /**
