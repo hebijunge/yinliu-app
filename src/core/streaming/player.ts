@@ -48,6 +48,7 @@ interface StreamingOptions {
 const PRELOAD_THRESHOLD = 0.5; // 播放进度超过 50% 时预取下一首
 const BUFFER_THRESHOLD = 0.85; // 当播放进度达到已缓存数据的 85% 时刷新缓冲区
 const MIN_CHUNKS_BEFORE_REFRESH = 2; // 至少下载 N 个 chunks 后才刷新 blob URL
+const BLOB_REFRESH_SIZE_THRESHOLD = 256 * 1024; // Blob 模式下每下载 256KB 触发一次刷新
 
 class StreamingAudioPlayer {
   private audio: HTMLAudioElement | null = null;
@@ -81,6 +82,9 @@ class StreamingAudioPlayer {
   // 预取下一首
   private prefetchFetcher: StreamFetcher | null = null;
   private prefetchCallbacks?: StreamingCallbacks;
+
+  // Blob 刷新追踪
+  private lastRefreshDownloaded = 0;
 
   // v18 EQ：audio 元素创建监听（均衡器挂接新元素用）
   private audioElementListener: ((el: HTMLAudioElement | null) => void) | null = null;
@@ -308,6 +312,7 @@ class StreamingAudioPlayer {
     this.mseUpdating = false;
     this.cacheKey = '';
     this.cacheEntry = null;
+    this.lastRefreshDownloaded = 0;
 
     this.setState('idle');
   }
@@ -358,6 +363,7 @@ class StreamingAudioPlayer {
   /**
    * Blob 刷新模式：创建/刷新 audio.src
    * v14.5 修复：增加就绪等待 + 本地文件 URI 优先，解决首块竞态问题
+   * v21.2 修复：size mismatch 时用实际 mergeChunks 数据建 blob，避免 totalSize 截断
    */
   private async setupBlobPlayback(): Promise<void> {
     // 合并所有 chunks
@@ -368,7 +374,8 @@ class StreamingAudioPlayer {
     }
 
     // 文件完整性校验
-    if (this.totalSize > 0 && allData.length !== this.totalSize) {
+    const hasSizeMismatch = this.totalSize > 0 && allData.length !== this.totalSize;
+    if (hasSizeMismatch) {
       debugLogger.warn('streaming', 'setupBlobPlayback: size mismatch', {
         mergedSize: allData.length,
         expectedSize: this.totalSize,
@@ -389,26 +396,37 @@ class StreamingAudioPlayer {
 
     // 获取播放URL：默认优先 blob URL（不受 WebView file:// 安全策略限制）
     // v18-fix: Android WebView 禁止 <audio> 加载 file:// 本地文件
+    // v21.2-fix: size mismatch 时直接用内存数据构造 Blob，避免缓存按 totalSize 截断
     let newUrl: string;
-    try {
-      newUrl = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
-      debugLogger.info('streaming', 'Using blob URL for playback', {
+    if (hasSizeMismatch) {
+      const blob = new Blob([allData as unknown as BlobPart], { type: this.mimeType });
+      newUrl = URL.createObjectURL(blob);
+      debugLogger.info('streaming', 'Using memory blob (size mismatch)', {
         cacheKey: this.cacheKey,
+        mergedSize: allData.length,
+        expectedSize: this.totalSize,
       });
-    } catch {
+    } else {
       try {
-        // 回退到 file URL（仅当 blob 不可用）
-        newUrl = await streamCacheEngine.readAsFileUrl(this.cacheKey);
-        debugLogger.info('streaming', 'Using file URL for playback (blob fallback)', {
+        newUrl = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
+        debugLogger.info('streaming', 'Using blob URL for playback', {
           cacheKey: this.cacheKey,
         });
       } catch {
-        // 最终回退：用内存数据构造 Blob URL
-        const blob = new Blob([allData as unknown as BlobPart], { type: this.mimeType });
-        newUrl = URL.createObjectURL(blob);
-        debugLogger.info('streaming', 'Using blob URL for playback (cache read unavailable)', {
-          cacheKey: this.cacheKey,
-        });
+        try {
+          // 回退到 file URL（仅当 blob 不可用）
+          newUrl = await streamCacheEngine.readAsFileUrl(this.cacheKey);
+          debugLogger.info('streaming', 'Using file URL for playback (blob fallback)', {
+            cacheKey: this.cacheKey,
+          });
+        } catch {
+          // 最终回退：用内存数据构造 Blob URL
+          const blob = new Blob([allData as unknown as BlobPart], { type: this.mimeType });
+          newUrl = URL.createObjectURL(blob);
+          debugLogger.info('streaming', 'Using blob URL for playback (cache read unavailable)', {
+            cacheKey: this.cacheKey,
+          });
+        }
       }
     }
 
@@ -690,10 +708,16 @@ class StreamingAudioPlayer {
         }
 
         // Blob 模式：定期刷新
-        if (!this.useMSE && chunk.index > 0 && chunk.index % MIN_CHUNKS_BEFORE_REFRESH === 0) {
-          // 检查是否需要刷新（播放进度接近已缓存末尾）
-          if (this.shouldRefreshBlob()) {
+        // v21.2 修复：增加按累计下载量触发刷新，不依赖播放进度条件
+        if (!this.useMSE && chunk.index > 0) {
+          const shouldRefreshByProgress =
+            chunk.index % MIN_CHUNKS_BEFORE_REFRESH === 0 && this.shouldRefreshBlob();
+          const shouldRefreshBySize =
+            this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
+
+          if (shouldRefreshByProgress || shouldRefreshBySize) {
             await this.setupBlobPlayback();
+            this.lastRefreshDownloaded = this.totalDownloaded;
           }
         }
       },
@@ -710,15 +734,19 @@ class StreamingAudioPlayer {
         this.callbacks.onError?.(error.message);
       },
 
-      onComplete: () => {
+      onComplete: async () => {
         debugLogger.info('streaming', 'All chunks downloaded');
-        // MSE 模式下标记流结束
         if (this.useMSE && this.mediaSource?.readyState === 'open') {
+          // MSE 模式下标记流结束
           try {
             this.mediaSource.endOfStream();
           } catch {
             // 忽略
           }
+        } else if (!this.useMSE && this.chunks.length > 0) {
+          // v21.2 修复：Blob 模式下所有 chunk 下载完成后重建完整 blob
+          debugLogger.info('streaming', 'Blob mode: rebuilding blob from all chunks');
+          await this.setupBlobPlayback();
         }
       },
     };
