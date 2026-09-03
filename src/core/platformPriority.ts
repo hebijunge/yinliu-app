@@ -15,11 +15,11 @@
  * 4. 当前为只读常量，后续版本如需用户自定义排序，在 settings store 中加一个 override 数组即可
  */
 
-/** 播放/取链优先级：酷我 > 咪咕 > 网易云 > QQ > 酷狗 > 汽水 */
-export const PLATFORM_PRIORITY = ['kuwo', 'migu', 'netease', 'qq', 'kugou', 'qishui'] as const;
+/** 播放/取链优先级：酷我 > 咪咕 > 网易云 > QQ > 酷狗 > 汽水 > 哔哩哔哩(补充源) */
+export const PLATFORM_PRIORITY = ['kuwo', 'migu', 'netease', 'qq', 'kugou', 'qishui', 'bilibili'] as const;
 
-/** 展示聚合排序优先级：汽水 > 酷我 > 咪咕 > 网易云 > QQ > 酷狗 */
-export const DISPLAY_PRIORITY = ['qishui', 'kuwo', 'migu', 'netease', 'qq', 'kugou'] as const;
+/** 展示聚合排序优先级：汽水 > 酷我 > 咪咕 > 网易云 > QQ > 酷狗 > 哔哩哔哩(补充源) */
+export const DISPLAY_PRIORITY = ['qishui', 'kuwo', 'migu', 'netease', 'qq', 'kugou', 'bilibili'] as const;
 
 export type PlatformId = typeof PLATFORM_PRIORITY[number];
 
@@ -31,9 +31,10 @@ export const PLATFORM_DISPLAY_NAMES: Record<string, string> = {
   netease: '网易云音乐',
   qq: 'QQ音乐',
   kugou: '酷狗音乐',
+  bilibili: '哔哩哔哩',
 };
 
-/** 平台短名（音质弹窗等空间紧张处复用；v18 用户指定缩写：咪咕=mg QQ=qq 汽水=qi 酷狗=kg 酷我=kw 网易云=wy） */
+/** 平台短名（音质弹窗等空间紧张处复用；v18 用户指定缩写：咪咕=mg QQ=qq 汽水=qi 酷狗=kg 酷我=kw 网易云=wy 哔哩哔哩=bl） */
 export const PLATFORM_SHORT_NAMES: Record<string, string> = {
   qishui: 'qi',
   kuwo: 'kw',
@@ -41,6 +42,7 @@ export const PLATFORM_SHORT_NAMES: Record<string, string> = {
   netease: 'wy',
   qq: 'qq',
   kugou: 'kg',
+  bilibili: 'bl',
 };
 
 /** 平台缩写别名（components/common 等处复用） */
@@ -56,6 +58,7 @@ export const PLATFORM_COLORS: Record<string, string> = {
   kugou: 'bg-cyan-600',
   qq: 'bg-green-600',
   qishui: 'bg-purple-600',
+  bilibili: 'bg-pink-600',
 };
 
 /** 取某平台的播放优先级序号（0 = 最高；不存在于表内则返回 Number.MAX_SAFE_INTEGER） */

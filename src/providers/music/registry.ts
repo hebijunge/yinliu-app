@@ -5,6 +5,7 @@ import { QqSource } from './QqSource';
 import { KugouSource } from './KugouSource';
 import { MiguSource } from './MiguSource';
 import { QishuiSource } from './QishuiSource';
+import { BiliSource } from './BiliSource';
 import { PLATFORM_PRIORITY, getPriorityRank } from '@core/platformPriority';
 
 class SourceRegistry {
@@ -53,6 +54,9 @@ export function initializeProviders(): void {
   sourceRegistry.register(new KugouSource());
   sourceRegistry.register(new MiguSource());
   sourceRegistry.register(new QishuiSource());
+
+  // P1 UGC 补充音源
+  sourceRegistry.register(new BiliSource());
 
   // 未来扩展：
   // P1: 千千音乐(QianqianSource)
