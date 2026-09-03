@@ -16,16 +16,19 @@ import { sizeCache } from './sizeCache';
  *       + musicapi.haitangw.net（第三方代理）
  * 歌词：kuwo.cn/openapi/v1/www/lyric/getlyric（免Cookie）
  *
- * 音质档实测结论（2026-08-27）：
+ * 音质档实测结论（2026-08-27 / 2026-09-04 花海六档实测）：
  *  - 128kmp3：✅ 真 128k MP3
  *  - 320kmp3：✅ 真 320k MP3（有免费档的歌）
- *  - 2000kflac：✅ 真 FLAC 无损
- *  - 4000kflac：⚠️ 行为不确定（降级128k或加密mflac）
+ *  - 2000kflac：✅ 真 FLAC 无损（部分歌降级为 mp3）
+ *  - 20201kmflac：✅ 至臻音质2.0，mflac（QMC2-RC4 加密，需 ekey 解密）
+ *  - 20501kmflac：✅ 至臻全景声，mflac（QMC2-RC4 加密，需 ekey 解密）
+ *  - 20900kmflac：✅ 超无损母带，mflac（QMC2-RC4 加密，需 ekey 解密）
+ *  - mflac 档返回 bitrate 为 level 值（20201/20501/20900），非真实码率
  */
 export class KuwoSource extends BaseHttpSource {
   readonly id = 'kuwo';
   readonly name = '酷我音乐';
-  readonly maxQuality = Quality.HIFI;
+  readonly maxQuality = Quality.MASTER;
 
   private readonly SEARCH_V2_HOST = 'https://kuwo.cn';
   private readonly SEARCH_HOST = 'http://search.kuwo.cn';
@@ -189,7 +192,10 @@ export class KuwoSource extends BaseHttpSource {
       const szMb = parseFloat((kv.size || '').replace(/[^\d.]/g, '')) || 0;
       if (br <= 0 || szMb <= 0) continue;
       let tier: QualityTier;
-      if (br >= 10000) tier = 'hires';        // zpga* 母带（mflac 20201 等）
+      if (br === 20900) tier = 'master';      // zqzl 超无损母带
+      else if (br === 20501) tier = 'dolby';  // 全景声
+      else if (br === 20201) tier = 'zhizhen';// 至臻音质2.0
+      else if (br >= 10000) tier = 'hires';   // 其他母带类（zpga* 等）
       else if (br >= 900) tier = 'lossless';  // ff=2000 flac
       else if (br >= 320) tier = '320k';      // p=320
       else if (br >= 192) tier = '192k';
@@ -384,6 +390,10 @@ export class KuwoSource extends BaseHttpSource {
       case Quality.HIFI:
       case Quality.HIRES:
         return [2000, 'flac'];
+      // mflac 加密档：nmobi 返回的 bitrate 为 level 值（非真实码率），按 level 精确匹配
+      case Quality.ZHIZHEN: return [20201, 'mflac'];
+      case Quality.DOLBY: return [20501, 'mflac'];
+      case Quality.MASTER: return [20900, 'mflac'];
       default: return null;
     }
   }
@@ -432,6 +442,58 @@ export class KuwoSource extends BaseHttpSource {
   protected override async validateContent(result: PlayUrlResult, songId: string): Promise<boolean> {
     const rid = songId.replace(/^kw_/, '');
     const songDuration = this.durationCache.get(rid) || 0;
+
+    // mflac 加密档（至臻2.0/全景声/母带）专用校验分支：
+    // 1) 返回的 bitrate 是 level 值（20201 等）而非真实码率，用它估时长必然误判防盗；
+    // 2) 密文前 4KB 不具备音频魔数，魔数校验不适用。
+    // 因此对加密档只做「HEAD 可达 + 文件大小下限」轻校验；
+    // 真实校验在播放/下载链路 QMC2 解密后的 isDecryptedMagic（fLaC/OggS/ID3）完成。
+    if (result.isEncrypted
+      && (result.quality === Quality.ZHIZHEN
+        || result.quality === Quality.DOLBY
+        || result.quality === Quality.MASTER)) {
+      try {
+        const head = await platformFetch(result.url, {
+          method: 'HEAD',
+          headers: result.headers,
+          timeout: 3000,
+        });
+        if (!head.ok) {
+          debugLogger.warn('network', `酷我 mflac 加密档 HEAD 不可达`, {
+            url: result.url.slice(0, 120),
+            status: head.status,
+            quality: result.quality,
+            rid,
+          });
+          return false;
+        }
+        const len = parseInt(head.headers.get('content-length') || '0', 10);
+        // 加密档最低为至臻2.0（约 2 倍无损体积），<1MB 视为占位/试听
+        if (len > 0 && len < 1024 * 1024) {
+          debugLogger.warn('network', `酷我 mflac 加密档文件过小，判为占位`, {
+            url: result.url.slice(0, 120),
+            contentLength: len,
+            quality: result.quality,
+            rid,
+          });
+          return false;
+        }
+        debugLogger.info('network', `酷我 mflac 加密档轻校验通过（解密后校验在播放/下载链路）`, {
+          url: result.url.slice(0, 120),
+          contentLengthMb: len > 0 ? Math.round(len / 1048576 * 100) / 100 : 'unknown',
+          quality: result.quality,
+          rid,
+        });
+        return true;
+      } catch (err) {
+        debugLogger.warn('network', `酷我 mflac 加密档 HEAD 失败，降级放行`, {
+          url: result.url.slice(0, 120),
+          error: err instanceof Error ? err.message : String(err),
+          rid,
+        });
+        return true;
+      }
+    }
 
     let contentLength = 0;
     let contentType = '';
@@ -563,11 +625,17 @@ export class KuwoSource extends BaseHttpSource {
       case Quality.HIFI:
       case Quality.HIRES:
         return '2000kflac';
+      case Quality.ZHIZHEN: return '20201kmflac';
+      case Quality.DOLBY: return '20501kmflac';
+      case Quality.MASTER: return '20900kmflac';
       default: return '128kmp3';
     }
   }
 
   private brToBitrate(br: string): number {
+    if (br.includes('20900')) return 20900;
+    if (br.includes('20501')) return 20501;
+    if (br.includes('20201')) return 20201;
     if (br.includes('2000')) return 2000;
     if (br.includes('320')) return 320;
     if (br.includes('128')) return 128;
@@ -583,6 +651,10 @@ export class KuwoSource extends BaseHttpSource {
       case Quality.LOSSLESS:
       case Quality.HIFI:
       case Quality.HIRES:
+      // 海棠代理不支持 mflac 加密档，降级到 lossless 作为 fallback（accurate:false）
+      case Quality.ZHIZHEN:
+      case Quality.DOLBY:
+      case Quality.MASTER:
         return 'lossless';
       default: return 'standard';
     }

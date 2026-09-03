@@ -734,6 +734,9 @@ export class QqSource extends BaseHttpSource {
       [Quality.SKY]: 7,
       [Quality.JYEFFECT]: 8,
       [Quality.HIFI]: 9,
+      [Quality.ZHIZHEN]: 10,
+      [Quality.DOLBY]: 11,
+      [Quality.MASTER]: 12,
     };
     return map[q] || 2;
   }

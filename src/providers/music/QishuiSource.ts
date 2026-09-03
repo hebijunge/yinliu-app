@@ -584,4 +584,8 @@ const QUALITY_TO_LEVEL: Record<Quality, string> = {
   [Quality.HIFI]: 'lossless',
   [Quality.SKY]: 'lossless',
   [Quality.JYEFFECT]: 'highest',
+  // 汽水源无至臻/全景声/母带档，映射到最高可用（lossless）
+  [Quality.ZHIZHEN]: 'lossless',
+  [Quality.DOLBY]: 'lossless',
+  [Quality.MASTER]: 'lossless',
 };

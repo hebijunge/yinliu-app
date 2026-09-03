@@ -1,4 +1,4 @@
-// === 音质枚举（9档）===
+// === 音质枚举（12档：基础9档 + 酷我至臻2.0/全景声/母带）===
 export enum Quality {
   LOW = 'low',
   STANDARD = 'standard',
@@ -9,6 +9,9 @@ export enum Quality {
   SKY = 'sky',
   JYEFFECT = 'jyeffect',
   HIFI = 'hifi',
+  ZHIZHEN = 'zhizhen',
+  DOLBY = 'dolby',
+  MASTER = 'master',
 }
 
 export const QualityRank: Record<Quality, number> = {
@@ -21,6 +24,9 @@ export const QualityRank: Record<Quality, number> = {
   [Quality.SKY]: 7,
   [Quality.JYEFFECT]: 8,
   [Quality.HIFI]: 9,
+  [Quality.ZHIZHEN]: 10,
+  [Quality.DOLBY]: 11,
+  [Quality.MASTER]: 12,
 };
 
 export function qualityRank(q: Quality): number {
@@ -28,9 +34,12 @@ export function qualityRank(q: Quality): number {
 }
 
 // === 音质弹窗（v18：下载音质多平台弹窗） ===
-export type QualityTier = 'hires' | 'lossless' | '320k' | '192k' | '128k';
+export type QualityTier = 'master' | 'dolby' | 'zhizhen' | 'hires' | 'lossless' | '320k' | '192k' | '128k';
 
 export const QUALITY_TIER_LABELS: Record<QualityTier, string> = {
+  master: '超无损母带',
+  dolby: '至臻全景声',
+  zhizhen: '至臻音质 2.0',
   hires: 'Hi-Res',
   lossless: '无损',
   '320k': '320K',
@@ -39,10 +48,13 @@ export const QUALITY_TIER_LABELS: Record<QualityTier, string> = {
 };
 
 /** 音质分组展示顺序（从高到低） */
-export const QUALITY_TIER_ORDER: QualityTier[] = ['hires', 'lossless', '320k', '192k', '128k'];
+export const QUALITY_TIER_ORDER: QualityTier[] = ['master', 'dolby', 'zhizhen', 'hires', 'lossless', '320k', '192k', '128k'];
 
 export function tierToQuality(tier: QualityTier): Quality {
   switch (tier) {
+    case 'master': return Quality.MASTER;
+    case 'dolby': return Quality.DOLBY;
+    case 'zhizhen': return Quality.ZHIZHEN;
     case 'hires': return Quality.HIRES;
     case 'lossless': return Quality.LOSSLESS;
     case '320k': return Quality.HIGH;
@@ -53,6 +65,9 @@ export function tierToQuality(tier: QualityTier): Quality {
 
 export function qualityToTier(q: Quality): QualityTier | null {
   const rank = qualityRank(q);
+  if (rank >= qualityRank(Quality.MASTER)) return 'master';
+  if (rank >= qualityRank(Quality.DOLBY)) return 'dolby';
+  if (rank >= qualityRank(Quality.ZHIZHEN)) return 'zhizhen';
   if (rank >= qualityRank(Quality.HIRES)) return 'hires';
   if (rank >= qualityRank(Quality.LOSSLESS)) return 'lossless';
   if (rank >= qualityRank(Quality.HIGH)) return '320k';

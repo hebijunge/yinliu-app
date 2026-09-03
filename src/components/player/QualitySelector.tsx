@@ -13,6 +13,9 @@ const QUALITY_OPTIONS: Array<{
   label: string;
   desc: string;
 }> = [
+  { value: Quality.MASTER, label: '超无损母带', desc: '20900k 母带级 · 酷我专供' },
+  { value: Quality.DOLBY, label: '至臻全景声', desc: '20501k 空间音频 · 酷我专供' },
+  { value: Quality.ZHIZHEN, label: '至臻音质 2.0', desc: '20201k 超清母带 · 酷我专供' },
   { value: Quality.STANDARD, label: '标准', desc: '128K MP3 · 省流量' },
   { value: Quality.HIGH, label: '高品', desc: '320K MP3 · 推荐均衡' },
   { value: Quality.LOSSLESS, label: '无损', desc: 'FLAC · 音质优先' },

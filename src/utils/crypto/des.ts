@@ -1,164 +1,140 @@
 /**
- * 精简但正确的 DES-ECB/NoPadding 实现（基于 BigInt，避免 JS 32 位有符号溢出）
- * 用于酷我 KuwoEkeyDecoder：ekey(base64) → DES解密（密钥 ylzsxkwm）→ QMC原始密钥
+ * 酷我魔改 DES-ECB/NoPadding —— 用于 ekey 解密（密钥 ylzsxkwm）
  *
- * 算法：标准 Feistel 网络，16轮，56位密钥，64位分组，NoPadding
+ * ⚠️ 这不是标准 DES。酷我在客户端使用了一组自定义置换/S盒（小端位流约定、
+ *    EXP 表含重复位、KPC2 表含无效位），标准 DES 对同一密文解出的是乱码
+ *    （2026-09-04 实测：标准 DES（含 pycryptodome）解《花海》至臻档 ekey
+ *    得到乱码，本实现解出 ASCII+base64 结构，与 musicdl KuwoQmcDecryptor 一致）。
+ *
+ * 算法参考：musicdl KuwoQmcDecryptor._des_round_keys / _des_block（Python 实测通过）。
+ * 移植要点：
+ *   - int.from_bytes(key, 'little')：小端位流
+ *   - _shuffle(table, bits, value)：按表逐位重排，表项 <0 时跳过（输出该位为 0）
+ *   - 16 轮 ROT/ROT_MASK 循环移位；解密方向轮密钥反转
+ *   - SBOX 8×64，每字节取 6 位出 4 位，按 (b*4) 位置拼装
  */
 
-// ========== 标准 DES 查表 ==========
+const KUWO_KEY = new Uint8Array([0x79, 0x6c, 0x7a, 0x73, 0x78, 0x6b, 0x77, 0x6d]); // 'ylzsxkwm'
 
-const IP = [
-  58,50,42,34,26,18,10,2,60,52,44,36,28,20,12,4,
-  62,54,46,38,30,22,14,6,64,56,48,40,32,24,16,8,
-  57,49,41,33,25,17,9,1,59,51,43,35,27,19,11,3,
-  61,53,45,37,29,21,13,5,63,55,47,39,31,23,15,7,
+const EXP = [
+  31, 0, 1, 2, 3, 4, -1, -1, 3, 4, 5, 6, 7, 8, -1, -1,
+  7, 8, 9, 10, 11, 12, -1, -1, 11, 12, 13, 14, 15, 16, -1, -1,
+  15, 16, 17, 18, 19, 20, -1, -1, 19, 20, 21, 22, 23, 24, -1, -1,
+  23, 24, 25, 26, 27, 28, -1, -1, 27, 28, 29, 30, 31, 30, -1, -1,
 ];
 
-const FP = [
-  40,8,48,16,56,24,64,32,39,7,47,15,55,23,63,31,
-  38,6,46,14,54,22,62,30,37,5,45,13,53,21,61,29,
-  36,4,44,12,52,20,60,28,35,3,43,11,51,19,59,27,
-  34,2,42,10,50,18,58,26,33,1,41,9,49,17,57,25,
+const IPERM = [
+  57, 49, 41, 33, 25, 17, 9, 1, 59, 51, 43, 35, 27, 19, 11, 3,
+  61, 53, 45, 37, 29, 21, 13, 5, 63, 55, 47, 39, 31, 23, 15, 7,
+  56, 48, 40, 32, 24, 16, 8, 0, 58, 50, 42, 34, 26, 18, 10, 2,
+  60, 52, 44, 36, 28, 20, 12, 4, 62, 54, 46, 38, 30, 22, 14, 6,
 ];
 
-const E = [
-  32,1,2,3,4,5,4,5,6,7,8,9,8,9,10,11,12,13,
-  12,13,14,15,16,17,16,17,18,19,20,21,20,21,22,23,24,25,
-  24,25,26,27,28,29,28,29,30,31,32,1,
+const FPERM = [
+  39, 7, 47, 15, 55, 23, 63, 31, 38, 6, 46, 14, 54, 22, 62, 30,
+  37, 5, 45, 13, 53, 21, 61, 29, 36, 4, 44, 12, 52, 20, 60, 28,
+  35, 3, 43, 11, 51, 19, 59, 27, 34, 2, 42, 10, 50, 18, 58, 26,
+  33, 1, 41, 9, 49, 17, 57, 25, 32, 0, 40, 8, 48, 16, 56, 24,
 ];
 
-const P = [
-  16,7,20,21,29,12,28,17,1,15,23,26,5,18,31,10,
-  2,8,24,14,32,27,3,9,19,13,30,6,22,11,4,25,
+const ROUND_P = [
+  15, 6, 19, 20, 28, 11, 27, 16, 0, 14, 22, 25, 4, 17, 30, 9,
+  1, 7, 23, 13, 31, 26, 2, 8, 18, 12, 29, 5, 21, 10, 3, 24,
 ];
 
-const S = [
-  [14,4,13,1,2,15,11,8,3,10,6,12,5,9,0,7,0,15,7,4,14,2,13,1,10,6,12,11,9,5,3,8,4,1,14,8,13,6,2,11,15,12,9,7,3,10,5,0,15,12,8,2,4,9,1,7,5,11,3,14,10,0,6,13],
-  [15,1,8,14,6,11,3,4,9,7,2,13,12,0,5,10,3,13,4,7,15,2,8,14,12,0,1,10,6,9,11,5,0,14,7,11,10,4,13,1,5,8,12,6,9,3,2,15,13,8,10,1,3,15,4,2,11,6,7,12,0,5,14,9],
-  [10,0,9,14,6,3,15,5,1,13,12,7,11,4,2,8,13,7,0,9,3,4,6,10,2,8,5,14,12,11,15,1,13,6,4,9,8,15,3,0,11,1,2,12,5,10,14,7,1,10,13,0,6,9,8,7,4,15,14,3,11,5,2,12],
-  [7,13,14,3,0,6,9,10,1,2,8,5,11,12,4,15,13,8,11,5,6,15,0,3,4,7,2,12,1,10,14,9,10,6,9,0,12,11,7,13,15,1,3,14,5,2,8,4,3,15,0,6,10,1,13,8,9,4,5,11,12,7,2,14],
-  [2,12,4,1,7,10,11,6,8,5,3,15,13,0,14,9,14,11,2,12,4,7,13,1,5,0,15,10,3,9,8,6,4,2,1,11,10,13,7,8,15,9,12,5,6,3,0,14,11,8,12,7,1,14,2,13,6,15,0,9,10,4,5,3],
-  [12,1,10,15,9,2,6,8,0,13,3,4,14,7,5,11,10,15,4,2,7,12,9,5,6,1,13,14,0,11,3,8,9,14,15,5,2,8,12,3,7,0,4,10,1,13,11,6,4,3,2,12,9,5,15,10,11,14,1,7,6,0,8,13],
-  [4,11,2,14,15,0,8,13,3,12,9,7,5,10,6,1,13,0,11,7,4,9,1,10,14,3,5,12,2,15,8,6,1,4,11,13,12,3,7,14,10,15,6,8,0,5,9,2,6,11,13,8,1,4,10,7,9,5,0,15,14,2,3,12],
-  [13,2,8,4,6,15,11,1,10,9,3,14,5,0,12,7,1,15,13,8,10,3,7,4,12,5,6,11,0,14,9,2,7,11,4,1,9,12,14,2,0,6,10,13,15,3,5,8,2,1,14,7,4,10,8,13,15,12,9,0,3,5,6,11],
+const KPC1 = [
+  56, 48, 40, 32, 24, 16, 8, 0, 57, 49, 41, 33, 25, 17, 9, 1,
+  58, 50, 42, 34, 26, 18, 10, 2, 59, 51, 43, 35, 62, 54, 46, 38,
+  30, 22, 14, 6, 61, 53, 45, 37, 29, 21, 13, 5, 60, 52, 44, 36,
+  28, 20, 12, 4, 27, 19, 11, 3,
 ];
 
-const PC1 = [
-  57,49,41,33,25,17,9,1,58,50,42,34,26,18,
-  10,2,59,51,43,35,27,19,11,3,60,52,44,36,
-  63,55,47,39,31,23,15,7,62,54,46,38,30,22,
-  14,6,61,53,45,37,29,21,13,5,28,20,12,4,
+const KPC2 = [
+  13, 16, 10, 23, 0, 4, -1, -1, 2, 27, 14, 5, 20, 9, -1, -1,
+  22, 18, 11, 3, 25, 7, -1, -1, 15, 6, 26, 19, 12, 1, -1, -1,
+  40, 51, 30, 36, 46, 54, -1, -1, 29, 39, 50, 44, 32, 47, -1, -1,
+  43, 48, 38, 55, 33, 52, -1, -1, 45, 41, 49, 35, 28, 31, -1, -1,
 ];
 
-const PC2 = [
-  14,17,11,24,1,5,3,28,15,6,21,10,
-  23,19,12,4,26,8,16,7,27,20,13,2,
-  41,52,31,37,47,55,30,40,51,45,33,48,
-  44,49,39,56,34,53,46,42,50,36,29,32,
+const ROT = [1, 1, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 2, 2, 1];
+const ROT_MASK = [0n, 0x100001n, 0x300003n];
+
+const SBOX: number[][] = [
+  [14,4,3,15,2,13,5,3,13,14,6,9,11,2,0,5,4,1,10,12,15,6,9,10,1,8,12,7,8,11,7,0,0,15,10,5,14,4,9,10,7,8,12,3,13,1,3,6,15,12,6,11,2,9,5,0,4,2,11,14,1,7,8,13],
+  [15,0,9,5,6,10,12,9,8,7,2,12,3,13,5,2,1,14,7,8,11,4,0,3,14,11,13,6,4,1,10,15,3,13,12,11,15,3,6,0,4,10,1,7,8,4,11,14,13,8,0,6,2,15,9,5,7,1,10,12,14,2,5,9],
+  [10,13,1,11,6,8,11,5,9,4,12,2,15,3,2,14,0,6,13,1,3,15,4,10,14,9,7,12,5,0,8,7,13,1,2,4,3,6,12,11,0,13,5,14,6,8,15,2,7,10,8,15,4,9,11,5,9,0,14,3,10,7,1,12],
+  [7,10,1,15,0,12,11,5,14,9,8,3,9,7,4,8,13,6,2,1,6,11,12,2,3,0,5,14,10,13,15,4,13,3,4,9,6,10,1,12,11,0,2,5,0,13,14,2,8,15,7,4,15,1,10,7,5,6,12,11,3,8,9,14],
+  [2,4,8,15,7,10,13,6,4,1,3,12,11,7,14,0,12,2,5,9,10,13,0,3,1,11,15,5,6,8,9,14,14,11,5,6,4,1,3,10,2,12,15,0,13,2,8,5,11,8,0,15,7,14,9,4,12,7,10,9,1,13,6,3],
+  [12,9,0,7,9,2,14,1,10,15,3,4,6,12,5,11,1,14,13,0,2,8,7,13,15,5,4,10,8,3,11,6,10,4,6,11,7,9,0,6,4,2,13,1,9,15,3,8,15,3,1,14,12,5,11,0,2,12,14,7,5,10,8,13],
+  [4,1,3,10,15,12,5,0,2,11,9,6,8,7,6,9,11,4,12,15,0,3,10,5,14,13,7,8,13,14,1,2,13,6,14,9,4,1,2,14,11,13,5,0,1,10,8,3,0,11,3,5,9,4,15,2,7,8,12,15,10,7,6,12],
+  [13,7,10,0,6,9,5,15,8,4,3,10,11,14,12,5,2,11,9,6,15,12,0,3,4,1,14,13,1,2,7,8,1,2,12,15,10,4,0,3,13,14,6,9,7,8,9,6,15,1,5,12,3,10,14,5,8,7,11,0,4,13,2,11],
 ];
 
-const SHIFTS = [1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1];
-
-// ========== BigInt 辅助函数 ==========
-
-function permuteBI(input: bigint, table: number[], n: number): bigint {
+/** 按表逐位重排：out.p = value.table[p]，表项 <0 时该位为 0 */
+function shuffle(table: number[], bits: number, value: bigint): bigint {
   let out = 0n;
-  for (let i = 0; i < table.length; i++) {
-    const bit = (input >> BigInt(n - table[i])) & 1n;
-    out = (out << 1n) | bit;
+  for (let p = 0; p < bits; p++) {
+    const s = table[p];
+    if (s >= 0) {
+      out |= ((value >> BigInt(s)) & 1n) << BigInt(p);
+    }
   }
   return out;
 }
 
-function fBI(right: bigint, subkey: bigint): bigint {
-  // 扩展置换 E: 32 → 48
-  let expanded = 0n;
-  for (let i = 0; i < 48; i++) {
-    const bit = (right >> BigInt(32 - E[i])) & 1n;
-    expanded = (expanded << 1n) | bit;
-  }
-  // 与子密钥异或
-  const xored = expanded ^ subkey;
-  // S盒替换
-  let sOut = 0n;
-  for (let i = 0; i < 8; i++) {
-    const chunk = Number((xored >> BigInt(42 - i * 6)) & 0x3Fn);
-    const row = ((chunk >> 4) & 2) | (chunk & 1);
-    const col = (chunk >> 1) & 0xF;
-    sOut = (sOut << 4n) | BigInt(S[i][row * 16 + col]);
-  }
-  // P置换
-  let pOut = 0n;
-  for (let i = 0; i < 32; i++) {
-    const bit = (sOut >> BigInt(32 - P[i])) & 1n;
-    pOut = (pOut << 1n) | bit;
-  }
-  return pOut;
+/** 小端读取 8 字节为 BigInt */
+function readU64LE(b: Uint8Array, off = 0): bigint {
+  let v = 0n;
+  for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(b[off + i]);
+  return v;
 }
 
-function generateSubkeysBI(key64: bigint): bigint[] {
-  // PC1: 64 → 56
-  const key56 = permuteBI(key64, PC1, 64);
-  let c = (key56 >> 28n) & 0xFFFFFFFn;
-  let d = key56 & 0xFFFFFFFn;
-  const subkeys: bigint[] = [];
-  for (let i = 0; i < 16; i++) {
-    const shift = SHIFTS[i];
-    c = ((c << BigInt(shift)) | (c >> BigInt(28 - shift))) & 0xFFFFFFFn;
-    d = ((d << BigInt(shift)) | (d >> BigInt(28 - shift))) & 0xFFFFFFFn;
-    const cd = (c << 28n) | d;
-    // PC2: 56 → 48
-    subkeys.push(permuteBI(cd, PC2, 56));
+function desRoundKeys(key: Uint8Array, decrypt: boolean): bigint[] {
+  if (key.length !== 8) throw new Error('DES key must be 8 bytes');
+  let cv = shuffle(KPC1, 56, readU64LE(key));
+  const keys: bigint[] = [];
+  for (const amt of ROT) {
+    const m = ROT_MASK[amt];
+    cv = ((cv & m) << BigInt(28 - amt)) | ((cv & ~m) >> BigInt(amt));
+    keys.push(shuffle(KPC2, 64, cv));
   }
-  return subkeys;
+  return decrypt ? keys.slice().reverse() : keys;
 }
 
-function desBlockBI(block64: bigint, subkeys: bigint[], decrypt: boolean): bigint {
-  // 初始置换 IP
-  const ip = permuteBI(block64, IP, 64);
-  let left = (ip >> 32n) & 0xFFFFFFFFn;
-  let right = ip & 0xFFFFFFFFn;
-  // 16轮Feistel
-  for (let i = 0; i < 16; i++) {
-    const sk = decrypt ? subkeys[15 - i] : subkeys[i];
-    const newRight = left ^ fBI(right, sk);
-    left = right;
-    right = newRight;
+function desBlock(block: Uint8Array, roundKeys: bigint[]): Uint8Array {
+  const v = shuffle(IPERM, 64, readU64LE(block));
+  let lo = Number(v & 0xFFFFFFFFn);
+  let hi = Number((v >> 32n) & 0xFFFFFFFFn);
+  for (const rk of roundKeys) {
+    const e = shuffle(EXP, 64, BigInt(hi)) ^ rk;
+    let s = 0;
+    for (let b = 0; b < 8; b++) {
+      s |= SBOX[b][Number((e >> BigInt(b * 8)) & 0x3Fn)] << (b * 4);
+    }
+    const prevLo = lo;
+    lo = hi;
+    hi = (prevLo ^ Number(shuffle(ROUND_P, 32, BigInt(s)))) >>> 0;
   }
-  // 交换并逆初始置换 FP
-  const preFp = ((right & 0xFFFFFFFFn) << 32n) | (left & 0xFFFFFFFFn);
-  return permuteBI(preFp, FP, 64);
+  const pre = (BigInt(lo >>> 0) << 32n) | BigInt(hi >>> 0);
+  const fp = shuffle(FPERM, 64, pre);
+  const out = new Uint8Array(8);
+  for (let i = 0; i < 8; i++) out[i] = Number((fp >> BigInt(i * 8)) & 0xFFn); // little-endian
+  return out;
 }
-
-// ========== 对外接口 ==========
 
 /**
- * DES-ECB 解密（NoPadding）
- * @param data 密文字节（必须是8字节倍数）
- * @param key  密钥字节（8字节）
- * @returns    明文字节
+ * 酷我魔改 DES-ECB/NoPadding 解密（密钥固定 ylzsxkwm，由调用方传入）
+ * @param data 密文（长度须为 8 的倍数，多余尾部字节被忽略）
+ * @param key 8 字节密钥
  */
 export function desEcbDecrypt(data: Uint8Array, key: Uint8Array): Uint8Array {
-  if (key.length !== 8) throw new Error('DES key must be 8 bytes');
-  if (data.length % 8 !== 0) throw new Error('DES data must be multiple of 8 bytes');
-
-  // 将密钥转为64位BigInt
-  let key64 = 0n;
-  for (let i = 0; i < 8; i++) {
-    key64 = (key64 << 8n) | BigInt(key[i] & 0xFF);
-  }
-  const subkeys = generateSubkeysBI(key64);
-
-  const out = new Uint8Array(data.length);
-  for (let b = 0; b < data.length; b += 8) {
-    let block64 = 0n;
-    for (let i = 0; i < 8; i++) {
-      block64 = (block64 << 8n) | BigInt(data[b + i] & 0xFF);
-    }
-    const plain64 = desBlockBI(block64, subkeys, true);
-    for (let i = 0; i < 8; i++) {
-      out[b + i] = Number((plain64 >> BigInt(56 - i * 8)) & 0xFFn);
-    }
+  const roundKeys = desRoundKeys(key, true);
+  const blockLen = data.length - (data.length % 8);
+  const out = new Uint8Array(blockLen);
+  for (let off = 0; off < blockLen; off += 8) {
+    out.set(desBlock(data.subarray(off, off + 8), roundKeys), off);
   }
   return out;
 }
+
+export { KUWO_KEY };

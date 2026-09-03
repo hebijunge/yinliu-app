@@ -602,6 +602,10 @@ export abstract class BaseHttpSource implements MusicSource {
       case Quality.HIRES: return 1800;
       case Quality.SKY: return 1000;
       case Quality.JYEFFECT: return 320;
+      // 酷我 mflac 加密档（真实码率来自花海实测 ffprobe：898/2298/5390 kbps）
+      case Quality.ZHIZHEN: return 900;
+      case Quality.DOLBY: return 2300;
+      case Quality.MASTER: return 5400;
       default: return 128;
     }
   }

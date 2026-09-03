@@ -201,6 +201,9 @@ export async function linkRaceWithFallback(
   candidateBuilder: (quality: Quality) => EndpointCandidate[],
   preferredQuality: Quality,
   qualityChain: Quality[] = [
+    Quality.MASTER,
+    Quality.DOLBY,
+    Quality.ZHIZHEN,
     Quality.HIFI,
     Quality.HIRES,
     Quality.LOSSLESS,

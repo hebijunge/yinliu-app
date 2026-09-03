@@ -20,6 +20,9 @@ import SleepTimerPanel from '../components/player/SleepTimerPanel';
 type TabId = 'general' | 'music' | 'about';
 
 const QUALITY_OPTIONS: Array<{ value: Quality; label: string }> = [
+  { value: Quality.MASTER, label: '超无损母带 (20900k)' },
+  { value: Quality.DOLBY, label: '至臻全景声 (20501k)' },
+  { value: Quality.ZHIZHEN, label: '至臻音质 2.0 (20201k)' },
   { value: Quality.STANDARD, label: '标准 (128K)' },
   { value: Quality.HIGH, label: '高品 (320K)' },
   { value: Quality.LOSSLESS, label: '无损 (FLAC)' },

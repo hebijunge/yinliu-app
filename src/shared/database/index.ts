@@ -266,7 +266,7 @@ export async function initDatabase(): Promise<typeof db> {
   const defaults = [
     { id: 'netease', name: '网易云音乐', enabled: 1, priority: 100, maxQuality: 'hires' },
     { id: 'qq', name: 'QQ音乐', enabled: 1, priority: 90, maxQuality: 'hifi' },
-    { id: 'kuwo', name: '酷我音乐', enabled: 1, priority: 80, maxQuality: 'hifi' },
+    { id: 'kuwo', name: '酷我音乐', enabled: 1, priority: 80, maxQuality: 'master' },
     { id: 'kugou', name: '酷狗音乐', enabled: 1, priority: 70, maxQuality: 'hires' },
     { id: 'migu', name: '咪咕音乐', enabled: 1, priority: 60, maxQuality: 'hires' },
     { id: 'qishui', name: '汽水音乐', enabled: 0, priority: 50, maxQuality: 'standard' },

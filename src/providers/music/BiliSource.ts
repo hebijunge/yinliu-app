@@ -36,6 +36,9 @@ export class BiliSource extends BaseHttpSource {
   };
 
   private readonly QUALITY_TO_AUDIO_ID: Record<Quality, number> = {
+    [Quality.MASTER]: 30251,
+    [Quality.DOLBY]: 30251,
+    [Quality.ZHIZHEN]: 30251,
     [Quality.HIRES]: 30251,
     [Quality.HIFI]: 30251,
     [Quality.JYEFFECT]: 30251,

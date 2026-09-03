@@ -42,7 +42,7 @@ export const PLATFORM_DISPLAY_ORDER: PlatformId[] = ['qi', 'kw', 'mg', 'wy', 'qq
 /** 平台元信息 */
 export const PLATFORM_META: Record<PlatformId, { name: string; maxQualityLabel: string }> = {
   qi: { name: '汽水', maxQualityLabel: '标准' },
-  kw: { name: '酷我', maxQualityLabel: '无损' },
+  kw: { name: '酷我', maxQualityLabel: '超无损母带' },
   mg: { name: '咪咕', maxQualityLabel: '无损' },
   wy: { name: '网易云', maxQualityLabel: 'Hi-Res' },
   qq: { name: 'QQ', maxQualityLabel: 'Hi-Res' },

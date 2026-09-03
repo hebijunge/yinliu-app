@@ -47,6 +47,9 @@ interface QualitySizeSheetProps {
 
 /** 档位左侧色块（参考图：Hi-Res/无损 黄、320K 红、192K 紫、128K 蓝） */
 const TIER_COLORS: Record<QualityTier, string> = {
+  master: 'bg-gradient-to-b from-fuchsia-500 to-amber-500',
+  dolby: 'bg-gradient-to-b from-violet-500 to-fuchsia-500',
+  zhizhen: 'bg-gradient-to-b from-emerald-500 to-teal-500',
   hires: 'bg-amber-500',
   lossless: 'bg-yellow-500',
   '320k': 'bg-red-500',
@@ -56,6 +59,9 @@ const TIER_COLORS: Record<QualityTier, string> = {
 
 /** 档位文字颜色（与色块对应，用于标题） */
 const TIER_TEXT_COLORS: Record<QualityTier, string> = {
+  master: 'text-fuchsia-400',
+  dolby: 'text-violet-400',
+  zhizhen: 'text-emerald-400',
   hires: 'text-amber-400',
   lossless: 'text-yellow-400',
   '320k': 'text-red-400',
