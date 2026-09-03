@@ -1,6 +1,6 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import { Quality, YinliuError, ErrorCode } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, TierSizes, PlaylistSummary, QualityOption } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, TierSizes, PlaylistSummary, QualityOption, MvQuality, MvUrlResult } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 
@@ -41,18 +41,39 @@ export class NeteaseSource extends BaseHttpSource {
   // ===================== 搜索 =====================
 
   async search(params: SearchParams): Promise<SearchResult[]> {
+    const searchType = params.type || 'song';
     const q = encodeURIComponent(params.keyword);
     const offset = (params.page || 0) * 30;
-    const url = `${this.HOST}/api/search/get?s=${q}&type=1&limit=30&offset=${offset}`;
 
+    // 网易云搜索类型映射: 1=歌曲, 10=专辑, 100=歌手, 1004=MV
+    const neteaseTypeMap: Record<string, number> = {
+      song: 1,
+      album: 10,
+      artist: 100,
+      mv: 1004,
+    };
+    const typeNum = neteaseTypeMap[searchType];
+    if (!typeNum) return []; // 不支持的类型直接跳过
+
+    const url = `${this.HOST}/api/search/get?s=${q}&type=${typeNum}&limit=30&offset=${offset}`;
     const data = await this.httpGetJson(url);
     if (!data) return [];
 
     const result = data.result;
     if (!result) return [];
 
-    const songs = result.songs || [];
-    return songs.map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[];
+    switch (searchType) {
+      case 'song':
+        return (result.songs || []).map((o: any) => this.parseSong(o)).filter(Boolean) as SearchResult[];
+      case 'artist':
+        return (result.artists || []).map((o: any) => this.parseArtist(o)).filter(Boolean) as SearchResult[];
+      case 'album':
+        return (result.albums || []).map((o: any) => this.parseAlbum(o)).filter(Boolean) as SearchResult[];
+      case 'mv':
+        return (result.mvs || []).map((o: any) => this.parseMv(o)).filter(Boolean) as SearchResult[];
+      default:
+        return [];
+    }
   }
 
   private parseSong(o: any): SearchResult | null {
@@ -155,6 +176,132 @@ export class NeteaseSource extends BaseHttpSource {
   }
 
   // ===================== 歌曲详情 =====================
+
+  private parseArtist(o: any): SearchResult | null {
+    const id = parseInt((o.id || '0').toString(), 10);
+    if (!id) return null;
+    const name = (o.name || '').toString().trim();
+    if (!name) return null;
+    return {
+      id: `ne_artist_${id}`,
+      type: 'artist',
+      title: name,
+      subtitle: (o.trans || '').toString(),
+      artist: name,
+      coverUrl: (o.picUrl || o.img1v1Url || '').toString(),
+      sourceId: this.id,
+      sourceSongId: id.toString(),
+    };
+  }
+
+  private parseAlbum(o: any): SearchResult | null {
+    const id = parseInt((o.id || '0').toString(), 10);
+    if (!id) return null;
+    const name = (o.name || '').toString().trim();
+    if (!name) return null;
+    const artist = (o.artist?.name || '').toString();
+    return {
+      id: `ne_album_${id}`,
+      type: 'album',
+      title: name,
+      artist,
+      subtitle: artist,
+      coverUrl: (o.picUrl || '').toString(),
+      sourceId: this.id,
+      sourceSongId: id.toString(),
+    };
+  }
+
+  private parseMv(o: any): SearchResult | null {
+    const id = parseInt((o.id || '0').toString(), 10);
+    if (!id) return null;
+    const name = (o.name || '').toString().trim();
+    if (!name) return null;
+    const artistName = (o.artistName || '').toString();
+    const durMs = parseInt((o.duration || '0').toString(), 10);
+    return {
+      id: `ne_mv_${id}`,
+      type: 'mv',
+      title: name,
+      artist: artistName,
+      subtitle: artistName,
+      duration: durMs > 0 ? Math.floor(durMs / 1000) : 0,
+      coverUrl: (o.cover || o.picUrl || '').toString(),
+      sourceId: this.id,
+      sourceSongId: id.toString(),
+      mvUrl: `https://music.163.com/mv?id=${id}`,
+    };
+  }
+
+  // ===================== MV 取链（v19.2）=====================
+
+  /**
+   * 获取 MV 播放地址
+   * 接口: GET /api/song/enhance/play/mv/url?id={mvid}&r={quality}
+   * 支持画质: 240/480/720/1080，服务端自动降级
+   */
+  async getMvUrl(mvId: string, quality: MvQuality): Promise<MvUrlResult | null> {
+    const id = mvId.replace(/^ne_mv_/, '');
+    const r = this.mvQualityToR(quality);
+    const url = `${this.HOST}/api/song/enhance/play/mv/url?id=${id}&r=${r}`;
+    try {
+      const data = await this.httpGetJson(url);
+      if (!data?.data?.url) return null;
+      const actualR = data.data.r || r;
+      return {
+        url: data.data.url,
+        quality: this.rToMvQuality(actualR),
+        size: data.data.size,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 获取 MV 可用画质列表
+   * 策略：请求 1080p，根据服务端返回的实际 r 推断最高画质，
+   * 再向下探测每个档位确认可用性。
+   */
+  async getMvQualities(mvId: string): Promise<MvQuality[]> {
+    const id = mvId.replace(/^ne_mv_/, '');
+    const allQualities: MvQuality[] = ['240p', '480p', '720p', '1080p'];
+
+    const maxResult = await this.getMvUrl(id, '1080p');
+    if (!maxResult) return [];
+
+    const maxRank = mvQualityRank(maxResult.quality);
+    const available: MvQuality[] = [];
+
+    for (const q of allQualities) {
+      if (mvQualityRank(q) <= maxRank) {
+        const result = await this.getMvUrl(id, q);
+        if (result && result.url) {
+          available.push(q);
+        }
+      }
+    }
+
+    return available;
+  }
+
+  private mvQualityToR(q: MvQuality): number {
+    switch (q) {
+      case '240p': return 240;
+      case '480p': return 480;
+      case '720p': return 720;
+      case '1080p': return 1080;
+      case '4k': return 1080; // 网易云暂无 4K
+      default: return 480;
+    }
+  }
+
+  private rToMvQuality(r: number): MvQuality {
+    if (r >= 1080) return '1080p';
+    if (r >= 720) return '720p';
+    if (r >= 480) return '480p';
+    return '240p';
+  }
 
   async getSongDetail(songId: string): Promise<SongDetail> {
     const id = songId.replace(/^ne_/, '');
@@ -488,4 +635,9 @@ export class NeteaseSource extends BaseHttpSource {
       return { healthy: false, message: '网易云音乐服务不可用' };
     }
   }
+}
+
+function mvQualityRank(q: MvQuality): number {
+  const map: Record<MvQuality, number> = { '240p': 1, '480p': 2, '720p': 3, '1080p': 4, '4k': 5 };
+  return map[q] || 0;
 }

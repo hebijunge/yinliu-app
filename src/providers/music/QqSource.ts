@@ -1,7 +1,7 @@
 import { BaseHttpSource } from './BaseHttpSource';
 import type { EndpointCandidate } from './types';
 import { Quality } from '@core/types';
-import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistSummary, TierSizes, QualityOption, QualityTier } from '@core/types';
+import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResult, PlaylistSummary, TierSizes, QualityOption, QualityTier, MvQuality, MvUrlResult } from '@core/types';
 import { YinliuError, ErrorCode } from '@core/types';
 
 /**
@@ -32,11 +32,23 @@ export class QqSource extends BaseHttpSource {
   ];
 
   /**
-   * 搜索歌曲
+   * 搜索：支持歌曲/歌手/专辑/MV
+   * QQ搜索类型: 0=歌曲, 2=歌手, 8=专辑, 12=MV
    */
   async search(params: SearchParams): Promise<SearchResult[]> {
     const page = params.page || 0;
     const pageSize = params.pageSize || 30;
+    const searchType = params.type || 'song';
+
+    // QQ 搜索类型映射
+    const qqTypeMap: Record<string, number> = {
+      song: 0,
+      artist: 2,
+      album: 8,
+      mv: 12,
+    };
+    const qqType = qqTypeMap[searchType];
+    if (qqType === undefined) return []; // 不支持的类型直接跳过
 
     const reqBody = {
       req_1: {
@@ -46,7 +58,7 @@ export class QqSource extends BaseHttpSource {
           num_per_page: pageSize,
           page_num: page + 1,
           query: params.keyword,
-          search_type: params.type === 'song' ? 0 : 0,
+          search_type: qqType,
         },
       },
     };
@@ -67,9 +79,28 @@ export class QqSource extends BaseHttpSource {
       }
 
       const data = await response.json();
-      const list = data?.req_1?.data?.body?.song?.list || [];
+      const body = data?.req_1?.data?.body;
 
-      return list.map((item: any) => this.mapSearchResult(item));
+      switch (searchType) {
+        case 'song': {
+          const list = body?.song?.list || [];
+          return list.map((item: any) => this.mapSearchResult(item));
+        }
+        case 'artist': {
+          const list = body?.singer?.list || [];
+          return list.map((item: any) => this.mapArtistResult(item));
+        }
+        case 'album': {
+          const list = body?.album?.list || [];
+          return list.map((item: any) => this.mapAlbumResult(item));
+        }
+        case 'mv': {
+          const list = body?.mv?.list || [];
+          return list.map((item: any) => this.mapMvResult(item));
+        }
+        default:
+          return [];
+      }
     } catch {
       return this.fallbackSearch(params);
     }
@@ -184,6 +215,49 @@ export class QqSource extends BaseHttpSource {
     return options;
   }
 
+  private mapArtistResult(item: any): SearchResult {
+    const mid = item.mid || item.singer_mid || '';
+    return {
+      id: `qq_artist_${mid}`,
+      type: 'artist',
+      title: item.name || item.singer_name || '未知歌手',
+      artist: item.name || item.singer_name || '',
+      coverUrl: mid ? `https://y.gtimg.cn/music/photo_new/T001R300x300M000${mid}.jpg` : '',
+      sourceId: this.id,
+      sourceSongId: mid,
+    };
+  }
+
+  private mapAlbumResult(item: any): SearchResult {
+    const mid = item.mid || item.album_mid || '';
+    return {
+      id: `qq_album_${mid}`,
+      type: 'album',
+      title: item.name || item.album_name || '未知专辑',
+      artist: item.singer_name || item.singer?.map((s: any) => s.name).join('/') || '',
+      subtitle: item.singer_name || item.singer?.map((s: any) => s.name).join('/') || '',
+      coverUrl: mid ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${mid}.jpg` : '',
+      sourceId: this.id,
+      sourceSongId: mid,
+    };
+  }
+
+  private mapMvResult(item: any): SearchResult {
+    const vid = item.v_id || item.vid || '';
+    return {
+      id: `qq_mv_${vid}`,
+      type: 'mv',
+      title: item.name || item.mv_name || item.title || '未知MV',
+      artist: item.singer_name || item.singer?.map((s: any) => s.name).join('/') || '',
+      subtitle: item.singer_name || item.singer?.map((s: any) => s.name).join('/') || '',
+      duration: item.interval || item.duration || 0,
+      coverUrl: item.pic || item.cover || '',
+      sourceId: this.id,
+      sourceSongId: vid,
+      mvUrl: vid ? `https://y.qq.com/n/ryqq/mv/${vid}` : undefined,
+    };
+  }
+
   private inferQuality(item: any): Quality {
     const f = item.file || {};
     if (item.sizehires || item.sizeatmos || f.size_hires) return Quality.HIFI;
@@ -195,6 +269,126 @@ export class QqSource extends BaseHttpSource {
   /**
    * 获取歌曲详情
    */
+  // ===================== MV 取链（v19.2）=====================
+
+  /**
+   * 获取 MV 播放地址
+   * module: gosrf.Stream.MvUrlProxy, method: GetMvUrls
+   * 支持画质: 10(240P)/20(480P)/30(720P)/40(1080P)/50(4K)
+   */
+  async getMvUrl(vid: string, quality: MvQuality): Promise<MvUrlResult | null> {
+    const id = vid.replace(/^qq_mv_/, '');
+    const reqBody = {
+      comm: { ct: 24, guid: '10000' },
+      req: {
+        module: 'gosrf.Stream.MvUrlProxy',
+        method: 'GetMvUrls',
+        param: {
+          vids: [id],
+          request_typet: 10001,
+          guid: '10000',
+        },
+      },
+    };
+
+    try {
+      const response = await fetch(this.baseUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Referer': 'https://y.qq.com',
+        },
+        body: JSON.stringify(reqBody),
+      });
+
+      if (!response.ok) return null;
+      const data = await response.json();
+      const mp4List = data?.req?.data?.[id]?.mp4 || [];
+      if (!mp4List.length) return null;
+
+      const targetFiletype = this.mvQualityToFiletype(quality);
+      const match = mp4List.find((m: any) => m.filetype === targetFiletype);
+      if (!match) return null;
+
+      const url = match.freeflow_url?.[0] || match.url?.[0];
+      if (!url) return null;
+
+      return {
+        url,
+        quality,
+        size: match.file_size,
+        duration: match.duration,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 获取 MV 可用画质列表
+   * QQ 接口一次返回所有画质，直接解析 mp4[] 数组
+   */
+  async getMvQualities(vid: string): Promise<MvQuality[]> {
+    const id = vid.replace(/^qq_mv_/, '');
+    const reqBody = {
+      comm: { ct: 24, guid: '10000' },
+      req: {
+        module: 'gosrf.Stream.MvUrlProxy',
+        method: 'GetMvUrls',
+        param: {
+          vids: [id],
+          request_typet: 10001,
+          guid: '10000',
+        },
+      },
+    };
+
+    try {
+      const response = await fetch(this.baseUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Referer': 'https://y.qq.com',
+        },
+        body: JSON.stringify(reqBody),
+      });
+
+      if (!response.ok) return [];
+      const data = await response.json();
+      const mp4List = data?.req?.data?.[id]?.mp4 || [];
+      const qualities = mp4List
+        .map((m: any) => this.filetypeToMvQuality(m.filetype))
+        .filter(Boolean) as MvQuality[];
+      const unique = Array.from(new Set(qualities));
+      unique.sort((a, b) => mvQualityRank(b) - mvQualityRank(a));
+      return unique;
+    } catch {
+      return [];
+    }
+  }
+
+  private mvQualityToFiletype(q: MvQuality): number {
+    switch (q) {
+      case '240p': return 10;
+      case '480p': return 20;
+      case '720p': return 30;
+      case '1080p': return 40;
+      case '4k': return 50;
+      default: return 20;
+    }
+  }
+
+  private filetypeToMvQuality(ft: number): MvQuality | null {
+    switch (ft) {
+      case 10: return '240p';
+      case 20: return '480p';
+      case 30: return '720p';
+      case 40: return '1080p';
+      case 50: return '4k';
+      default: return null;
+    }
+  }
+
   async getSongDetail(songId: string): Promise<SongDetail> {
     const reqBody = {
       req_1: {
@@ -683,4 +877,9 @@ export class QqSource extends BaseHttpSource {
       return { healthy: false, message: 'QQ音乐服务不可用' };
     }
   }
+}
+
+function mvQualityRank(q: MvQuality): number {
+  const map: Record<MvQuality, number> = { '240p': 1, '480p': 2, '720p': 3, '1080p': 4, '4k': 5 };
+  return map[q] || 0;
 }

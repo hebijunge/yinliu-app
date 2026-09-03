@@ -18,6 +18,10 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const EqPage = lazy(() => import('./pages/EqPage'));
 const HistoryPage = lazy(() => import('./pages/HistoryPage'));
 const DebugLogPage = lazy(() => import('./pages/DebugLogPage'));
+// v21.0 整合：榜单聚合 / 歌单聚合（固定分类口径） / 独立视频播放页
+const ChartPage = lazy(() => import('./pages/ChartPage'));
+const PlaylistAggregationPage = lazy(() => import('./pages/PlaylistAggregationPage'));
+const VideoPlayerPage = lazy(() => import('./pages/VideoPlayerPage'));
 import { playerEngine } from './core/player';
 import { downloadEngine } from './core/download';
 import { usePlayerStore } from './shared/store/playerStore';
@@ -177,6 +181,9 @@ function App() {
           <Route path="/search" element={<SearchPage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/playlists" element={<PlaylistPage />} />
+            <Route path="/charts" element={<ChartPage />} />
+            <Route path="/songlists" element={<PlaylistAggregationPage />} />
+            <Route path="/video" element={<VideoPlayerPage />} />
           <Route path="/downloads" element={<DownloadPage />} />
           <Route path="/reading" element={<ReadingPage />} />
           <Route path="/settings" element={<SettingsPage />} />

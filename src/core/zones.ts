@@ -2,12 +2,14 @@
  * 专区聚合中枢（v20）
  *
  * 专区 = 按固定分类聚合的榜单 + 歌单，取数链路与曲库榜单/歌单完全一致：
- * - 榜单：复用 getAllChartGroups（6 源取全量 → chartCategories 固定分类归类），按专区分类取对应分组
+ * - 榜单：v21.0 起 = 按固定分类取各源固定汇总榜单ID（文档 Section 4 口径）
  * - 歌单：复用 getCategoryPlaylists（分类名 best-effort 映射各源标签），无对应分类的源返回空、如实缺省
  * 当前专区：粤语专区（榜单分类 cantonese / 歌单分类「粤语」）、DJ专区（榜单分类 dj / 歌单分类「DJ」）
  */
 
-import { getAllChartGroups, type ClassifiedChart } from './charts';
+import type { ClassifiedChart } from './charts';
+import { getActiveMappings } from '../modules/chart/chartMappings';
+import { sourceRegistry } from '@providers/music/registry';
 import { getCategoryPlaylists, type SourcePlaylistGroup } from './playlistCategories';
 
 export interface Zone {
@@ -33,11 +35,15 @@ export function getZoneById(id: string): Zone | undefined {
  * 单源失败不影响整体（getAllChartGroups 内部 best-effort）。
  */
 export async function getZoneChartGroups(): Promise<Record<string, ClassifiedChart[]>> {
-  const groups = await getAllChartGroups();
-  const byId = new Map(groups.map((g) => [g.categoryId, g.charts]));
+  // v21.0 口径修复：专区榜单 = 按固定分类取各源固定汇总榜单ID（不再取全量再归类）
   const result: Record<string, ClassifiedChart[]> = {};
   for (const zone of ZONES) {
-    result[zone.id] = byId.get(zone.chartCategoryId) || [];
+    result[zone.id] = getActiveMappings(zone.chartCategoryId).map((m) => ({
+      sourceId: m.sourceId,
+      sourceName: sourceRegistry.get(m.sourceId)?.name || m.sourceId,
+      chartId: m.chartId,
+      chartName: m.chartName,
+    }));
   }
   return result;
 }

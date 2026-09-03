@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Trophy, ListMusic, Loader2 } from 'lucide-react';
-import { getAllChartGroups, type ChartCategoryGroup, type ClassifiedChart } from '../core/charts';
+import type { ChartCategoryGroup, ClassifiedChart } from '../core/charts';
+import { CHART_CATEGORIES, getActiveMappings } from '../modules/chart/chartMappings';
 import { PLAYLIST_CATEGORIES, getCategoryPlaylists, type SourcePlaylistGroup } from '../core/playlistCategories';
 import { sourceRegistry } from '@providers/music/registry';
 import { PLATFORM_SHORT_NAMES } from '../core/platformPriority';
@@ -14,7 +15,7 @@ import { toast } from '../shared/components/Toast';
 
 /**
  * 曲库页：榜单 / 歌单 两个 Tab
- * - 榜单：6 源榜单按 20 个固定融合分类归类
+ * - 榜单：按固定分类取各源固定汇总榜单ID（文档 Section 4 口径）
  * - 歌单：固定融合分类，展示顺序 汽水>酷我>咪咕>网易云>QQ>酷狗
  */
 type DetailSong = { song: SearchResult; sourceId: string; sourceName: string };
@@ -38,21 +39,20 @@ export default function LibraryPage() {
 
   const [sheetSong, setSheetSong] = useState<AggregatedSearchResult | null>(null);
 
+  // v21.0 口径修复：榜单 = 按固定分类取各源固定汇总榜单ID（文档 Section 4），不再取全量再归类
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const groups = await getAllChartGroups();
-        if (alive) setChartGroups(groups);
-      } catch (err) {
-        console.error('榜单拉取失败:', err);
-      } finally {
-        if (alive) setChartsLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
+    const groups: ChartCategoryGroup[] = CHART_CATEGORIES.map((cat) => ({
+      categoryId: cat.id,
+      categoryName: cat.name,
+      charts: getActiveMappings(cat.id).map((m): ClassifiedChart => ({
+        sourceId: m.sourceId,
+        sourceName: sourceRegistry.get(m.sourceId)?.name || m.sourceId,
+        chartId: m.chartId,
+        chartName: m.chartName,
+      })),
+    }));
+    setChartGroups(groups);
+    setChartsLoading(false);
   }, []);
 
   useEffect(() => {

@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom';
-import { House, Library, Compass, User, Search, Download, BookOpen, Settings, Heart, Clock, ListMusic, Music } from 'lucide-react';
+import { House, Library, Compass, User, Search, Download, BookOpen, Settings, Heart, Clock, ListMusic, Music,Trophy } from 'lucide-react';
 import { usePlaylistStore } from '../../shared/store/playlistStore';
 import { PLATFORM_SHORT_NAMES } from '../../core/platformPriority';
 
@@ -17,6 +17,8 @@ export default function Sidebar({ onClose }: SidebarProps) {
     { to: '/mine', icon: User, label: '我的' },
     { to: '/search', icon: Search, label: '搜索' },
     { to: '/history', icon: Clock, label: '最近播放' },
+    { to: '/charts', icon: Trophy, label: '榜单聚合' },
+    { to: '/songlists', icon: ListMusic, label: '歌单聚合' },
     { to: '/playlists', icon: ListMusic, label: '我的歌单' },
     { to: '/downloads', icon: Download, label: '下载管理' },
     { to: '/reading', icon: BookOpen, label: '书架' },

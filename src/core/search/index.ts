@@ -1,6 +1,6 @@
 import type { MusicSource } from '@providers/music/types';
 import { Quality } from '@core/types';
-import type { SearchParams, SearchResult, TierSizes } from '@core/types';
+import type { SearchParams, SearchResult, TierSizes, MvSourceInfo } from '@core/types';
 import { sourceRegistry } from '@providers/music/registry';
 import {
   PLATFORM_PRIORITY,
@@ -23,6 +23,15 @@ export interface AggregatedSearchSource {
 
 export interface AggregatedSearchResult extends SearchResult {
   sources: AggregatedSearchSource[];
+  /** MV 多源聚合信息（仅 type='mv' 时由搜索引擎填充） */
+  mvSources?: MvSourceInfo[];
+}
+
+interface SourceResult {
+  source: MusicSource;
+  results: SearchResult[];
+  latency: number;
+  error: string | null;
 }
 
 export interface SearchEngineOptions {
@@ -94,6 +103,32 @@ export function isSameSong(a: SearchResult, b: SearchResult): boolean {
   return true;
 }
 
+/** MV 归一化 key：歌名+歌手（MV 时长容差放宽到 15s） */
+function makeMvKey(title: string, artist: string, duration?: number): string {
+  const t = normalizeTitle(title);
+  const a = normalizeArtist(artist);
+  const base = `${t}|${a}`;
+  if (duration && duration > 0) {
+    const bucket = Math.floor(duration / 15);
+    return `${base}|${bucket}`;
+  }
+  return base;
+}
+
+/** 判断两个 MV 结果是否为同一支 MV */
+function isSameMv(a: SearchResult, b: SearchResult): boolean {
+  const ta = normalizeTitle(a.title);
+  const tb = normalizeTitle(b.title);
+  if (ta !== tb) return false;
+  const aa = normalizeArtist(a.artist || '');
+  const ab = normalizeArtist(b.artist || '');
+  if (aa !== ab) return false;
+  if (a.duration && b.duration) {
+    return Math.abs(a.duration - b.duration) <= 15;
+  }
+  return true;
+}
+
 export class SearchEngine {
   async search(
     params: SearchParams,
@@ -106,7 +141,6 @@ export class SearchEngine {
       ? options.sources.map((id) => sourceRegistry.get(id)).filter(Boolean) as MusicSource[]
       : sourceRegistry.getEnabled();
 
-    const startTime = Date.now();
     const sourcePromises = sources.map(async (source) => {
       const sStart = Date.now();
       try {
@@ -132,21 +166,29 @@ export class SearchEngine {
       }
     });
 
-    interface SourceResult {
-      source: MusicSource;
-      results: SearchResult[];
-      latency: number;
-      error: string | null;
-    }
-
     const sourceResults = await Promise.allSettled(sourcePromises);
     const fulfilled = sourceResults
       .filter((r): r is PromiseFulfilledResult<SourceResult> => r.status === 'fulfilled')
       .map((r) => r.value);
 
-    // === 同曲归并：把多平台的同一首歌合并成一条 AggregatedSearchResult ===
-    // 优先按 (normalized title + artist + duration bucket) 做主键；
-    // 若主键已存在但 isSameSong 判定失败，再单独建一条避免误并。
+    const searchType = params.type || 'song';
+
+    if (searchType === 'song') {
+      return this.mergeSongResults(fulfilled);
+    }
+
+    if (searchType === 'mv') {
+      return this.mergeMvResults(fulfilled);
+    }
+
+    // 歌手/专辑搜索：直接聚合，不归并
+    return this.mergeGenericResults(fulfilled, searchType);
+  }
+
+  private mergeSongResults(fulfilled: SourceResult[]): {
+    results: AggregatedSearchResult[];
+    sourceStats: Record<string, { total: number; latency: number; error?: string; errorType?: string }>;
+  } {
     const resultMap = new Map<string, AggregatedSearchResult>();
     const fallbackMap = new Map<string, AggregatedSearchResult>();
 
@@ -155,8 +197,6 @@ export class SearchEngine {
         const key = makeKey(r.title, r.artist || '', r.duration);
         let existing: AggregatedSearchResult | undefined = resultMap.get(key);
 
-        // 若主键命中，但 isSameSong 严格判定不通过（典型：同名同歌手但时长差过大），
-        // 则把它放进 fallbackMap，避免污染主键记录
         if (existing && !isSameSong(existing, r)) {
           existing = fallbackMap.get(key);
         }
@@ -194,9 +234,6 @@ export class SearchEngine {
       }
     }
 
-    // 每个 result：
-    // - sources 按展示优先级升序排（汽水在前，列表徽章顺序）
-    // - result.sourceId / sourceSongId 指向播放优先级最高的平台（酷我在前，取链/播放用）
     const results: AggregatedSearchResult[] = [];
     for (const r of resultMap.values()) {
       r.sources = sortByDisplayPriority(r.sources);
@@ -218,7 +255,6 @@ export class SearchEngine {
     }
 
     results.sort((a, b) => {
-      // 排序（v18 用户要求）：可用平台数 desc → 展示优先级（汽水>酷我>咪咕>网易云>QQ>酷狗）asc → 码率 desc
       const aSources = a.sources.length;
       const bSources = b.sources.length;
       if (bSources !== aSources) return bSources - aSources;
@@ -228,6 +264,171 @@ export class SearchEngine {
       return (b.bitrate || 0) - (a.bitrate || 0);
     });
 
+    const sourceStats = this.buildSourceStats(fulfilled);
+    return { results, sourceStats };
+  }
+
+  /**
+   * MV 多源聚合：同名同歌手的 MV 合并为一条，携带多源信息。
+   * 与歌曲聚合的区别：
+   * 1. 使用 makeMvKey（时长容差 15s）
+   * 2. 填充 mvSources 供播放器切源使用
+   * 3. 不排序码率，按平台数 + 展示优先级排序
+   */
+  private mergeMvResults(fulfilled: SourceResult[]): {
+    results: AggregatedSearchResult[];
+    sourceStats: Record<string, { total: number; latency: number; error?: string; errorType?: string }>;
+  } {
+    const resultMap = new Map<string, AggregatedSearchResult>();
+    const fallbackMap = new Map<string, AggregatedSearchResult>();
+
+    for (const sr of fulfilled) {
+      for (const r of sr.results) {
+        const key = makeMvKey(r.title, r.artist || '', r.duration);
+        let existing: AggregatedSearchResult | undefined = resultMap.get(key);
+
+        if (existing && !isSameMv(existing, r)) {
+          existing = fallbackMap.get(key);
+        }
+
+        if (existing) {
+          // 合并音频源信息（保持兼容）
+          const sourceInfo: AggregatedSearchSource = {
+            sourceId: sr.source.id,
+            sourceName: sr.source.name,
+            maxQuality: sr.source.maxQuality,
+            available: true,
+            sourceSongId: r.sourceSongId,
+          };
+          if (!existing.sources.find((s) => s.sourceId === sr.source.id)) {
+            existing.sources.push(sourceInfo);
+          }
+          // 合并 MV 源信息
+          const mvInfo: MvSourceInfo = {
+            sourceId: sr.source.id,
+            sourceName: sr.source.name,
+            sourceMvId: r.sourceSongId,
+            availableQualities: [],
+          };
+          if (!existing.mvSources) existing.mvSources = [];
+          if (!existing.mvSources.find((s) => s.sourceId === sr.source.id)) {
+            existing.mvSources.push(mvInfo);
+          }
+        } else {
+          const merged: AggregatedSearchResult = {
+            ...r,
+            sources: [{
+              sourceId: sr.source.id,
+              sourceName: sr.source.name,
+              maxQuality: sr.source.maxQuality,
+              available: true,
+              sourceSongId: r.sourceSongId,
+            }],
+            mvSources: [{
+              sourceId: sr.source.id,
+              sourceName: sr.source.name,
+              sourceMvId: r.sourceSongId,
+              availableQualities: [],
+            }],
+          };
+          if (resultMap.has(key)) {
+            fallbackMap.set(key, merged);
+          } else {
+            resultMap.set(key, merged);
+          }
+        }
+      }
+    }
+
+    const results: AggregatedSearchResult[] = [];
+    for (const r of resultMap.values()) {
+      r.sources = sortByDisplayPriority(r.sources);
+      if (r.mvSources) {
+        r.mvSources = sortByDisplayPriority(r.mvSources.map((s) => ({
+          ...s,
+          // 兼容 sortByDisplayPriority 需要的字段
+          maxQuality: Quality.STANDARD,
+          available: true,
+          sourceSongId: s.sourceMvId,
+        }))).map((s) => ({
+          sourceId: s.sourceId,
+          sourceName: s.sourceName,
+          sourceMvId: s.sourceMvId,
+          availableQualities: (s as any).availableQualities || [],
+        }));
+      }
+      // 播放默认指向展示优先级最高的源
+      const playBest = r.sources[0];
+      if (playBest) {
+        r.sourceId = playBest.sourceId;
+        r.sourceSongId = playBest.sourceSongId;
+      }
+      results.push(r);
+    }
+    for (const r of fallbackMap.values()) {
+      r.sources = sortByDisplayPriority(r.sources);
+      if (r.mvSources) {
+        r.mvSources = sortByDisplayPriority(r.mvSources.map((s) => ({
+          ...s,
+          maxQuality: Quality.STANDARD,
+          available: true,
+          sourceSongId: s.sourceMvId,
+        }))).map((s) => ({
+          sourceId: s.sourceId,
+          sourceName: s.sourceName,
+          sourceMvId: s.sourceMvId,
+          availableQualities: (s as any).availableQualities || [],
+        }));
+      }
+      const playBest = r.sources[0];
+      if (playBest) {
+        r.sourceId = playBest.sourceId;
+        r.sourceSongId = playBest.sourceSongId;
+      }
+      results.push(r);
+    }
+
+    // MV 排序：平台数 desc → 展示优先级 asc
+    results.sort((a, b) => {
+      const aSources = a.mvSources?.length || a.sources.length;
+      const bSources = b.mvSources?.length || b.sources.length;
+      if (bSources !== aSources) return bSources - aSources;
+      const aRank = a.sources[0] ? getDisplayRank(a.sources[0].sourceId) : Number.MAX_SAFE_INTEGER;
+      const bRank = b.sources[0] ? getDisplayRank(b.sources[0].sourceId) : Number.MAX_SAFE_INTEGER;
+      return aRank - bRank;
+    });
+
+    const sourceStats = this.buildSourceStats(fulfilled);
+    return { results, sourceStats };
+  }
+
+  private mergeGenericResults(fulfilled: SourceResult[], _searchType: string): {
+    results: AggregatedSearchResult[];
+    sourceStats: Record<string, { total: number; latency: number; error?: string; errorType?: string }>;
+  } {
+    const results: AggregatedSearchResult[] = [];
+
+    for (const sr of fulfilled) {
+      for (const r of sr.results) {
+        results.push({
+          ...r,
+          sources: [{
+            sourceId: sr.source.id,
+            sourceName: sr.source.name,
+            maxQuality: sr.source.maxQuality,
+            available: true,
+            sourceSongId: r.sourceSongId,
+            sizes: r.sizes,
+          }],
+        });
+      }
+    }
+
+    const sourceStats = this.buildSourceStats(fulfilled);
+    return { results, sourceStats };
+  }
+
+  private buildSourceStats(fulfilled: SourceResult[]): Record<string, { total: number; latency: number; error?: string; errorType?: string }> {
     const sourceStats: Record<string, { total: number; latency: number; error?: string; errorType?: string }> = {};
     for (const sr of fulfilled) {
       sourceStats[sr.source.id] = {
@@ -237,12 +438,7 @@ export class SearchEngine {
         errorType: sr.error ? (sr.error.includes('HTTP') ? 'http' : sr.error.includes('网络') || sr.error.includes('CORS') || sr.error.includes('超时') ? 'network' : 'unknown') : undefined,
       };
     }
-
-    void startTime; // 保留时间记录（未使用仅供调试）
-    // 暴露给读代码的人：优先级表当前为 PLATFORM_PRIORITY（去耦）
-    void PLATFORM_PRIORITY;
-
-    return { results, sourceStats };
+    return sourceStats;
   }
 }
 

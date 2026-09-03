@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play } from 'lucide-react';
+import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play, User, Disc, Video } from 'lucide-react';
 import { toast } from '../shared/components/Toast';
 import { useSearchStore } from '../shared/store/searchStore';
 import { searchEngine } from '../core/search';
@@ -9,7 +9,9 @@ import { downloadEngine } from '../core/download';
 import { usePlaylistStore } from '../shared/store/playlistStore';
 import { usePlayHistoryStore } from '../shared/store/playHistoryStore';
 import type { AggregatedSearchResult } from '../core/search';
-import { Quality } from '../core/types';
+import { Quality, type SearchType } from '../core/types';
+import { useMvPlayerStore } from '../shared/store/mvPlayerStore';
+import MvPlayerPage from './MvPlayerPage';
 import SongRow from '../components/song/SongRow';
 import QualitySizeSheet from '../components/song/QualitySizeSheet';
 
@@ -27,7 +29,7 @@ function formatRelativeTime(ts: number): string {
 export default function SearchPage() {
   const {
     keyword, results, isSearching, sourceStats, selectedSources, selectedQuality, searchHistory,
-    setKeyword, setResults, setSearching, setSourceStats, addToHistory, setQuality,
+    setKeyword, setResults, setSearching, setSourceStats, addToHistory, setQuality, searchType, setSearchType,
   } = useSearchStore();
 
   const { playlists, addPlaylist, favorites } = usePlaylistStore();
@@ -52,7 +54,7 @@ export default function SearchPage() {
   // v18: 搜索结果变化时重置分页
   useEffect(() => {
     setDisplayCount(PAGE_SIZE);
-  }, [keyword, results.length]);
+  }, [keyword, results.length, searchType]);
 
   // v16: Intersection Observer 滚动加载更多
   useEffect(() => {
@@ -91,7 +93,7 @@ export default function SearchPage() {
     } finally {
       setSearching(false);
     }
-  }, [inputValue, selectedSources, setKeyword, setSearching, addToHistory, setResults, setSourceStats]);
+  }, [inputValue, selectedSources, searchType, setKeyword, setSearching, addToHistory, setResults, setSourceStats]);
 
   // 支持从首页带词跳转（/search?q=xxx）：进入页面自动搜索一次
   const [searchParams] = useSearchParams();
@@ -105,6 +107,29 @@ export default function SearchPage() {
       void handleSearch(q);
     }
   }, [qParam, handleSearch]);
+
+  // 点击歌手 → 用歌手名搜索歌曲
+  const handleArtistClick = useCallback((result: AggregatedSearchResult) => {
+    if (result.title) {
+      setInputValue(result.title);
+      setSearchType('song');
+      setTimeout(() => handleSearch(), 0);
+    }
+  }, [setSearchType, handleSearch]);
+
+  // 点击专辑 → 用专辑名搜索歌曲
+  const handleAlbumClick = useCallback((result: AggregatedSearchResult) => {
+    if (result.title) {
+      setInputValue(result.title);
+      setSearchType('song');
+      setTimeout(() => handleSearch(), 0);
+    }
+  }, [setSearchType, handleSearch]);
+
+  // v19.2: 点击MV → 应用内播放器打开，支持多源聚合与切源
+  const handleMvClick = useCallback((result: AggregatedSearchResult) => {
+    useMvPlayerStore.getState().openMv(result);
+  }, []);
 
   const handlePlay = async (result: AggregatedSearchResult) => {
     if (!result.sources || result.sources.length === 0) {
@@ -230,6 +255,34 @@ export default function SearchPage() {
         >
           <Filter className="w-4 h-4" />
         </button>
+      </div>
+
+      {/* 搜索类型 Tabs */}
+      <div className="flex gap-1 mb-4 p-1 rounded-xl bg-[var(--bg-tertiary)]">
+        {([
+          { key: 'song' as SearchType, label: '歌曲', icon: Music },
+          { key: 'artist' as SearchType, label: '歌手', icon: User },
+          { key: 'album' as SearchType, label: '专辑', icon: Disc },
+          { key: 'mv' as SearchType, label: 'MV', icon: Video },
+        ]).map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => {
+              setSearchType(key);
+              if (inputValue.trim()) {
+                setTimeout(() => handleSearch(), 0);
+              }
+            }}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-sm rounded-lg transition-colors ${
+              searchType === key
+                ? 'bg-[var(--accent)] text-white font-medium'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            <Icon className="w-4 h-4" />
+            {label}
+          </button>
+        ))}
       </div>
 
       {/* Filters */}
@@ -478,14 +531,103 @@ export default function SearchPage() {
             )}
           </h2>
         )}
-        {results.slice(0, displayCount).map((result) => (
-          <SongRow
-            key={result.id}
-            song={result}
-            onPlay={() => handlePlay(result)}
-            onMore={() => setQualitySheetSong(result)}
-          />
-        ))}
+        {/* 歌曲结果：列表 */}
+        {searchType === 'song' && (
+          <div className="space-y-2">
+            {results.slice(0, displayCount).map((result) => (
+              <SongRow
+                key={result.id}
+                song={result}
+                onPlay={() => handlePlay(result)}
+                onMore={() => setQualitySheetSong(result)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* 歌手结果：网格卡片 */}
+        {searchType === 'artist' && (
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
+            {results.slice(0, displayCount).map((result) => (
+              <button
+                key={result.id}
+                onClick={() => handleArtistClick(result)}
+                className="text-left group focus-ring rounded-2xl"
+              >
+                <div className="aspect-square w-full rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors">
+                  {result.coverUrl ? (
+                    <img src={result.coverUrl} alt={result.title} className="w-full h-full object-cover" loading="lazy" />
+                  ) : (
+                    <User className="w-10 h-10 text-[var(--text-tertiary)]" />
+                  )}
+                </div>
+                <div className="text-sm font-medium truncate text-[var(--text-primary)]">{result.title}</div>
+                {result.subtitle && (
+                  <div className="text-xs text-[var(--text-tertiary)] truncate">{result.subtitle}</div>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* 专辑结果：网格卡片 */}
+        {searchType === 'album' && (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+            {results.slice(0, displayCount).map((result) => (
+              <button
+                key={result.id}
+                onClick={() => handleAlbumClick(result)}
+                className="text-left group focus-ring rounded-2xl"
+              >
+                <div className="aspect-square w-full rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors">
+                  {result.coverUrl ? (
+                    <img src={result.coverUrl} alt={result.title} className="w-full h-full object-cover" loading="lazy" />
+                  ) : (
+                    <Disc className="w-10 h-10 text-[var(--text-tertiary)]" />
+                  )}
+                </div>
+                <div className="text-sm font-medium truncate text-[var(--text-primary)]">{result.title}</div>
+                <div className="text-xs text-[var(--text-tertiary)] truncate">{result.artist || result.subtitle || ''}</div>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* MV结果：网格卡片 */}
+        {searchType === 'mv' && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            {results.slice(0, displayCount).map((result) => (
+              <button
+                key={result.id}
+                onClick={() => handleMvClick(result)}
+                className="text-left group focus-ring rounded-2xl"
+              >
+                <div className="aspect-video w-full rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors relative">
+                  {result.coverUrl ? (
+                    <img src={result.coverUrl} alt={result.title} className="w-full h-full object-cover" loading="lazy" />
+                  ) : (
+                    <Video className="w-10 h-10 text-[var(--text-tertiary)]" />
+                  )}
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+                    <Play className="w-10 h-10 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                  </div>
+                  {result.duration && result.duration > 0 && (
+                    <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px]">
+                      {Math.floor(result.duration / 60)}:{String(result.duration % 60).padStart(2, '0')}
+                    </div>
+                  )}
+                  {result.mvSources && result.mvSources.length > 1 && (
+                    <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px]">
+                      {result.mvSources.length} 源
+                    </div>
+                  )}
+                </div>
+                <div className="text-sm font-medium truncate text-[var(--text-primary)]">{result.title}</div>
+                <div className="text-xs text-[var(--text-tertiary)] truncate">{result.artist || result.subtitle || ''}</div>
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* v16: 滚动加载更多触发器 */}
         {results.length > 0 && (
@@ -517,6 +659,9 @@ export default function SearchPage() {
           onClose={() => setQualitySheetSong(null)}
         />
       )}
+
+      {/* v19.2: MV 播放器 */}
+      <MvPlayerPage />
     </div>
   );
 }

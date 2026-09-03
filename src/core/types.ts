@@ -75,16 +75,18 @@ export interface QualityOption {
 }
 
 // === 搜索相关 ===
+export type SearchType = 'song' | 'album' | 'artist' | 'playlist' | 'mv';
+
 export interface SearchParams {
   keyword: string;
   page?: number;
   pageSize?: number;
-  type?: 'song' | 'album' | 'artist' | 'playlist';
+  type?: SearchType;
 }
 
 export interface SearchResult {
   id: string;
-  type: 'song' | 'album' | 'artist' | 'playlist';
+  type: SearchType;
   title: string;
   subtitle?: string;
   artist?: string;
@@ -98,6 +100,10 @@ export interface SearchResult {
   availableQualities?: Quality[];
   /** 各音质档位文件大小（字节），用于音质弹窗展示 */
   sizes?: TierSizes;
+  /** MV 播放链接（仅 type='mv' 时使用，单源原始链接） */
+  mvUrl?: string;
+  /** MV 多源聚合信息（搜索引擎聚合后填充） */
+  mvSources?: MvSourceInfo[];
 }
 
 export interface SourceAvailability {
@@ -155,6 +161,62 @@ export interface ChartDetail extends Chart {
 }
 
 /** 歌单广场列表项（歌单融合分类用） */
+
+// === MV 画质（v19.2 / v21.0 整合）===
+export type MvQuality = '240p' | '480p' | '720p' | '1080p' | '4k';
+
+export const MV_QUALITY_RANK: Record<MvQuality, number> = {
+  '240p': 1,
+  '480p': 2,
+  '720p': 3,
+  '1080p': 4,
+  '4k': 5,
+};
+
+export const MV_QUALITY_LABELS: Record<MvQuality, string> = {
+  '240p': '标清 240P',
+  '480p': '高清 480P',
+  '720p': '超清 720P',
+  '1080p': '蓝光 1080P',
+  '4k': '4K',
+};
+
+/** MV 画质展示顺序（从高到低） */
+export const MV_QUALITY_ORDER: MvQuality[] = ['4k', '1080p', '720p', '480p', '240p'];
+
+export function mvQualityRank(q: MvQuality): number {
+  return MV_QUALITY_RANK[q] ?? 0;
+}
+
+/** MV 播放地址结果 */
+export interface MvUrlResult {
+  url: string;
+  quality: MvQuality;
+  size?: number;
+  duration?: number;
+}
+
+/** MV 单源信息（聚合后使用） */
+export interface MvSourceInfo {
+  sourceId: string;
+  sourceName: string;
+  sourceMvId: string;
+  /** 该源支持的画质列表（从低到高） */
+  availableQualities: MvQuality[];
+}
+
+/** MV 详情（独立视频播放页使用） */
+export interface MvInfo {
+  id: string;
+  vid: string;
+  title: string;
+  artist?: string;
+  coverUrl?: string;
+  duration?: number;
+  sourceId: string;
+  availableQualities: MvQuality[];
+}
+
 export interface PlaylistSummary {
   id: string;
   title: string;
