@@ -39,7 +39,7 @@ export interface StreamingCallbacks {
 }
 
 interface StreamingOptions {
-  url: string;
+  url?: string;
   headers?: Record<string, string>;
   cacheKey: string;
   format?: string;
@@ -155,7 +155,37 @@ class StreamingAudioPlayer {
     // 开始下载（从缓存已下载的最远位置开始）
     const resumeOffset = this.getResumeOffset();
     this.setState('loading');
+    if (!options.url) {
+      throw new Error('StreamingAudioPlayer.load: url is required for fetch-based playback');
+    }
     await this.fetcher.start(options.url, options.headers, resumeOffset);
+  }
+
+  /**
+   * 加载已解密的完整音频数据并直接播放（用于 CENC 解密后场景）。
+   * 不经过 fetcher，直接将数据写入缓存后播放。
+   */
+  async loadDecryptedData(data: Uint8Array, options: StreamingOptions): Promise<void> {
+    await this.reset();
+
+    this.cacheKey = options.cacheKey;
+    this.mimeType = this.inferMimeType(options.format);
+    this.totalSize = data.length;
+    this.totalDownloaded = data.length;
+
+    // 初始化缓存
+    await streamCacheEngine.init();
+    this.cacheEntry = await streamCacheEngine.getOrCreateEntry(
+      options.cacheKey,
+      options.format || 'mp3'
+    );
+
+    // 写入完整数据到缓存
+    await streamCacheEngine.writeData(options.cacheKey, data);
+    this.cacheEntry = streamCacheEngine.getEntry(options.cacheKey);
+
+    this.setState('loading');
+    await this.playFromCache();
   }
 
   /**
@@ -260,6 +290,10 @@ class StreamingAudioPlayer {
       },
     });
 
+    if (!options.url) {
+      debugLogger.warn('streaming', 'prefetchNext: url is required');
+      return;
+    }
     await this.prefetchFetcher.start(options.url, options.headers, 0);
   }
 

@@ -529,6 +529,10 @@ function parseSenc(data: Uint8Array, box: Mp4Box): SampleEncryption[] {
 
 // ==================== 工具函数 ====================
 
+function readUint16(data: Uint8Array, offset: number): number {
+  return (data[offset] << 8) | data[offset + 1];
+}
+
 function readUint32(data: Uint8Array, offset: number): number {
   return (
     (data[offset] << 24) |

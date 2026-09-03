@@ -7,6 +7,7 @@ import { buildFallbackChain, PLATFORM_DISPLAY_NAMES } from '@core/platformPriori
 import { toast } from '@shared/components/Toast';
 import { deriveRawKey } from '../../utils/crypto/kuwoEkey';
 import { qmc2DecryptBytes } from '../../utils/crypto/qmc2';
+import { decryptCencMp4 } from '@shared/audio/crypto';
 
 /**
  * v16 内容级音频校验：识别防盗占位/加密废数据。
@@ -261,6 +262,25 @@ export class DownloadEngine {
             } else {
               console.warn(
                 '[DownloadEngine] ekey present but key derivation failed; raw bytes go to magic check'
+              );
+            }
+          }
+
+          // 3b-2. CENC 解密（汽水音乐 track.php 返回的加密 MP4 流）
+          if (playUrl.decryptKey) {
+            try {
+              const decrypted = await decryptCencMp4(bytes.buffer, playUrl.decryptKey);
+              bytes = new Uint8Array(decrypted.data);
+              playUrl.format = decrypted.format;
+              console.log(
+                `[DownloadEngine] CENC decrypted: ${decrypted.format}, ${bytes.length} bytes (${trySourceId})`
+              );
+            } catch (cencErr) {
+              console.error(
+                `[DownloadEngine] CENC decrypt failed: ${cencErr instanceof Error ? cencErr.message : String(cencErr)} (${trySourceId})`
+              );
+              throw new Error(
+                `CENC 解密失败: ${cencErr instanceof Error ? cencErr.message : String(cencErr)}`
               );
             }
           }
