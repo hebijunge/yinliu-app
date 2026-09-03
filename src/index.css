@@ -393,6 +393,88 @@ html.dark {
   }
 }
 
+/* ===== Small Screen Adaptation (< 360 dp 或 < 640 px) ===== */
+@media (max-width: 639px) {
+  :root {
+    --text-xs: 0.75rem;   /* 12px */
+    --text-sm: 0.8125rem; /* 13px */
+    --text-base: 0.9375rem;
+    --text-lg: 1.0625rem;
+    --text-xl: 1.125rem;
+    --text-2xl: 1.25rem;
+  }
+
+  /* 全局最小字号兜底 */
+  body {
+    font-size: var(--text-base);
+  }
+
+  /* 按钮最小触控区 40×40 dp */
+  button,
+  [role="button"],
+  a,
+  .yinliu-btn,
+  .yinliu-btn-secondary,
+  select,
+  input,
+  .yinliu-input,
+  [class*="rounded"] {
+    min-height: 40px;
+    min-width: 40px;
+  }
+
+  /* 底部导航栏高度 56 dp，图标 24 dp */
+  .mobile-nav-item {
+    min-height: 56px;
+  }
+  .mobile-nav-item svg {
+    width: 24px;
+    height: 24px;
+  }
+}
+
+/* ===== Extra Small Screen (< 360 dp) ===== */
+@media (max-width: 359px) {
+  :root {
+    --text-xs: 0.75rem;  /* 12px 绝对底线 */
+    --text-sm: 0.75rem;
+    --text-base: 0.875rem;
+  }
+
+  /* 播放页封面高度限制为 40% 视口 */
+  .cover-crossfade {
+    max-height: 40vh !important;
+  }
+}
+
+/* ===== System Gesture Safe Area (边缘 20dp 保护区) ===== */
+.gesture-safe-area {
+  /* 水平方向：边缘 20px 内不响应应用内水平滑动手势 */
+  padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right));
+}
+
+/* 播放页等关键页面的手势保护 */
+.gesture-protected {
+  touch-action: pan-y;
+}
+
+/* 在边缘 20px 区域内禁用水平滑动手势 */
+@supports (padding: max(0px)) {
+  .edge-guard-left,
+  .edge-guard-right {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    width: 20px;
+    z-index: 9999;
+    pointer-events: auto;
+    touch-action: pan-y;
+  }
+  .edge-guard-left { left: 0; }
+  .edge-guard-right { right: 0; }
+}
+
 /* ===== Reduced motion ===== */
 @media (prefers-reduced-motion: reduce) {
   .skeleton-shimmer,

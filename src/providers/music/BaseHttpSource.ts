@@ -1,4 +1,4 @@
-import type { MusicSource, EndpointCandidate } from './types';
+import type { MusicSource, EndpointCandidate, FileSizeResult } from './types';
 import { Quality } from '@core/types';
 import type { SearchParams, SearchResult, PlayUrlResult, SongDetail, HealthStatus } from '@core/types';
 import { YinliuError, ErrorCode, qualityRank } from '@core/types';
@@ -16,6 +16,51 @@ export interface ResolvedCandidate extends EndpointCandidate {
 interface SuccessMemoryEntry {
   candidateKey: string;
   timestamp: number;
+}
+
+/** 取链缓存条目 */
+interface CacheEntry {
+  result: PlayUrlResult;
+  expiresAt: number;
+}
+
+/** 简易 LRU 缓存（取链结果缓存） */
+class PlayUrlCache {
+  private map = new Map<string, CacheEntry>();
+  private readonly maxSize: number;
+
+  constructor(maxSize = 128) {
+    this.maxSize = maxSize;
+  }
+
+  get(key: string): PlayUrlResult | null {
+    const entry = this.map.get(key);
+    if (!entry) return null;
+    // 过期检查
+    if (Date.now() > entry.expiresAt) {
+      this.map.delete(key);
+      return null;
+    }
+    // LRU：移到末尾表示最近使用
+    this.map.delete(key);
+    this.map.set(key, entry);
+    return entry.result;
+  }
+
+  set(key: string, result: PlayUrlResult, ttlMs: number): void {
+    if (this.map.size >= this.maxSize) {
+      // 淘汰最久未使用的
+      const firstKey = this.map.keys().next().value;
+      if (firstKey !== undefined) {
+        this.map.delete(firstKey);
+      }
+    }
+    this.map.set(key, { result, expiresAt: Date.now() + ttlMs });
+  }
+
+  clear(): void {
+    this.map.clear();
+  }
 }
 
 export abstract class BaseHttpSource implements MusicSource {
@@ -38,17 +83,39 @@ export abstract class BaseHttpSource implements MusicSource {
   private static successMemory = new Map<string, SuccessMemoryEntry>();
   /** 全局去重锁：sourceId_songId_quality → 正在进行的 Promise */
   private static pendingLocks = new Map<string, Promise<PlayUrlResult>>();
+  /** 全局取链缓存 */
+  private static playUrlCache = new PlayUrlCache(128);
   /** 成功通道记忆有效期（毫秒） */
   private static readonly MEMORY_TTL = 24 * 60 * 60 * 1000; // 24小时
+  /** 缓存默认 TTL（毫秒）：25 分钟（略低于各源 URL 实际有效期） */
+  private static readonly CACHE_TTL = 25 * 60 * 1000;
+  /** 全局取链超时（毫秒） */
+  private static readonly LINK_RACE_TIMEOUT = 20000;
+  /** 单个候选重试次数 */
+  private static readonly MAX_RETRIES = 2;
+  /** 重试退避基数（毫秒） */
+  private static readonly RETRY_BACKOFF_BASE = 500;
 
-  async getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult> {
+  async getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal): Promise<PlayUrlResult> {
     const lockKey = `${this.id}_${songId}_${quality}`;
 
-    // 去重保护：同曲同音质正在取链中，直接等待已有请求
+    // 1. 缓存命中检查
+    const cached = BaseHttpSource.playUrlCache.get(lockKey);
+    if (cached) {
+      debugLogger.info('player', `取链缓存命中: ${this.id} · ${songId}`, { lockKey, quality });
+      return cached;
+    }
+
+    // 2. 去重保护：同曲同音质正在取链中，直接等待已有请求
     const existing = BaseHttpSource.pendingLocks.get(lockKey);
     if (existing) {
       debugLogger.info('player', `取链去重复用: ${this.id} · ${songId}`, { lockKey });
       return existing;
+    }
+
+    // 外部取消信号优先：已 abort 则直接失败
+    if (signal?.aborted) {
+      throw new YinliuError(ErrorCode.LINK_RACE_FAILED, '取链已取消', 499);
     }
 
     const candidates = this.buildEndpointCandidates(songId, quality);
@@ -56,14 +123,81 @@ export abstract class BaseHttpSource implements MusicSource {
       throw new YinliuError(ErrorCode.LINK_RACE_FAILED, `No endpoints for ${this.id}`, 503);
     }
 
-    const racePromise = this.linkRace(candidates, quality, songId);
+    const racePromise = this.linkRace(candidates, quality, songId, signal);
     BaseHttpSource.pendingLocks.set(lockKey, racePromise);
 
-    racePromise.finally(() => {
-      BaseHttpSource.pendingLocks.delete(lockKey);
-    });
+    racePromise
+      .then((result) => {
+        // 写入缓存（使用 result.expiresAt 或默认 TTL）
+        const ttl = result.expiresAt
+          ? result.expiresAt - Date.now()
+          : BaseHttpSource.CACHE_TTL;
+        if (ttl > 0) {
+          BaseHttpSource.playUrlCache.set(lockKey, result, ttl);
+        }
+      })
+      .catch(() => {
+        // 失败不缓存
+      })
+      .finally(() => {
+        BaseHttpSource.pendingLocks.delete(lockKey);
+      });
 
     return racePromise;
+  }
+
+  /**
+   * 预检该源该音质档的文件大小。
+   * 基于 buildEndpointCandidates 构造的候选端点，对每个候选并发发 HEAD 请求（3秒超时），
+   * 取第一个成功响应的 Content-Length 返回。子类可覆写以提供更精确的大小接口。
+   */
+  async getFileSize(songId: string, quality: Quality, signal?: AbortSignal): Promise<FileSizeResult | null> {
+    try {
+      const candidates = this.buildEndpointCandidates(songId, quality);
+      if (candidates.length === 0) return null;
+
+      const controller = new AbortController();
+      // 外部信号与内部控制器联动
+      if (signal) {
+        signal.addEventListener('abort', () => controller.abort());
+      }
+
+      const promises = candidates.map(async (c): Promise<FileSizeResult | null> => {
+        try {
+          const resp = await platformFetch(c.url, {
+            method: 'HEAD',
+            headers: c.headers,
+            signal: controller.signal,
+            timeout: 3000,
+          });
+          if (!resp.ok) return null;
+          const cl = resp.headers.get('content-length');
+          const size = cl ? parseInt(cl, 10) : 0;
+          if (size > 0) {
+            controller.abort(); // 一成功即取消其余
+            return { size, url: c.url };
+          }
+          return null;
+        } catch {
+          return null;
+        }
+      });
+
+      const results = await Promise.allSettled(promises);
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value) {
+          return r.value;
+        }
+      }
+      return null;
+    } catch (err) {
+      debugLogger.warn('network', `文件大小预检失败 [${this.id}]`, {
+        songId,
+        quality,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   /**
@@ -73,8 +207,10 @@ export abstract class BaseHttpSource implements MusicSource {
    * 2. 成功通道记忆：优先尝试上次成功的候选
    * 3. 每个候选独立 timeout，超时即放弃
    * 4. 支持 POST body
+   * 5. 全局超时保护（20s）
+   * 6. 单候选指数退避重试（最多2次）
    */
-  protected async linkRace(candidates: ResolvedCandidate[], targetQuality: Quality, songId?: string): Promise<PlayUrlResult> {
+  protected async linkRace(candidates: ResolvedCandidate[], targetQuality: Quality, songId?: string, signal?: AbortSignal): Promise<PlayUrlResult> {
     if (candidates.length === 0) {
       throw new YinliuError(ErrorCode.LINK_RACE_FAILED, `No endpoints for ${this.id}`, 503);
     }
@@ -92,15 +228,29 @@ export abstract class BaseHttpSource implements MusicSource {
       ordered = [...prioritized, ...others];
     }
 
-    // 为每个候选创建一个带独立超时和解析的 promise
-    // 一旦成功立即 resolve，失败/超时自动 reject
+    // 为每个候选创建一个带独立超时、解析和重试的 promise
     const candidatePromises = ordered.map((c) =>
-      this.raceOneCandidate(c, targetQuality, songId)
+      this.raceOneCandidateWithRetry(c, targetQuality, songId, signal)
     );
 
-    // 使用 accurate-aware 竞速：accurate 候选一成功立即返回；
-    // inaccurate 候选先成功时继续等待，给 accurate 候选一个竞争窗口。
-    const result = await this.raceWithAccuratePriority(candidatePromises);
+    // 全局超时保护
+    const timeoutPromise = new Promise<PlayUrlResult | null>((_, reject) => {
+      setTimeout(() => {
+        reject(new YinliuError(ErrorCode.LINK_RACE_FAILED, '取链全局超时', 504));
+      }, BaseHttpSource.LINK_RACE_TIMEOUT);
+    });
+
+    // 使用 accurate-aware 竞速
+    const racePromise = this.raceWithAccuratePriority(candidatePromises);
+
+    let result: PlayUrlResult | null = null;
+    try {
+      result = await Promise.race([racePromise, timeoutPromise]);
+    } catch (err) {
+      // 全局超时或竞速全部失败
+      if (err instanceof YinliuError) throw err;
+      throw new YinliuError(ErrorCode.LINK_RACE_FAILED, `Link race failed for ${this.id}`, 503);
+    }
 
     if (result) {
       // 记录成功通道记忆
@@ -120,12 +270,63 @@ export abstract class BaseHttpSource implements MusicSource {
   }
 
   /**
+   * 带重试的单个候选取链：指数退避，最多 MAX_RETRIES 次
+   */
+  private async raceOneCandidateWithRetry(
+    c: ResolvedCandidate,
+    targetQuality: Quality,
+    songId?: string,
+    signal?: AbortSignal
+  ): Promise<(PlayUrlResult & { _candidateKey: string }) | null> {
+    const candidateKey = c.key || c.url;
+    let lastErr: unknown = null;
+
+    for (let attempt = 0; attempt <= BaseHttpSource.MAX_RETRIES; attempt++) {
+      if (signal?.aborted) {
+        debugLogger.info('network', `取链重试取消 [${this.id}]`, { url: candidateKey.slice(0, 80) });
+        return null;
+      }
+
+      if (attempt > 0) {
+        const delay = BaseHttpSource.RETRY_BACKOFF_BASE * Math.pow(2, attempt - 1);
+        debugLogger.info('network', `取链重试 [${this.id}] 第${attempt}次`, {
+          url: candidateKey.slice(0, 80),
+          delay,
+        });
+        await new Promise((res) => setTimeout(res, delay));
+      }
+
+      try {
+        const result = await this.raceOneCandidate(c, targetQuality, songId, signal);
+        if (result) return result;
+      } catch (err) {
+        lastErr = err;
+        // 非网络错误（如 JSON 解析失败）不重试
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('timeout') && !msg.includes('Timeout') && !msg.includes('fetch')) {
+          break;
+        }
+      }
+    }
+
+    if (lastErr) {
+      const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+      debugLogger.warn('network', `取链候选最终失败 [${this.id}]`, {
+        url: candidateKey.slice(0, 80),
+        error: msg,
+      });
+    }
+    return null;
+  }
+
+  /**
    * 单个候选的取链尝试：带独立超时，成功返回 PlayUrlResult，失败/超时返回 null
    */
   private async raceOneCandidate(
     c: ResolvedCandidate,
     targetQuality: Quality,
-    songId?: string
+    songId?: string,
+    signal?: AbortSignal
   ): Promise<(PlayUrlResult & { _candidateKey: string }) | null> {
     const candidateKey = c.key || c.url;
     const timeout = c.timeout || 8000;
@@ -136,6 +337,7 @@ export abstract class BaseHttpSource implements MusicSource {
         headers: c.headers,
         body: c.body as string | undefined,
         redirect: 'follow',
+        signal,
         timeout,
       });
 
@@ -148,12 +350,19 @@ export abstract class BaseHttpSource implements MusicSource {
       } else {
         const contentType = response.headers.get('content-type') || '';
         const contentLength = response.headers.get('content-length');
+        const size = parseInt(contentLength || '0', 10);
+        const inferredBitrate = this.estimateBitrate(contentLength, targetQuality);
+        const inferredQuality = this.inferQualityFromResponse(size, inferredBitrate, contentType, targetQuality);
+        const format = this.detectFormat(contentType, c.url);
+
         result = {
           url: c.url,
-          quality: targetQuality,
-          bitrate: this.estimateBitrate(contentLength, targetQuality),
-          format: this.detectFormat(contentType, c.url),
+          quality: inferredQuality,
+          bitrate: inferredBitrate,
+          format,
           headers: c.headers,
+          // 当推断音质低于目标音质时，标记为降级结果（accurate: false）
+          accurate: qualityRank(inferredQuality) >= qualityRank(targetQuality) ? true : false,
         };
       }
 
@@ -172,8 +381,44 @@ export abstract class BaseHttpSource implements MusicSource {
       if (msg.includes('timeout') || msg.includes('Timeout')) {
         debugLogger.warn('network', `取链候选超时 [${this.id}]`, { url: candidateKey.slice(0, 80), timeout });
       }
-      return null;
+      throw err; // 向上抛出让重试逻辑捕获
     }
+  }
+
+  /**
+   * 从响应推断实际音质：基于文件大小、码率和 Content-Type。
+   * 当无法准确推断时，回退到目标音质（保守策略）。
+   */
+  protected inferQualityFromResponse(
+    contentLength: number,
+    bitrate: number,
+    contentType: string,
+    targetQuality: Quality
+  ): Quality {
+    // 无损格式优先判定
+    const isLossless = contentType.includes('flac') || contentType.includes('x-flac') || contentType.includes('ape');
+    if (isLossless) {
+      if (bitrate >= 1500) return Quality.LOSSLESS;
+      // 小体积 flac 可能是降级或试听
+      return Quality.HIGH;
+    }
+
+    // 按码率推断
+    if (bitrate >= 800) return Quality.LOSSLESS;
+    if (bitrate >= 250) return Quality.HIGH;
+    if (bitrate >= 96) return Quality.STANDARD;
+    if (bitrate >= 32) return Quality.LOW;
+
+    // 按文件大小推断（3分钟歌曲）
+    if (contentLength > 0) {
+      if (contentLength > 15_000_000) return Quality.LOSSLESS; // > 15MB
+      if (contentLength > 5_000_000) return Quality.HIGH;      // > 5MB
+      if (contentLength > 1_500_000) return Quality.STANDARD;  // > 1.5MB
+      if (contentLength > 500_000) return Quality.LOW;         // > 500KB
+    }
+
+    // 无法推断时保守回退到目标音质（避免误杀）
+    return targetQuality;
   }
 
   /**
@@ -298,11 +543,10 @@ export abstract class BaseHttpSource implements MusicSource {
 
   protected validateQuality(result: PlayUrlResult, target: Quality): boolean {
     if (!result.url) return false;
-    // 音质等级校验
-    if (qualityRank(result.quality) < qualityRank(target)) return false;
-    // 若子类已标记 accurate，直接信任；accurate === false 作为降级链保留，
-    // 由 raceWithAccuratePriority 在竞速层做优先级排序，不在此处直接拒绝。
+    // 若子类已标记 accurate=true，直接信任
     if (result.accurate === true) return true;
+    // accurate === false 表示降级结果，保留给竞速层做 fallback，不做严格拦截
+    if (result.accurate === false) return true;
     // 未标记时，做保守的码率/格式兜底校验
     return this.validateBitrateAndFormat(result.bitrate, result.format, target);
   }
@@ -323,7 +567,7 @@ export abstract class BaseHttpSource implements MusicSource {
 
   /**
    * 请求音质 → 期望 (bitrate, format)。
-   * 子类覆写以适配各源的实际档位。
+   * 子类可覆写以适配各源的实际档位。
    */
   protected qualityExpectation(quality: Quality): [number, string] | null {
     switch (quality) {
@@ -364,21 +608,7 @@ export abstract class BaseHttpSource implements MusicSource {
 
   protected estimateBitrate(contentLength: string | null, quality: Quality): number {
     const size = parseInt(contentLength || '0', 10);
-    if (size === 0) {
-      // 无content-length时按quality估算
-      const map: Record<Quality, number> = {
-        [Quality.LOW]: 48,
-        [Quality.STANDARD]: 128,
-        [Quality.HIGHER]: 192,
-        [Quality.HIGH]: 320,
-        [Quality.LOSSLESS]: 1000,
-        [Quality.HIRES]: 1800,
-        [Quality.SKY]: 2400,
-        [Quality.JYEFFECT]: 2400,
-        [Quality.HIFI]: 3000,
-      };
-      return map[quality] || 128;
-    }
+    if (size === 0) return this.qualityToExpectedBitrate(quality);
     const kbps = Math.round((size * 8) / (3 * 60 * 1000));
     return kbps;
   }

@@ -12,6 +12,11 @@ import type {
   QualityOption,
 } from '@core/types';
 
+export interface FileSizeResult {
+  size: number;
+  url?: string;
+}
+
 export interface MusicSource {
   readonly id: string;
   readonly name: string;
@@ -19,7 +24,7 @@ export interface MusicSource {
   enabled: boolean;
 
   search(params: SearchParams): Promise<SearchResult[]>;
-  getPlayUrl(songId: string, quality: Quality): Promise<PlayUrlResult>;
+  getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal): Promise<PlayUrlResult>;
   getSongDetail(songId: string): Promise<SongDetail>;
   getLyrics?(songId: string): Promise<string | null>;
   getPlaylist?(playlistId: string): Promise<PlaylistDetail>;
@@ -31,6 +36,12 @@ export interface MusicSource {
   /** 获取歌曲在各音质档位的可选下载项（用于音质弹窗；无则回退搜索结果里的 sizes） */
   getQualityOptions?(songId: string): Promise<QualityOption[]>;
   healthCheck(): Promise<HealthStatus>;
+  /**
+   * 预检该源该音质档的文件大小。
+   * 默认实现基于 buildEndpointCandidates 做 HEAD 探测，取第一个成功候选的 Content-Length。
+   * 子类可覆写以提供更精确的大小接口调用。
+   */
+  getFileSize?(songId: string, quality: Quality, signal?: AbortSignal): Promise<FileSizeResult | null>;
 }
 
 export interface EndpointCandidate {

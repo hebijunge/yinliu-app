@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { PlayerTrack, PlayerState } from '@core/player';
 import { Quality } from '@core/types';
 import { useSettingsStore } from './settingsStore';
+import { playerEngine } from '@core/player';
 
 export type RepeatMode = 'sequence' | 'repeat-all' | 'repeat-one' | 'shuffle';
 
@@ -70,7 +71,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   queue: [],
   currentIndex: -1,
 
-  repeatMode: 'sequence',
+  repeatMode: useSettingsStore.getState().repeatMode,
 
   setState: (state) => set({ state }),
   setTrack: (currentTrack) => set({ currentTrack }),
@@ -88,21 +89,26 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   toggleMute: () => set((s) => ({ isMuted: !s.isMuted })),
 
 
-  setQueue: (queue, index = 0) =>
+  setQueue: (queue, index = 0) => {
+    const currentIndex = index >= 0 && index < queue.length ? index : queue.length > 0 ? 0 : -1;
+    playerEngine.setQueue(queue, currentIndex);
     set({
       queue,
-      currentIndex: index >= 0 && index < queue.length ? index : queue.length > 0 ? 0 : -1,
+      currentIndex,
       currentTrack: queue[index] ?? queue[0] ?? null,
-    }),
+    });
+  },
 
   addToQueue: (track) =>
     set((s) => {
       const exists = s.queue.findIndex((t) => t.id === track.id);
       if (exists !== -1) return s; // Already in queue
       const queue = [...s.queue, track];
+      const currentIndex = s.currentIndex === -1 ? 0 : s.currentIndex;
+      playerEngine.setQueue(queue, currentIndex);
       return {
         queue,
-        currentIndex: s.currentIndex === -1 ? 0 : s.currentIndex,
+        currentIndex,
         currentTrack: s.currentTrack ?? queue[0],
       };
     }),
@@ -116,6 +122,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
       } else if (index === s.currentIndex) {
         currentIndex = Math.min(s.currentIndex, queue.length - 1);
       }
+      playerEngine.setQueue(queue, currentIndex);
       return {
         queue,
         currentIndex,
@@ -137,24 +144,35 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
       } else if (from > s.currentIndex && to <= s.currentIndex) {
         currentIndex = s.currentIndex + 1;
       }
+      playerEngine.setQueue(queue, currentIndex);
       return { queue, currentIndex };
     }),
 
-  clearQueue: () => set({ queue: [], currentIndex: -1, currentTrack: null }),
+  clearQueue: () => {
+    playerEngine.setQueue([], -1);
+    set({ queue: [], currentIndex: -1, currentTrack: null });
+  },
 
   playTrackAtIndex: (index) =>
-    set((s) => ({
-      currentIndex: index,
-      currentTrack: s.queue[index] ?? null,
-    })),
+    set((s) => {
+      playerEngine.setQueue(s.queue, index);
+      return {
+        currentIndex: index,
+        currentTrack: s.queue[index] ?? null,
+      };
+    }),
 
   cycleRepeatMode: () =>
     set((s) => {
       const order: RepeatMode[] = ['sequence', 'repeat-all', 'repeat-one', 'shuffle'];
       const idx = order.indexOf(s.repeatMode);
       const next = order[(idx + 1) % order.length];
+      useSettingsStore.getState().setRepeatMode(next);
       return { repeatMode: next };
     }),
 
-  setRepeatMode: (repeatMode) => set({ repeatMode }),
+  setRepeatMode: (repeatMode) => {
+    useSettingsStore.getState().setRepeatMode(repeatMode);
+    set({ repeatMode });
+  },
 }));

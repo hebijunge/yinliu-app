@@ -116,7 +116,8 @@ function App() {
       usePlayerStore.getState().setProgress(currentTime, duration);
     });
     const unsub3 = playerEngine.on('ended', () => {
-      // Auto-play next logic would go here
+      // 自动播放下一首（按当前播放模式）
+      void playerEngine.playNext();
     });
     const unsub3b = playerEngine.on('trackLoaded', ({ track, actualSourceId }) => {
       usePlayerStore.getState().setTrack(track || null);

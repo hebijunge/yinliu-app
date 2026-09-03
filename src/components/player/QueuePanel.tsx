@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import { X, Trash2, ChevronUp, ChevronDown, Play } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { X, Trash2, ChevronUp, ChevronDown, Play, GripVertical } from 'lucide-react';
 import { usePlayerStore } from '../../shared/store/playerStore';
 import { playerEngine } from '../../core/player';
 
@@ -11,6 +11,8 @@ export default function QueuePanel({ onClose }: Props) {
   const { queue, currentIndex } = usePlayerStore();
   const scrollRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   // Auto-scroll to current track
   useEffect(() => {
@@ -56,6 +58,36 @@ export default function QueuePanel({ onClose }: Props) {
     usePlayerStore.getState().clearQueue();
   };
 
+  const handleDragStart = (index: number) => {
+    setDragIndex(index);
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (dragIndex === null || dragIndex === index) return;
+    setDragOverIndex(index);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverIndex(null);
+  };
+
+  const handleDrop = (index: number) => {
+    if (dragIndex === null || dragIndex === index) {
+      setDragIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+    usePlayerStore.getState().moveQueueItem(dragIndex, index);
+    setDragIndex(null);
+    setDragOverIndex(null);
+  };
+
+  const handleDragEnd = () => {
+    setDragIndex(null);
+    setDragOverIndex(null);
+  };
+
   return (
     <div className="fixed inset-x-0 bottom-0 z-[60] bg-[var(--bg-secondary)] rounded-t-[2rem] shadow-lg border-t border-[var(--border-subtle)] max-h-[70vh] flex flex-col">
       {/* Header */}
@@ -97,22 +129,32 @@ export default function QueuePanel({ onClose }: Props) {
                 <div
                   key={`${track.id}-${index}`}
                   ref={(el) => { itemRefs.current[index] = el; }}
+                  draggable={!isCurrent}
+                  onDragStart={() => handleDragStart(index)}
+                  onDragOver={(e) => handleDragOver(e, index)}
+                  onDragLeave={handleDragLeave}
+                  onDrop={() => handleDrop(index)}
+                  onDragEnd={handleDragEnd}
                   className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${
                     isCurrent
                       ? 'bg-[var(--accent-soft)]'
+                      : dragOverIndex === index
+                      ? 'bg-[var(--accent-soft)]/50'
                       : 'hover:bg-[var(--bg-tertiary)]'
-                  }`}
+                  } ${dragIndex === index ? 'opacity-50' : ''}`}
                 >
-                  {/* Index / Playing indicator */}
+                  {/* Drag handle / Index / Playing indicator */}
                   <div className="w-6 flex-shrink-0 text-center">
-                    {isCurrent ? (
+                    {!isCurrent ? (
+                      <div className="flex items-center justify-center h-4 cursor-grab active:cursor-grabbing" title="拖动排序">
+                        <GripVertical className="w-3.5 h-3.5 text-[var(--text-tertiary)]" />
+                      </div>
+                    ) : (
                       <div className="flex items-end justify-center gap-[2px] h-4">
                         <span className="w-[3px] bg-[var(--accent)] rounded-full animate-[bounce_0.6s_ease-in-out_infinite]" style={{ height: '40%', animationDelay: '0ms' }} />
                         <span className="w-[3px] bg-[var(--accent)] rounded-full animate-[bounce_0.6s_ease-in-out_infinite]" style={{ height: '70%', animationDelay: '150ms' }} />
                         <span className="w-[3px] bg-[var(--accent)] rounded-full animate-[bounce_0.6s_ease-in-out_infinite]" style={{ height: '50%', animationDelay: '300ms' }} />
                       </div>
-                    ) : (
-                      <span className="text-xs text-[var(--text-tertiary)] tabular-nums">{index + 1}</span>
                     )}
                   </div>
 

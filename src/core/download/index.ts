@@ -225,7 +225,7 @@ export class DownloadEngine {
         this.abortControllers.set(taskId, abortCtrl);
 
         try {
-          const playUrl = await source.getPlayUrl(trySongId, task.quality);
+          const playUrl = await source.getPlayUrl(trySongId, task.quality, abortCtrl.signal);
           if (i > 0) {
             // 有降级：提示用户
             const fromName = PLATFORM_DISPLAY_NAMES[chain[i - 1]] || chain[i - 1];

@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
-  ListMusic, Mic2, Download, Repeat, Repeat1, Shuffle,
+  ListMusic, Mic2, Download, Repeat, Repeat1, Shuffle, Heart,
 } from 'lucide-react';
 import { usePlayerStore } from '../../shared/store/playerStore';
+import { usePlaylistStore } from '../../shared/store/playlistStore';
 import { playerEngine } from '../../core/player';
 import { lyricsManager } from '../../modules/music/lyrics';
 import { downloadEngine } from '../../core/download';
@@ -88,9 +89,24 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
     );
   }, [currentTrack]);
 
+  const { toggleFavorite, favorites } = usePlaylistStore();
+  const isFav = currentTrack ? favorites.has(currentTrack.sourceSongId) : false;
+
   const handlePrev = () => playerEngine.playPrevious();
   const handleNext = () => playerEngine.playNext();
   const handleCycleMode = () => usePlayerStore.getState().cycleRepeatMode();
+
+  const handleToggleFavorite = useCallback(() => {
+    if (!currentTrack) return;
+    const song = {
+      songId: currentTrack.sourceSongId,
+      title: currentTrack.title,
+      artist: currentTrack.artist,
+      source: currentTrack.sourceId,
+      quality: 'standard',
+    };
+    void toggleFavorite(song);
+  }, [currentTrack, toggleFavorite]);
 
   const ModeIcon = MODE_ICONS[repeatMode];
 
@@ -157,20 +173,25 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
           isLandscape ? 'py-3.5 landscape-player' : 'py-2.5'
         }`}
       >
-        {/* Progress bar */}
+        {/* Progress bar — 44px 触控热区 */}
         <div
-          className="w-full h-[3px] bg-[var(--bg-tertiary)] rounded-full mb-2.5 cursor-pointer group relative"
+          className="w-full rounded-full mb-1 cursor-pointer group relative"
+          style={{ height: '44px', display: 'flex', alignItems: 'center' }}
           onClick={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
+            const bar = e.currentTarget.querySelector('.progress-visual-bar') as HTMLElement;
+            if (!bar) return;
+            const rect = bar.getBoundingClientRect();
             const percent = (e.clientX - rect.left) / rect.width;
             playerEngine.seek(percent * duration);
           }}
         >
-          <div
-            className="h-full bg-[var(--accent)] rounded-full group-hover:bg-[var(--accent-hover)] progress-bar-smooth relative"
-            style={{ width: `${progressPercent}%` }}
-          >
-            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full border-2 border-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity" />
+          <div className="w-full h-[3px] bg-[var(--bg-tertiary)] rounded-full progress-visual-bar relative">
+            <div
+              className="h-full bg-[var(--accent)] rounded-full group-hover:bg-[var(--accent-hover)] progress-bar-smooth relative"
+              style={{ width: `${progressPercent}%` }}
+            >
+              <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 bg-white rounded-full border-2 border-[var(--accent)] opacity-0 group-hover:opacity-100 transition-opacity" />
+            </div>
           </div>
         </div>
 
@@ -211,6 +232,18 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
                 )}
               </div>
             </div>
+            {/* 收藏按钮 */}
+            {currentTrack && (
+              <button
+                onClick={handleToggleFavorite}
+                className={`p-2 rounded-full hover:bg-[var(--bg-tertiary)] transition-colors focus-ring ${
+                  isFav ? 'text-red-500' : 'text-[var(--text-tertiary)]'
+                }`}
+                title={isFav ? '取消收藏' : '收藏'}
+              >
+                <Heart className={`w-4 h-4 ${isFav ? 'fill-current' : ''}`} />
+              </button>
+            )}
           </div>
 
           {/* Main Controls — 上一首/播放/下一首 — 始终显示 */}

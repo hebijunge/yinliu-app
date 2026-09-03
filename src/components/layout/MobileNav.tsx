@@ -11,19 +11,20 @@ export default function MobileNav() {
 
   return (
     <nav className="bg-[var(--bg-secondary)] border-t border-[var(--border)] px-2 pb-safe">
-      <div className="flex justify-around items-center h-14">
+      <div className="flex justify-around items-center" style={{ minHeight: '56px' }}>
         {items.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             end={item.to === '/'}
             className={({ isActive }) =>
-              `flex flex-col items-center justify-center gap-0.5 flex-1 py-1 ${
+              `mobile-nav-item flex flex-col items-center justify-center gap-0.5 flex-1 py-1 ${
                 isActive ? 'text-[var(--accent)]' : 'text-[var(--text-tertiary)]'
               }`
             }
+            style={{ minHeight: '56px' }}
           >
-            <item.icon className="w-5 h-5" />
+            <item.icon className="mobile-nav-icon w-5 h-5" />
             <span className="text-[10px]">{item.label}</span>
           </NavLink>
         ))}

@@ -89,6 +89,8 @@ export class PlayerEngine {
   private prefetchCache = new Map<string, { url: string; result: PlayUrlResult; actualSourceId: string }>();
   // v14.5: 播放去重 —— 当前正在进行的 resolvePlayUrl Promise
   private resolvePlayUrlPromise: Promise<{ url: string; isLocal: boolean; result: PlayUrlResult; actualSourceId: string }> | null = null;
+  // v20.1-fix: 切歌取消旧取链 AbortController
+  private playAbortController: AbortController | null = null;
 
   private emit<K extends keyof PlayerEventMap>(event: K, data: PlayerEventMap[K]) {
     const callbacks = this.listeners[event] || [];
@@ -319,7 +321,7 @@ export class PlayerEngine {
       const trySongId = sourceSongIdMap.get(trySourceId) || track.sourceSongId;
 
       try {
-        const playUrl = await source.getPlayUrl(trySongId, quality);
+        const playUrl = await source.getPlayUrl(trySongId, quality, this.playAbortController?.signal);
         if (i > 0) {
           const fromName = PLATFORM_DISPLAY_NAMES[chain[i - 1]] || chain[i - 1];
           const toName = PLATFORM_DISPLAY_NAMES[trySourceId] || trySourceId;
@@ -375,6 +377,13 @@ export class PlayerEngine {
     this.currentTrack = track;
     this.setState('loading');
     this.prefetchTriggered = false;
+
+    // v20.1-fix: 取消上一首的取链请求（快速切歌）
+    if (this.playAbortController) {
+      this.playAbortController.abort();
+      debugLogger.info('player', `切歌取消旧取链: ${track.title}`);
+    }
+    this.playAbortController = new AbortController();
 
     // v16: 切歌后立即预加载下一首
     this.schedulePrefetchNext();
@@ -761,32 +770,100 @@ export class PlayerEngine {
   }
 
   async playNext(): Promise<void> {
-    const nextIndex = this.currentIndex + 1;
-    if (nextIndex >= 0 && nextIndex < this.queue.length) {
-      this.currentIndex = nextIndex;
-      try {
-        await this.playTrack(this.queue[nextIndex], this.lastQuality);
-      } catch {
-        // 错误已由 error 事件上报
-      }
-    } else {
+    const store = (await import('../../shared/store/playerStore')).usePlayerStore.getState();
+    const { queue, currentIndex, repeatMode } = store;
+    if (queue.length === 0) {
       this.stop();
+      return;
+    }
+
+    let nextIndex: number;
+    switch (repeatMode) {
+      case 'repeat-one':
+        nextIndex = currentIndex;
+        break;
+      case 'shuffle': {
+        // 随机选一首不同于当前的（如果队列长度>1）
+        if (queue.length > 1) {
+          do {
+            nextIndex = Math.floor(Math.random() * queue.length);
+          } while (nextIndex === currentIndex);
+        } else {
+          nextIndex = currentIndex;
+        }
+        break;
+      }
+      case 'repeat-all':
+        nextIndex = currentIndex + 1;
+        if (nextIndex >= queue.length) nextIndex = 0;
+        break;
+      case 'sequence':
+      default:
+        nextIndex = currentIndex + 1;
+        if (nextIndex >= queue.length) {
+          this.stop();
+          return;
+        }
+        break;
+    }
+
+    // 同步到 store 和 engine
+    this.currentIndex = nextIndex;
+    store.playTrackAtIndex(nextIndex);
+    try {
+      await this.playTrack(queue[nextIndex], this.lastQuality);
+    } catch {
+      // 错误已由 error 事件上报
     }
   }
 
   async playPrevious(): Promise<void> {
-    if (this.audio && this.audio.currentTime > 3) {
+    const store = (await import('../../shared/store/playerStore')).usePlayerStore.getState();
+    const { queue, currentIndex, repeatMode } = store;
+    if (queue.length === 0) return;
+
+    // 播放进度超过 3 秒时，先回到开头
+    const currentTime = this.getCurrentTime();
+    if (currentTime > 3 && repeatMode !== 'shuffle') {
       this.seek(0);
       return;
     }
-    const prevIndex = this.currentIndex - 1;
-    if (prevIndex >= 0 && prevIndex < this.queue.length) {
-      this.currentIndex = prevIndex;
-      try {
-        await this.playTrack(this.queue[prevIndex], this.lastQuality);
-      } catch {
-        // 错误已由 error 事件上报
+
+    let prevIndex: number;
+    switch (repeatMode) {
+      case 'repeat-one':
+        prevIndex = currentIndex;
+        break;
+      case 'shuffle': {
+        if (queue.length > 1) {
+          do {
+            prevIndex = Math.floor(Math.random() * queue.length);
+          } while (prevIndex === currentIndex);
+        } else {
+          prevIndex = currentIndex;
+        }
+        break;
       }
+      case 'repeat-all':
+        prevIndex = currentIndex - 1;
+        if (prevIndex < 0) prevIndex = queue.length - 1;
+        break;
+      case 'sequence':
+      default:
+        prevIndex = currentIndex - 1;
+        if (prevIndex < 0) {
+          this.seek(0);
+          return;
+        }
+        break;
+    }
+
+    this.currentIndex = prevIndex;
+    store.playTrackAtIndex(prevIndex);
+    try {
+      await this.playTrack(queue[prevIndex], this.lastQuality);
+    } catch {
+      // 错误已由 error 事件上报
     }
   }
 

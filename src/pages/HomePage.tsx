@@ -166,30 +166,33 @@ export default function HomePage() {
     };
   }, [triggerRefresh]);
 
-  const handlePlay = async (result: AggregatedSearchResult) => {
+  const handlePlay = async (result: AggregatedSearchResult, preferredSourceId?: string) => {
     if (!result.sources || result.sources.length === 0) {
       toast.error('暂无可用音源', '该歌曲在所有平台均无播放链接');
       return;
     }
+    // 若指定了优先源，从该源播放
+    const targetSource = preferredSourceId
+      ? result.sources.find((s) => s.sourceId === preferredSourceId)
+      : undefined;
+    const sourceId = targetSource?.sourceId ?? result.sourceId;
+    const sourceSongId = targetSource?.sourceSongId ?? result.sourceSongId;
     try {
-      await playerEngine.playTrack(
-        {
-          id: result.id,
-          title: result.title,
-          artist: result.artist,
-          album: result.album,
-          coverUrl: result.coverUrl,
-          duration: result.duration,
-          sourceId: result.sourceId,
-          sourceSongId: result.sourceSongId,
-          uri: `stream://${result.sourceId}/${result.sourceSongId}`,
-          availableSources: result.sources.map((s) => ({
-            sourceId: s.sourceId,
-            sourceSongId: s.sourceSongId,
-          })),
-        },
-        selectedQuality
-      );
+      await playerEngine.playTrack({
+        id: result.id,
+        title: result.title,
+        artist: result.artist,
+        album: result.album,
+        coverUrl: result.coverUrl,
+        duration: result.duration,
+        sourceId,
+        sourceSongId,
+        uri: `stream://${sourceId}/${sourceSongId}`,
+        availableSources: result.sources.map((s) => ({
+          sourceId: s.sourceId,
+          sourceSongId: s.sourceSongId,
+        })),
+      }, selectedQuality);
     } catch (err) {
       const msg = err instanceof Error ? err.message : '播放失败';
       toast.error('播放失败', msg);

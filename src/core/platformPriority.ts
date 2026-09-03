@@ -46,14 +46,16 @@ export const PLATFORM_SHORT_NAMES: Record<string, string> = {
 /** 平台缩写别名（components/common 等处复用） */
 export const PLATFORM_ABBREVS: Record<string, string> = PLATFORM_SHORT_NAMES;
 
-/** 平台品牌色（搜索结果徽章、设置页徽标复用） */
+/** 平台品牌色（搜索结果徽章、设置页徽标复用）
+ * 使用 600 色阶确保白字对比度 ≥ 4.5:1（WCAG AA）
+ */
 export const PLATFORM_COLORS: Record<string, string> = {
-  qishui: 'bg-zinc-800',
-  kuwo: 'bg-blue-500',
-  migu: 'bg-orange-500',
-  netease: 'bg-red-500',
-  qq: 'bg-green-500',
-  kugou: 'bg-cyan-500',
+  kuwo: 'bg-blue-600',
+  migu: 'bg-amber-700',
+  netease: 'bg-red-600',
+  kugou: 'bg-cyan-600',
+  qq: 'bg-green-600',
+  qishui: 'bg-purple-600',
 };
 
 /** 取某平台的播放优先级序号（0 = 最高；不存在于表内则返回 Number.MAX_SAFE_INTEGER） */

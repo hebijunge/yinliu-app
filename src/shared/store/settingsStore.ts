@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { Quality } from '@core/types';
 import { downloadEngine } from '@core/download';
 import { debugLogger } from '@shared/utils/debugLogger';
+import type { RepeatMode } from './playerStore';
 
 const STORAGE_KEY = 'yinliu.settings.v1';
 
@@ -28,6 +29,8 @@ export interface SettingsPersisted {
   carMode?: boolean;
   /** Android 桌面悬浮歌词开关 */
   enableFloatingLyrics?: boolean;
+  /** 播放模式：顺序/列表循环/单曲循环/随机 */
+  repeatMode?: RepeatMode;
 }
 
 function loadPersisted(): SettingsPersisted {
@@ -53,6 +56,7 @@ function persist(state: SettingsState): void {
       debugMode: state.debugMode,
       carMode: state.carMode,
       enableFloatingLyrics: state.enableFloatingLyrics,
+      repeatMode: state.repeatMode,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch {
@@ -83,6 +87,8 @@ interface SettingsState {
   carMode: boolean;
   /** Android 桌面悬浮歌词开关 */
   enableFloatingLyrics: boolean;
+  /** 播放模式：顺序/列表循环/单曲循环/随机 */
+  repeatMode: RepeatMode;
 
   setPreferredQuality: (quality: Quality) => void;
   setSourceEnabled: (sourceId: string, enabled: boolean) => void;
@@ -94,6 +100,7 @@ interface SettingsState {
   setDebugMode: (enabled: boolean) => void;
   setCarMode: (enabled: boolean) => void;
   setFloatingLyricsEnabled: (enabled: boolean) => void;
+  setRepeatMode: (mode: RepeatMode) => void;
   clearAllSettings: () => void;
 }
 
@@ -111,6 +118,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   debugMode: persisted.debugMode ?? false,
   carMode: persisted.carMode ?? false,
   enableFloatingLyrics: persisted.enableFloatingLyrics ?? false,
+  repeatMode: persisted.repeatMode ?? 'sequence',
 
   setPreferredQuality: (preferredQuality) => {
     set({ preferredQuality });
@@ -165,6 +173,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     persist(get());
   },
 
+  setRepeatMode: (repeatMode: RepeatMode) => {
+    set({ repeatMode });
+    persist(get());
+  },
+
   clearAllSettings: () => {
     try {
       localStorage.removeItem(STORAGE_KEY);
@@ -182,6 +195,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       debugMode: false,
       carMode: false,
       enableFloatingLyrics: false,
+      repeatMode: 'sequence',
     });
     debugLogger.setEnabled(false);
   },
