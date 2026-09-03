@@ -595,6 +595,51 @@ export class DownloadEngine {
     console.log('[DownloadEngine] setDefaultQuality:', quality);
   }
 
+  // === 播放本地已下载文件 ===
+  async playLocalFile(taskId: string): Promise<string> {
+    const task = this.tasks.get(taskId);
+    if (!task || task.status !== 'completed') {
+      throw new Error(`Task ${taskId} not found or not completed`);
+    }
+    if (!task.filePath) {
+      throw new Error(`Task ${taskId} has no local file path`);
+    }
+    return this.readLocalFileAsUrl(task.filePath);
+  }
+
+  // === 清空所有已完成任务 ===
+  async clearCompleted(): Promise<number> {
+    const completed = this.getTasks().filter((t) => t.status === 'completed');
+    let removed = 0;
+    for (const task of completed) {
+      try {
+        if (task.filePath) {
+          await Filesystem.deleteFile({
+            path: task.filePath,
+            directory: Directory.Data,
+          });
+        }
+      } catch {
+        // 文件可能已被手动删除
+      }
+      this.tasks.delete(task.id);
+      this.taskMeta.delete(task.id);
+      removed++;
+    }
+    // 批量从数据库删除
+    if (removed > 0) {
+      try {
+        const sqliteDb = getSqliteDb();
+        sqliteDb.run("DELETE FROM downloads WHERE status = 'completed'");
+        await flushDatabase();
+      } catch (err) {
+        console.error('[DownloadEngine] clearCompleted DB delete failed:', err);
+      }
+    }
+    this.emit('stateChange', { type: 'bulkClear', count: removed });
+    return removed;
+  }
+
   // === 检查本地文件是否存在 ===
   async checkLocalFile(filePath: string): Promise<boolean> {
     try {
