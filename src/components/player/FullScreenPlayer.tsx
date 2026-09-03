@@ -102,7 +102,7 @@ export default function FullScreenPlayer({ onClose }: Props) {
       title: currentTrack.title,
       artist: currentTrack.artist,
       source: currentTrack.sourceId,
-      quality: 'standard',
+      quality: currentQuality,
     };
     void toggleFavorite(song);
   }, [currentTrack, toggleFavorite]);

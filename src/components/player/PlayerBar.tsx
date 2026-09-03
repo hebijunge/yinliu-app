@@ -34,7 +34,7 @@ const MODE_LABELS: Record<RepeatMode, string> = {
 };
 
 export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
-  const { state, currentTrack, currentTime, duration, volume, isMuted, queue, repeatMode, actualSourceId } = usePlayerStore();
+  const { state, currentTrack, currentTime, duration, volume, isMuted, queue, repeatMode, actualSourceId, currentQuality } = usePlayerStore();
   // 全屏播放页开关提升到全局 store：Android 返回键需要跨组件读取并关闭播放页
   const showFullScreen = usePlayerStore((s) => s.fullscreenOpen);
   const setShowFullScreen = usePlayerStore((s) => s.setFullscreenOpen);
@@ -103,7 +103,7 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
       title: currentTrack.title,
       artist: currentTrack.artist,
       source: currentTrack.sourceId,
-      quality: 'standard',
+      quality: currentQuality,
     };
     void toggleFavorite(song);
   }, [currentTrack, toggleFavorite]);
