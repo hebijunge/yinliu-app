@@ -75,6 +75,15 @@ export class DownloadEngine {
   /** 任务元数据：除 DownloadTask 之外，记住每条任务的可用源/降级链（仅内存，DB 不持久化） */
   private taskMeta = new Map<string, { availableSources?: Array<{ sourceId: string; sourceSongId: string }>; title?: string; artist?: string }>();
 
+  /** 最大并发下载数 */
+  private maxConcurrent = 3;
+  /** 等待调度的任务队列 */
+  private pendingQueue: string[] = [];
+  /** 默认下载音质 */
+  private defaultQuality: Quality = 'standard';
+  /** 防止 scheduleNext 重入 */
+  private scheduling = false;
+
   private emit(event: string, data: unknown) {
     const callbacks = this.listeners[event] || [];
     callbacks.forEach((cb) => cb(data));
@@ -176,12 +185,44 @@ export class DownloadEngine {
     return task;
   }
 
+  // === 当前正在下载的任务数 ===
+  private getActiveCount(): number {
+    return Array.from(this.tasks.values()).filter((t) => t.status === 'downloading').length;
+  }
+
+  // === 调度队列中的下一个任务 ===
+  private scheduleNext(): void {
+    if (this.scheduling) return;
+    this.scheduling = true;
+    try {
+      while (this.getActiveCount() < this.maxConcurrent && this.pendingQueue.length > 0) {
+        const nextId = this.pendingQueue.shift()!;
+        const task = this.tasks.get(nextId);
+        if (!task || task.status === 'completed' || task.status === 'downloading') continue;
+        this.startDownload(nextId).catch((err) => {
+          console.error('[DownloadEngine] scheduleNext startDownload failed:', err);
+        });
+      }
+    } finally {
+      this.scheduling = false;
+    }
+  }
+
   // === 启动下载（pending → downloading）===
   async startDownload(taskId: string): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
     if (task.status === 'completed') return;
     if (task.status === 'downloading') return;
+
+    // 队列调度：如果并发已满且不在队列中，加入队列等待
+    if (this.getActiveCount() >= this.maxConcurrent && !this.pendingQueue.includes(taskId)) {
+      this.pendingQueue.push(taskId);
+      task.status = 'pending';
+      await this.persistTask(task);
+      this.emit('stateChange', { taskId, status: 'pending', task });
+      return;
+    }
 
     task.status = 'downloading';
     task.errorMessage = undefined;
@@ -384,6 +425,9 @@ export class DownloadEngine {
         this.emit('failed', { taskId, error: msg });
       }
       this.abortControllers.delete(taskId);
+    } finally {
+      // 无论成功/失败/暂停，都尝试调度队列中的下一个任务
+      this.scheduleNext();
     }
   }
 
@@ -520,6 +564,8 @@ export class DownloadEngine {
     task.status = 'paused';
     await this.persistTask(task);
     this.emit('stateChange', { taskId, status: 'paused', task });
+    // 释放并发槽位，尝试调度队列中的下一个
+    this.scheduleNext();
   }
 
   // === 继续下载（paused → downloading）===
@@ -552,6 +598,10 @@ export class DownloadEngine {
       }
     }
 
+    // 从调度队列中移除（如果还在等待中）
+    const queueIdx = this.pendingQueue.indexOf(taskId);
+    if (queueIdx !== -1) this.pendingQueue.splice(queueIdx, 1);
+
     this.tasks.delete(taskId);
     this.taskMeta.delete(taskId);
 
@@ -565,6 +615,8 @@ export class DownloadEngine {
     }
 
     this.emit('stateChange', { taskId, status: 'failed', task: { ...task, status: 'failed' } });
+    // 释放并发槽位，尝试调度队列中的下一个
+    this.scheduleNext();
   }
 
   // === 便捷方法（兼容 v10 调用方）===
@@ -586,12 +638,14 @@ export class DownloadEngine {
   }
 
   setMaxConcurrent(max: number): void {
-    // TODO: 实现最大并发下载控制
-    console.log('[DownloadEngine] setMaxConcurrent:', max);
+    this.maxConcurrent = Math.max(1, max);
+    console.log('[DownloadEngine] setMaxConcurrent:', this.maxConcurrent);
+    // 如果并发上限提高，立即尝试调度队列中的任务
+    this.scheduleNext();
   }
 
   setDefaultQuality(quality: Quality): void {
-    // TODO: 实现默认音质设置
+    this.defaultQuality = quality;
     console.log('[DownloadEngine] setDefaultQuality:', quality);
   }
 
