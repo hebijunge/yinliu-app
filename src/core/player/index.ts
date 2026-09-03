@@ -14,13 +14,12 @@ import {
   updatePlaybackState,
   updatePosition,
   startPositionSync,
-  stopPositionSync,
   clearMediaSession,
 } from './mediaSession';
 import { notifyPlaybackStateChange } from './audioFocus';
 import { playHistoryService } from '@shared/services/PlayHistoryService';
 import { debugLogger } from '@shared/utils/debugLogger';
-import { streamingAudioPlayer, type StreamingState } from '@core/streaming';
+import { streamingAudioPlayer, type StreamingState, type StreamingCallbacks } from '@core/streaming';
 import { eqService } from './equalizer';
 import { decryptCencMp4 } from '@shared/audio/crypto';
 import { platformFetch } from '@shared/utils/platformFetch';
@@ -77,6 +76,8 @@ export class PlayerEngine {
   private currentBlobUrl: string | null = null;
   /** 媒体会话是否已初始化 */
   private mediaSessionReady: boolean = false;
+  /** v22：系统暂停标记 —— pauseBySystem 与流式回调之间传递 system 来源 */
+  private systemPausePending = false;
 
   // Queue state (兼容 v10 调用方)
   queue: PlayerTrack[] = [];
@@ -590,53 +591,7 @@ export class PlayerEngine {
       }
 
       // 设置回调
-      streamingAudioPlayer.setCallbacks({
-        onStateChange: (streamState: StreamingState) => {
-          const stateMap: Record<StreamingState, PlayerState> = {
-            idle: 'idle',
-            loading: 'loading',
-            ready: 'loading',
-            playing: 'playing',
-            paused: 'paused',
-            buffering: 'loading',
-            seeking: 'loading',
-            completed: 'idle',
-            error: 'error',
-          };
-          const mapped = stateMap[streamState];
-          if (mapped && mapped !== this.state) {
-            this.setState(mapped, streamState === 'playing' ? 'user' : 'engine');
-          }
-        },
-        onProgress: (currentTime: number, duration: number) => {
-          this.emit('progress', {
-            currentTime,
-            duration,
-            progress: duration > 0 ? currentTime / duration : 0,
-          });
-          void updatePosition(currentTime, duration);
-
-          if (duration > 0 && currentTime / duration > 0.5 && !this.prefetchTriggered) {
-            this.prefetchTriggered = true;
-            void this.prefetchNextTrack();
-          }
-        },
-        onError: (message: string) => {
-          this.setState('error', 'system');
-          this.emit('error', { message });
-          debugLogger.error('player', `流式播放错误: ${track.title}`, { message });
-        },
-        onEnded: () => {
-          this.setState('idle', 'engine');
-          this.stopProgressTracking();
-          this.emit('ended', undefined);
-          debugLogger.info('player', `流式播放结束: ${track.title}`);
-        },
-        onCanPlay: () => {
-          this.setState('playing', 'user');
-          this.startProgressTracking();
-        },
-      });
+      streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
       return;
     }
 
@@ -670,53 +625,7 @@ export class PlayerEngine {
         });
 
         // 设置回调（loadDecryptedData 不经过流式下载，但仍需状态回调）
-        streamingAudioPlayer.setCallbacks({
-          onStateChange: (streamState: StreamingState) => {
-            const stateMap: Record<StreamingState, PlayerState> = {
-              idle: 'idle',
-              loading: 'loading',
-              ready: 'loading',
-              playing: 'playing',
-              paused: 'paused',
-              buffering: 'loading',
-              seeking: 'loading',
-              completed: 'idle',
-              error: 'error',
-            };
-            const mapped = stateMap[streamState];
-            if (mapped && mapped !== this.state) {
-              this.setState(mapped, streamState === 'playing' ? 'user' : 'engine');
-            }
-          },
-          onProgress: (currentTime: number, duration: number) => {
-            this.emit('progress', {
-              currentTime,
-              duration,
-              progress: duration > 0 ? currentTime / duration : 0,
-            });
-            void updatePosition(currentTime, duration);
-
-            if (duration > 0 && currentTime / duration > 0.5 && !this.prefetchTriggered) {
-              this.prefetchTriggered = true;
-              void this.prefetchNextTrack();
-            }
-          },
-          onError: (message: string) => {
-            this.setState('error', 'system');
-            this.emit('error', { message });
-            debugLogger.error('player', `流式播放错误: ${track.title}`, { message });
-          },
-          onEnded: () => {
-            this.setState('idle', 'engine');
-            this.stopProgressTracking();
-            this.emit('ended', undefined);
-            debugLogger.info('player', `流式播放结束: ${track.title}`);
-          },
-          onCanPlay: () => {
-            this.setState('playing', 'user');
-            this.startProgressTracking();
-          },
-        });
+        streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
         return;
       } catch (cencErr) {
         debugLogger.error('player', 'CENC 解密播放失败', {
@@ -772,53 +681,7 @@ export class PlayerEngine {
         });
 
         // 设置回调（loadDecryptedData 不经过流式下载，但仍需状态回调）
-        streamingAudioPlayer.setCallbacks({
-          onStateChange: (streamState: StreamingState) => {
-            const stateMap: Record<StreamingState, PlayerState> = {
-              idle: 'idle',
-              loading: 'loading',
-              ready: 'loading',
-              playing: 'playing',
-              paused: 'paused',
-              buffering: 'loading',
-              seeking: 'loading',
-              completed: 'idle',
-              error: 'error',
-            };
-            const mapped = stateMap[streamState];
-            if (mapped && mapped !== this.state) {
-              this.setState(mapped, streamState === 'playing' ? 'user' : 'engine');
-            }
-          },
-          onProgress: (currentTime: number, duration: number) => {
-            this.emit('progress', {
-              currentTime,
-              duration,
-              progress: duration > 0 ? currentTime / duration : 0,
-            });
-            void updatePosition(currentTime, duration);
-
-            if (duration > 0 && currentTime / duration > 0.5 && !this.prefetchTriggered) {
-              this.prefetchTriggered = true;
-              void this.prefetchNextTrack();
-            }
-          },
-          onError: (message: string) => {
-            this.setState('error', 'system');
-            this.emit('error', { message });
-            debugLogger.error('player', `流式播放错误: ${track.title}`, { message });
-          },
-          onEnded: () => {
-            this.setState('idle', 'engine');
-            this.stopProgressTracking();
-            this.emit('ended', undefined);
-            debugLogger.info('player', `流式播放结束: ${track.title}`);
-          },
-          onCanPlay: () => {
-            this.setState('playing', 'user');
-            this.startProgressTracking();
-          },
-        });
+        streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
         return;
       } catch (qmc2Err) {
         debugLogger.error('player', 'QMC2 解密播放失败', {
@@ -832,54 +695,7 @@ export class PlayerEngine {
     }
 
     // 设置流式播放器回调
-    streamingAudioPlayer.setCallbacks({
-      onStateChange: (streamState: StreamingState) => {
-        const stateMap: Record<StreamingState, PlayerState> = {
-          idle: 'idle',
-          loading: 'loading',
-          ready: 'loading',
-          playing: 'playing',
-          paused: 'paused',
-          buffering: 'loading',
-          seeking: 'loading',
-          completed: 'idle',
-          error: 'error',
-        };
-        const mapped = stateMap[streamState];
-        if (mapped && mapped !== this.state) {
-          this.setState(mapped, streamState === 'playing' ? 'user' : 'engine');
-        }
-      },
-      onProgress: (currentTime: number, duration: number) => {
-        this.emit('progress', {
-          currentTime,
-          duration,
-          progress: duration > 0 ? currentTime / duration : 0,
-        });
-        void updatePosition(currentTime, duration);
-
-        // 播放过半时预取下一首
-        if (duration > 0 && currentTime / duration > 0.5 && !this.prefetchTriggered) {
-          this.prefetchTriggered = true;
-          void this.prefetchNextTrack();
-        }
-      },
-      onError: (message: string) => {
-        this.setState('error', 'system');
-        this.emit('error', { message });
-        debugLogger.error('player', `流式播放错误: ${track.title}`, { message });
-      },
-      onEnded: () => {
-        this.setState('idle', 'engine');
-        this.stopProgressTracking();
-        this.emit('ended', undefined);
-        debugLogger.info('player', `流式播放结束: ${track.title}`);
-      },
-      onCanPlay: () => {
-        this.setState('playing', 'user');
-        this.startProgressTracking();
-      },
-    });
+    streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
 
     await streamingAudioPlayer.load({
       url,
@@ -962,6 +778,69 @@ export class PlayerEngine {
     }
   }
 
+  /**
+   * v22: 统一构建流式播放回调（4 处注册点共用，避免状态映射漂移）
+   * - playing → 引擎 playing（user 来源，保留播放意图）
+   * - paused  → 来源由 systemPausePending 决定：焦点丢失/耳机拔出等系统暂停
+   *   标记为 system，保证音频焦点模块的自动续播判定在流式路径同样生效
+   */
+  private buildStreamingCallbacks(track: PlayerTrack): StreamingCallbacks {
+    return {
+      onStateChange: (streamState: StreamingState) => {
+        const stateMap: Record<StreamingState, PlayerState> = {
+          idle: 'idle',
+          loading: 'loading',
+          ready: 'loading',
+          playing: 'playing',
+          paused: 'paused',
+          buffering: 'loading',
+          seeking: 'loading',
+          completed: 'idle',
+          error: 'error',
+        };
+        const mapped = stateMap[streamState];
+        if (mapped && mapped !== this.state) {
+          let source: 'user' | 'system' | 'engine' = 'engine';
+          if (streamState === 'playing') {
+            source = 'user';
+          } else if (streamState === 'paused' && this.systemPausePending) {
+            source = 'system';
+          }
+          this.setState(mapped, source);
+        }
+      },
+      onProgress: (currentTime: number, duration: number) => {
+        this.emit('progress', {
+          currentTime,
+          duration,
+          progress: duration > 0 ? currentTime / duration : 0,
+        });
+        void updatePosition(currentTime, duration);
+
+        // 播放过半时预取下一首
+        if (duration > 0 && currentTime / duration > 0.5 && !this.prefetchTriggered) {
+          this.prefetchTriggered = true;
+          void this.prefetchNextTrack();
+        }
+      },
+      onError: (message: string) => {
+        this.setState('error', 'system');
+        this.emit('error', { message });
+        debugLogger.error('player', `流式播放错误: ${track.title}`, { message });
+      },
+      onEnded: () => {
+        this.setState('idle', 'engine');
+        this.stopProgressTracking();
+        this.emit('ended', undefined);
+        debugLogger.info('player', `流式播放结束: ${track.title}`);
+      },
+      onCanPlay: () => {
+        this.setState('playing', 'user');
+        this.startProgressTracking();
+      },
+    };
+  }
+
   pause(): void {
     if (this.isStreaming) {
       streamingAudioPlayer.pause();
@@ -980,12 +859,21 @@ export class PlayerEngine {
    * 与用户主动暂停的区别：不改写用户播放意图，焦点恢复后可自动续播。
    */
   pauseBySystem(): void {
+    const wasPlaying = this.state === 'playing' || this.state === 'loading';
     if (this.isStreaming) {
+      // 流式路径：streamingAudioPlayer.pause() 会同步触发 onStateChange 回调，
+      // 用 systemPausePending 让回调把这次暂停标记为 system 来源
+      if (wasPlaying) {
+        this.systemPausePending = true;
+      }
       streamingAudioPlayer.pause();
+      this.systemPausePending = false;
     } else if (this.audio) {
       this.audio.pause();
     }
-    if (this.state === 'playing') {
+    // HTMLAudio 路径：pause 事件为异步派发，这里同步补记系统暂停；
+    // 流式路径若回调已按 system 来源落状态，此处自动跳过
+    if (wasPlaying && this.state !== 'paused') {
       this.setState('paused', 'system');
     }
     this.stopProgressTracking();

@@ -207,6 +207,7 @@ function guessMime(url: string): string {
  */
 export async function updatePlaybackState(state: 'playing' | 'paused' | 'none'): Promise<void> {
   if (state === lastNotifiedPlaybackState) return;
+  const prevNotified = lastNotifiedPlaybackState;
   lastNotifiedPlaybackState = state;
 
   const plugin = getPlugin();
@@ -214,7 +215,10 @@ export async function updatePlaybackState(state: 'playing' | 'paused' | 'none'):
     try {
       await plugin.setPlaybackState({ playbackState: state });
     } catch (err) {
+      // v22：同步失败回滚状态缓存，保证后续状态变化仍会触发重试，
+      // 避免通知栏/锁屏媒体卡片与实际播放状态脱节（严格同步硬要求）
       console.warn('[mediaSession] setPlaybackState (plugin) failed:', err);
+      lastNotifiedPlaybackState = prevNotified;
     }
   }
 
