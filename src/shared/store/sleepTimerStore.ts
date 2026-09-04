@@ -54,8 +54,15 @@ export function initSleepTimerWatcher(): () => void {
     }
 
     // 检查是否到达触发点
+    // C-P0-8: mode 守卫——end-of-track 模式 remainingSeconds 恒为 0，
+    // 缺守卫会导致「播完当前曲」开启后 1 秒内被此处误触发渐弱暂停
     const afterTick = useSleepTimerStore.getState();
-    if (afterTick.active && afterTick.remainingSeconds <= 0 && !afterTick.fading) {
+    if (
+      afterTick.active &&
+      afterTick.mode === 'duration' &&
+      afterTick.remainingSeconds <= 0 &&
+      !afterTick.fading
+    ) {
       void triggerSleepAction();
     }
   }, 1000);
@@ -68,6 +75,9 @@ export function initSleepTimerWatcher(): () => void {
   };
 }
 
+/** 渐弱起始音量（重入守卫还原时使用） */
+let fadeStartVolume = 1;
+
 /** 执行睡眠动作：渐弱音量后暂停 */
 async function triggerSleepAction(): Promise<void> {
   const store = useSleepTimerStore.getState();
@@ -77,6 +87,7 @@ async function triggerSleepAction(): Promise<void> {
   debugLogger.info('sleepTimer', '睡眠定时触发，开始渐弱音量');
 
   const startVolume = playerEngine.getVolume();
+  fadeStartVolume = startVolume;
   const fadeSteps = 20;
   const fadeDuration = 3000; // 3 秒渐弱
   const stepDuration = fadeDuration / fadeSteps;
@@ -99,6 +110,40 @@ async function triggerSleepAction(): Promise<void> {
       debugLogger.info('sleepTimer', '睡眠定时完成，播放已暂停');
     }
   }, stepDuration);
+}
+
+/**
+ * 渐弱重入守卫：渐弱进行中（3 秒窗口）用户重新开始播放时——
+ * 中止渐弱、还原音量，倒计时模式重置重新计时（用户回来操作说明还醒着）。
+ * 由 main.tsx 在应用启动时调用一次。
+ */
+export function initSleepTimerReentryGuard(): () => void {
+  return playerEngine.on('stateChange', ({ state }) => {
+    if (state !== 'playing') return;
+    const store = useSleepTimerStore.getState();
+    if (!store.fading) return;
+
+    // ① 中止渐弱
+    if (fadeInterval !== null) {
+      clearInterval(fadeInterval);
+      fadeInterval = null;
+    }
+    playerEngine.setVolume(fadeStartVolume);
+    store.setFading(false);
+
+    if (store.mode === 'duration' && store.totalSeconds > 0) {
+      // ② 重置倒计时，重新开始
+      lastTickAt = Date.now();
+      store.setRemaining(store.totalSeconds);
+      toast.info('睡眠定时已重新开始', '检测到新的播放，倒计时已重置');
+      debugLogger.info('sleepTimer', `渐弱重入: 检测到新播放，倒计时重置为 ${store.totalSeconds}s`);
+    } else {
+      // 非 duration 模式（理论上渐弱只发生在 duration 模式）直接取消兜底
+      store.cancel();
+      toast.info('睡眠定时已取消', '检测到新的播放');
+      debugLogger.info('sleepTimer', '渐弱重入: 检测到新播放，定时已取消');
+    }
+  });
 }
 
 /** 监听播放结束事件，用于 "播完当前曲" 模式 */

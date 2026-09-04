@@ -1,47 +1,108 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { HardDrive, RefreshCw, Play, FolderOpen } from 'lucide-react';
 import { scanLocalMusic } from '../modules/music/localScanner';
 import type { ScannedSong } from '../modules/music/localScanner';
 import { playerEngine } from '../core/player';
+import { usePlayerStore } from '../shared/store/playerStore';
+import { toast } from '../shared/components/Toast';
 import { SkeletonList } from '../components/ui/Skeleton';
 import { useVirtualList } from '../shared/hooks/useVirtualList';
 import SmartCover from '../components/ui/SmartCover';
+import type { PlayerTrack } from '../core/player';
 
 /** 本地音乐虚拟行固定行高（px）：卡片 88 + 间距 12 */
 const ROW_HEIGHT = 100;
+
+/** 回收扫描结果里的封面 blob URL（扫描产生 createObjectURL，页面负责 revoke 防泄漏） */
+function revokeCoverUrls(songs: ScannedSong[]): void {
+  for (const song of songs) {
+    if (song.coverUrl && song.coverUrl.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(song.coverUrl);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
 
 export default function LocalMusicPage() {
   const [songs, setSongs] = useState<ScannedSong[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [scanPath, setScanPath] = useState('');
-  // P3：本地音乐列表虚拟化
+  // P2：扫描进度反馈（onProgress 接入）
+  const [scanProgress, setScanProgress] = useState<{ current: number; total: number } | null>(null);
+  // 持有当前列表引用，供卸载清理使用
+  const songsRef = useRef<ScannedSong[]>([]);
+  // P2 竞态守卫：连点扫描/卸载时只让最后一次扫描写状态
+  const scanReqRef = useRef(0);
+
   const vl = useVirtualList({ count: songs.length, estimateSize: ROW_HEIGHT });
 
+  // P2：卸载时回收本轮扫描产生的封面 blob URL
+  useEffect(() => {
+    return () => {
+      scanReqRef.current++;
+      revokeCoverUrls(songsRef.current);
+    };
+  }, []);
+
   const handleScan = useCallback(async () => {
+    const reqId = ++scanReqRef.current;
     setIsScanning(true);
+    setScanProgress(null);
     try {
       const dirs = scanPath ? [scanPath] : undefined;
-      const scanned = await scanLocalMusic(dirs);
+      // P2：接入 onProgress，扫描期间反馈「x / y」
+      const scanned = await scanLocalMusic(dirs, (progress) => {
+        if (reqId !== scanReqRef.current) return;
+        if (progress.phase === 'parsing') {
+          setScanProgress({ current: progress.current, total: progress.total });
+        }
+      });
+      if (reqId !== scanReqRef.current) {
+        // 已有更新的扫描或已卸载：丢弃结果并回收本次产生的 blob URL
+        revokeCoverUrls(scanned);
+        return;
+      }
+      // P2：换新结果前回收旧列表的 blob URL，防多次扫描累积泄漏
+      revokeCoverUrls(songsRef.current);
+      songsRef.current = scanned;
       setSongs(scanned);
     } catch (err) {
       console.error('扫描失败:', err);
+      if (reqId !== scanReqRef.current) return;
+      toast.error('扫描失败', err instanceof Error ? err.message : '请检查扫描目录后重试');
     } finally {
-      setIsScanning(false);
+      if (reqId === scanReqRef.current) {
+        setIsScanning(false);
+        setScanProgress(null);
+      }
     }
   }, [scanPath]);
 
+  // P2：播放错误处理 + 入队语义——把整份本地列表设为播放队列，从点击曲开始播
   const handlePlay = async (song: ScannedSong) => {
-    await playerEngine.playTrack({
-      id: song.id,
-      title: song.title,
-      artist: song.artist,
-      album: song.album,
-      duration: song.duration,
-      coverUrl: song.coverUrl,
+    const tracks: PlayerTrack[] = songs.map((s) => ({
+      id: s.id,
+      title: s.title,
+      artist: s.artist,
+      album: s.album,
+      duration: s.duration,
+      coverUrl: s.coverUrl,
       sourceId: 'local',
-      sourceSongId: song.filePath,
-      uri: `file://${song.filePath}`,
-    });
+      sourceSongId: s.filePath,
+      uri: `file://${s.filePath}`,
+    }));
+    if (tracks.length === 0) return;
+    const startIndex = Math.max(0, tracks.findIndex((t) => t.id === song.id));
+    usePlayerStore.getState().setQueue(tracks, startIndex);
+    try {
+      await playerEngine.playTrack(tracks[startIndex]);
+    } catch (err) {
+      console.error('[LocalMusicPage] play failed:', err);
+      toast.error('播放失败', err instanceof Error ? err.message : '本地文件可能已被移动或删除');
+    }
   };
 
   const formatDuration = (seconds: number) => {
@@ -87,7 +148,9 @@ export default function LocalMusicPage() {
           </button>
         </div>
         <div className="text-xs text-[var(--text-tertiary)]">
-          支持格式：MP3、FLAC、AAC、M4A、OGG、WAV、WMA
+          {isScanning && scanProgress
+            ? `正在扫描 ${scanProgress.current} / ${scanProgress.total} …`
+            : '支持格式：MP3、FLAC、AAC、M4A、OGG、WAV、WMA'}
         </div>
       </div>
 
@@ -100,7 +163,14 @@ export default function LocalMusicPage() {
 
       {/* Skeleton Loading */}
       {isScanning && (
-        <SkeletonList count={5} />
+        <>
+          <div className="text-xs text-[var(--text-tertiary)] mb-3">
+            {scanProgress
+              ? `已解析 ${scanProgress.current} / ${scanProgress.total} 个文件`
+              : '正在枚举音频文件…'}
+          </div>
+          <SkeletonList count={5} />
+        </>
       )}
 
       {/* Song List（P3 虚拟化） */}
@@ -136,9 +206,10 @@ export default function LocalMusicPage() {
                     {formatDuration(song.duration)}
                   </div>
 
+                  {/* P2：移动端无 hover，播放按钮常显；桌面端保留 hover 出现 */}
                   <button
                     onClick={() => handlePlay(song)}
-                    className="p-2 rounded-full bg-[var(--accent)] text-white opacity-0 group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 focus-ring"
+                    className="p-2 rounded-full bg-[var(--accent)] text-white opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-all hover:bg-[var(--accent-hover)] active:scale-95 focus-ring"
                     title="播放"
                   >
                     <Play className="w-4 h-4 ml-0.5" />

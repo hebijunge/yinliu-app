@@ -86,6 +86,8 @@ export class DownloadEngine {
   private downloadDir = 'yinliu/downloads';
   /** 防止 scheduleNext 重入 */
   private scheduling = false;
+  /** C-P0-7: 已取消任务集合——cancelDownload 与 startDownload 竞态防护的权威标志 */
+  private cancelledTaskIds = new Set<string>();
 
   // === E1 断网兜底 ===
   /** 是否因断网自动暂停过（恢复网络后供「一键继续」判定与清理） */
@@ -241,6 +243,11 @@ export class DownloadEngine {
     return task;
   }
 
+  /** C-P0-7: 任务是否已被取消（取消标志或状态位） */
+  private isCancelled(taskId: string): boolean {
+    return this.cancelledTaskIds.has(taskId) || this.tasks.get(taskId)?.status === 'cancelled';
+  }
+
   // === 当前正在下载的任务数 ===
   private getActiveCount(): number {
     return Array.from(this.tasks.values()).filter((t) => t.status === 'downloading').length;
@@ -254,7 +261,7 @@ export class DownloadEngine {
       while (this.getActiveCount() < this.maxConcurrent && this.pendingQueue.length > 0) {
         const nextId = this.pendingQueue.shift()!;
         const task = this.tasks.get(nextId);
-        if (!task || task.status === 'completed' || task.status === 'downloading') continue;
+        if (!task || task.status === 'completed' || task.status === 'downloading' || task.status === 'cancelled') continue;
         this.startDownload(nextId).catch((err) => {
           console.error('[DownloadEngine] scheduleNext startDownload failed:', err);
         });
@@ -270,6 +277,8 @@ export class DownloadEngine {
     if (!task) throw new Error(`Task ${taskId} not found`);
     if (task.status === 'completed') return;
     if (task.status === 'downloading') return;
+    // C-P0-7: 已取消的任务不得重新启动（cancel 与 start 的竞态窗口）
+    if (task.status === 'cancelled' || this.isCancelled(taskId)) return;
 
     // 队列调度：如果并发已满且不在队列中，加入队列等待
     if (this.getActiveCount() >= this.maxConcurrent && !this.pendingQueue.includes(taskId)) {
@@ -322,6 +331,8 @@ export class DownloadEngine {
       let filePath = '';
 
       for (let i = 0; i < chain.length; i++) {
+        // C-P0-7: 每个源尝试前检查取消标志，取消后不再发起新的网络请求
+        if (this.isCancelled(taskId)) return;
         const trySourceId = chain[i];
         const source = sourceRegistry.get(trySourceId);
         if (!source || !source.enabled) continue;
@@ -362,6 +373,9 @@ export class DownloadEngine {
 
           // 3a. 下载二进制（v16：Range 分块拉取，真实进度 + 可暂停；不支持 Range 回退整包）
           const raw = await this.fetchBinary(taskId, playUrl.url, playUrl.headers || {}, abortCtrl.signal);
+          // C-P0-7: 下载期间被取消——丢弃结果，不写盘不落库
+          // （经 tasks.get 重读状态，绕开 TS 对局部 task.status 的字面量收窄；cancel 会从外部改写它）
+          if (this.tasks.get(taskId)?.status === 'cancelled' || this.isCancelled(taskId)) return;
 
           // 3b. QMC2 解密（v15 及之前该解密从未生效：全局解密器从未注册、ekey 从未被使用）
           let bytes = raw;
@@ -487,6 +501,11 @@ export class DownloadEngine {
       this.emit('stateChange', { taskId, status: 'completed', task });
       this.emit('completed', { taskId, filePath });
     } catch (err) {
+      // C-P0-7: 用户已取消——任务已被 cancelDownload 删除，这里绝不落库/发事件（防已删任务复活）
+      if (this.tasks.get(taskId)?.status === 'cancelled' || this.isCancelled(taskId)) {
+        this.abortControllers.delete(taskId);
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       // P2 修复：无论失败还是用户暂停，退出时都复位不确定态——
       // 重试/恢复时由 startDownload 按实际已下载字节重新判定是否进入不确定态
@@ -751,6 +770,12 @@ export class DownloadEngine {
     const task = this.tasks.get(taskId);
     if (!task) return;
 
+    // C-P0-7: 在任何 await 之前同步置取消标志并中止请求——
+    // 并发在途的 startDownload 各阶段据此停止落库/发事件，防止已删任务复活
+    const wasCompleted = task.status === 'completed';
+    task.status = 'cancelled';
+    this.cancelledTaskIds.add(taskId);
+
     const ctrl = this.abortControllers.get(taskId);
     if (ctrl) {
       ctrl.abort();
@@ -758,7 +783,7 @@ export class DownloadEngine {
     }
 
     // 如果已完成，尝试删除本地文件
-    if (task.status === 'completed' && task.filePath) {
+    if (wasCompleted && task.filePath) {
       try {
         await Filesystem.deleteFile({
           path: task.filePath,
@@ -787,7 +812,9 @@ export class DownloadEngine {
       console.error('[DownloadEngine] Failed to delete task from DB:', err);
     }
 
-    this.emit('stateChange', { taskId, status: 'failed', task: { ...task, status: 'failed' } });
+    // C-P0-7: 标记常驻不清除——在途 startDownload 的 persist/catch 守卫依赖它；
+    // 任务 id 含时间戳全局唯一，重下同一首歌生成新 id，不会被旧标记误伤
+    this.emit('stateChange', { taskId, status: 'cancelled', task: { ...task, status: 'cancelled' } });
     // 释放并发槽位，尝试调度队列中的下一个
     this.scheduleNext();
   }
@@ -918,6 +945,8 @@ export class DownloadEngine {
 
   // === 持久化任务到数据库 ===
   private async persistTask(task: DownloadTask): Promise<void> {
+    // C-P0-7: 已取消任务禁止写库（INSERT OR REPLACE 会让已删除的行复活）
+    if (task.status === 'cancelled' || this.cancelledTaskIds.has(task.id)) return;
     try {
       const sqliteDb = getSqliteDb();
       sqliteDb.run(

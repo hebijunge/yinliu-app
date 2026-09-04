@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- A-P0-1: AppTheme 引用的品牌色补齐（与前端主题 accent 色 #2563eb 对齐） -->
+    <color name="colorPrimary">#2563EB</color>
+    <color name="colorPrimaryDark">#1D4ED8</color>
+    <color name="colorAccent">#3B82F6</color>
+</resources>

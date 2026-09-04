@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, memo } from 'react';
 import { Music, MoreVertical, Play, ChevronDown, ChevronUp } from 'lucide-react';
 import SmartCover from '../ui/SmartCover';
 import { PLATFORM_ABBREVS, PLATFORM_COLORS } from '@core/platformPriority';
@@ -46,7 +46,7 @@ function formatQualityLabel(maxQuality?: string): string {
   return map[maxQuality] || maxQuality;
 }
 
-export default function SongListItem({
+function SongListItem({
   result,
   index,
   showIndex = false,
@@ -258,3 +258,8 @@ export default function SongListItem({
     </div>
   );
 }
+
+/* P2：memo 包裹——上百条列表中单条状态变化（如展开菜单）不再带动其余条目全量重渲染。
+ * 注意：父组件传入的 onPlay/onMore 若为每次渲染新建的内联函数，memo 会被击穿；
+ * 调用方如需完全生效建议配合 useCallback 稳定回调。 */
+export default memo(SongListItem);

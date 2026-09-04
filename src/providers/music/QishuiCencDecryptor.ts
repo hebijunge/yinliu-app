@@ -119,7 +119,29 @@ export class QishuiCencDecryptor {
               // body 阶段
               bodyBuffer = concatUint8Arrays(bodyBuffer, value) as Uint8Array<ArrayBuffer>;
               if (bodyBuffer.length >= QishuiCencDecryptor.MAX_READ_BYTES) {
-                const chunk = bodyBuffer.slice(0, QishuiCencDecryptor.MAX_READ_BYTES);
+                // 找到最后一个完整 sample 的结束位置，确保 chunk 内所有 sample 都可完整处理
+                // （避免 chunk 起始不在 sample 边界导致的解密偏移问题）
+                const currentMdatOffset = mdatOffset;
+                const nextSampleIdx = moovInfo!.sampleIndexAt(currentMdatOffset + bodyBuffer.length);
+                let processLen = bodyBuffer.length;
+                // 如果 buffer 里有不完整的尾部 sample，回退到该 sample 之前
+                if (nextSampleIdx < moovInfo!.sampleCount) {
+                  const nextSampleOffset = moovInfo!.sampleOffsets[nextSampleIdx];
+                  const nextSampleInBuffer = nextSampleOffset - currentMdatOffset;
+                  if (nextSampleInBuffer < bodyBuffer.length) {
+                    // 还有后续 sample，但可能不完整——找到最后一个完整 sample 的结束位置
+                    const lastCompleteSampleIdx = nextSampleIdx - 1;
+                    if (lastCompleteSampleIdx >= 0) {
+                      const lastSampleEndOffset = moovInfo!.sampleOffsets[lastCompleteSampleIdx] + moovInfo!.sampleSizes[lastCompleteSampleIdx];
+                      const lastSampleEndInBuffer = lastSampleEndOffset - currentMdatOffset;
+                      if (lastSampleEndInBuffer > 0 && lastSampleEndInBuffer <= bodyBuffer.length) {
+                        processLen = lastSampleEndInBuffer;
+                      }
+                    }
+                  }
+                }
+
+                const chunk = bodyBuffer.slice(0, processLen);
                 const decrypted = await decryptor.decryptBodyChunk(
                   chunk,
                   moovInfo!,
@@ -128,9 +150,8 @@ export class QishuiCencDecryptor {
                 );
                 controller.enqueue(decrypted as any);
 
-                const processed = chunk.length;
-                bodyBuffer = bodyBuffer.slice(processed) as Uint8Array<ArrayBuffer>;
-                mdatOffset += processed;
+                bodyBuffer = bodyBuffer.slice(processLen) as Uint8Array<ArrayBuffer>;
+                mdatOffset += processLen;
                 sampleIndex = moovInfo!.sampleIndexAt(mdatOffset);
               }
             }
@@ -242,25 +263,33 @@ export class QishuiCencDecryptor {
         const iv = new Uint8Array(16);
         iv.set(encInfo.iv);
 
-        // 计算 CTR counter：sample 内偏移 / 16
+        // 计算交集在 sample 内的偏移，以及对应的 AES-CTR counter
         const sampleInternalOffset = intersectStart - sampleOffsetInMdat;
+        const blockOffset = sampleInternalOffset % 16;
         const counter = Math.floor(sampleInternalOffset / 16);
-        // Web Crypto AES-CTR 使用 64-bit counter（length=64），counter 从 0 开始
-        // 但这里 sampleInternalOffset 不一定是 16 的倍数，需要特殊处理
-        // 实际上 CENC 的 CTR 模式是按块（16-byte）计数的，
-        // counter = floor(offset / 16)，且 offset % 16 的部分作为 keystream 偏移
 
-        // 为了简化，我们直接解密整个 sample（或至少从 sample 起始到 intersectEnd）
-        // 然后截取需要的部分
-        const decryptStart = sampleOffsetInMdat;
-        const decryptEnd = Math.min(sampleEndInMdat, chunkEndInMdat);
-        const decryptLen = decryptEnd - decryptStart;
-        const decryptOffsetInResult = decryptStart - chunkStartInMdat;
+        // 解密范围：从 intersectStart 到 intersectEnd
+        const resultOffset = intersectStart - chunkStartInMdat;
+        const decryptLen = intersectLen;
 
         if (decryptLen > 0) {
-          const cipherChunk = chunk.slice(decryptOffsetInResult, decryptOffsetInResult + decryptLen);
-          const decrypted = await this.decryptCtr(cipherChunk, iv, 0);
-          result.set(decrypted, decryptOffsetInResult);
+          // AES-CTR 按 16 字节块计数，需要从块边界开始解密
+          // 向前对齐到块边界（在 chunk 内的起始位置），多解密 blockOffset 字节然后丢弃
+          const cipherStartInChunk = resultOffset - blockOffset;
+          const cipherLen = decryptLen + blockOffset;
+
+          if (cipherStartInChunk >= 0) {
+            const cipherChunk = chunk.slice(cipherStartInChunk, cipherStartInChunk + cipherLen);
+            const decrypted = await this.decryptCtr(cipherChunk, iv, counter);
+            // 丢弃前 blockOffset 字节（块内偏移部分）
+            const usable = decrypted.slice(blockOffset);
+            result.set(usable, resultOffset);
+          } else {
+            // 对齐后跑到 chunk 外面了（理论上不应发生，除非 sample 边界异常）
+            // 退化为从 sample 起始完整解密（需要 sample 数据完整在 chunk 内）
+            // 这种情况极少，暂时跳过避免崩溃
+            console.warn('CENC decrypt: cipherStartInChunk < 0, skipping sample', sampleIdx);
+          }
         }
       }
 

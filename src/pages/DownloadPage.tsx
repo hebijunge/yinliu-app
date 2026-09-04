@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, memo } from 'react';
 import { WifiOff } from 'lucide-react';
-import { useDownloadStore } from '../shared/store/downloadStore';
+import { useDownloadStore, selectQueueTasks, selectCompletedTasks, selectCompletedBySource } from '../shared/store/downloadStore';
 import { downloadEngine } from '../core/download';
 import { PLATFORM_DISPLAY_NAMES } from '../core/platformPriority';
 import { playerEngine } from '../core/player';
@@ -11,6 +11,7 @@ import type { DownloadTask } from '../core/types';
 import { useNetworkStatus } from '../shared/hooks/useNetworkStatus';
 import { useGuardedAction } from '../shared/hooks/useGuardedAction';
 import OfflineEmptyState from '../shared/components/OfflineEmptyState';
+import { toast } from '../shared/components/Toast';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -38,15 +39,31 @@ function StatusBadge({ status }: { status: DownloadTask['status'] }) {
 
 /* ========== 下载队列单条卡片（v24: memo 化——某条任务进度更新不带动其他卡片重渲染） ========== */
 const QueueTaskCard = memo(function QueueTaskCard({ task }: { task: DownloadTask }) {
-  const handlePause = (taskId: string) => {
-    downloadEngine.pauseDownload(taskId);
+  // D7：所有队列操作补错误兜底——失败 toast 提示，不静默
+  const handlePause = async (taskId: string) => {
+    try {
+      await downloadEngine.pauseDownload(taskId);
+    } catch (err) {
+      console.error('[DownloadPage] pause failed:', err);
+      toast.error('暂停失败', err instanceof Error ? err.message : '请稍后重试');
+    }
   };
-  const handleResume = (taskId: string) => {
-    downloadEngine.resumeDownload(taskId);
+  const handleResume = async (taskId: string) => {
+    try {
+      await downloadEngine.resumeDownload(taskId);
+    } catch (err) {
+      console.error('[DownloadPage] resume failed:', err);
+      toast.error('继续下载失败', err instanceof Error ? err.message : '请稍后重试');
+    }
   };
-  const handleCancel = (taskId: string) => {
-    downloadEngine.cancelDownload(taskId);
-    useDownloadStore.getState().removeTask(taskId);
+  const handleCancel = async (taskId: string) => {
+    try {
+      await downloadEngine.cancelDownload(taskId);
+      useDownloadStore.getState().removeTask(taskId);
+    } catch (err) {
+      console.error('[DownloadPage] cancel failed:', err);
+      toast.error('删除任务失败', err instanceof Error ? err.message : '请稍后重试');
+    }
   };
 
   return (
@@ -181,10 +198,12 @@ function CompletedSourceSection({
       await playerEngine.playTrack(tracks[startIndex]);
     } catch (err) {
       console.error('[DownloadPage] play local track failed:', err);
+      toast.error('播放失败', err instanceof Error ? err.message : '本地文件可能已被移动或删除');
     }
   };
 
   // v23 修复走查 #3：删除前二次确认，避免误触直接物理删除文件
+  // D7：删除失败时抛错交给 ConfirmDialog 统一 toast 并关闭弹窗（不卡死），store 不误删
   const handleDelete = async (taskId: string) => {
     await downloadEngine.cancelDownload(taskId);
     useDownloadStore.getState().removeTask(taskId);
@@ -264,7 +283,7 @@ function CompletedSourceSection({
         title="删除已下载歌曲"
         message={`确定要删除「${deleteTarget?.title || deleteTarget?.songId || ''}」吗？本地文件将被移除，此操作不可恢复。`}
         confirmText="删除"
-        onConfirm={() => deleteTarget && handleDelete(deleteTarget.id)}
+        onConfirm={() => { if (deleteTarget) void handleDelete(deleteTarget.id); }}
         onCancel={() => setDeleteTarget(null)}
       />
     </div>
@@ -273,13 +292,18 @@ function CompletedSourceSection({
 
 /* ========== 主页面 ========== */
 export default function DownloadPage() {
-  const { tasks, queueTasks, completedTasks, completedBySource, clearCompleted, offlinePaused, setOfflinePaused } = useDownloadStore();
+  const { tasks, clearCompleted, offlinePaused, setOfflinePaused } = useDownloadStore();
+  // A-P0-3: 派生数据改 useMemo 选择器（原 store 内 getter 被浅合并固化，状态变化不刷新）
+  const queueTasks = useMemo(() => selectQueueTasks(tasks), [tasks]);
+  const completedTasks = useMemo(() => selectCompletedTasks(tasks), [tasks]);
+  const completedBySource = useMemo(() => selectCompletedBySource(tasks), [tasks]);
   const [activeTab, setActiveTab] = useState<'queue' | 'completed'>('queue');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   // E1: 网络状态（断网提示 + 恢复后一键继续）
   const online = useNetworkStatus();
 
   // v23 修复走查 #3：清空已下载前二次确认
+  // D7：失败时抛错交给 ConfirmDialog 统一 toast + 关闭弹窗（不卡死），不清空 store
   const handleClearCompleted = async () => {
     await downloadEngine.clearCompleted();
     clearCompleted();
@@ -290,9 +314,15 @@ export default function DownloadPage() {
   const { run: guardedClearCompleted, busy: clearingBusy } = useGuardedAction(handleClearCompleted);
 
   // E1: 恢复网络后一键继续全部因断网暂停的任务
+  // D7：失败 toast 提示，offlinePaused 标记保留、下次仍可重试
   const handleResumeAfterOffline = async () => {
-    await downloadEngine.resumeAllFromOffline();
-    setOfflinePaused(false);
+    try {
+      await downloadEngine.resumeAllFromOffline();
+      setOfflinePaused(false);
+    } catch (err) {
+      console.error('[DownloadPage] resumeAllFromOffline failed:', err);
+      toast.error('一键继续失败', err instanceof Error ? err.message : '请稍后重试');
+    }
   };
 
   useEffect(() => {

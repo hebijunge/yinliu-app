@@ -9,6 +9,11 @@ import { streamCacheEngine } from './core/streaming';
 import { initDatabase } from './shared/database';
 import { initializeProviders } from './providers/music/registry';
 import { prewarmHomeCache } from './core/homeCache';
+import {
+  initSleepTimerWatcher,
+  initSleepTimerEndedListener,
+  initSleepTimerReentryGuard,
+} from './shared/store/sleepTimerStore';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -161,6 +166,12 @@ async function bootstrap() {
 
   // 启动预热：后台检查首页缓存是否过期，过期提前拉取（fire-and-forget，失败静默）
   prewarmHomeCache();
+
+  // P2 收尾修复：睡眠定时三件套初始化——此前 initSleepTimerWatcher / EndedListener
+  // 从未被任何入口调用，倒计时不会走、播完当前曲不触发；补上重入守卫。
+  initSleepTimerWatcher();
+  initSleepTimerEndedListener();
+  initSleepTimerReentryGuard();
 }
 
 bootstrap();

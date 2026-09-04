@@ -45,8 +45,14 @@ async function saveDbToIndexedDB(data: Uint8Array): Promise<void> {
 }
 
 async function loadDbFromIndexedDB(): Promise<Uint8Array | null> {
+  let idb: IDBDatabase | null = null;
   try {
-    const idb = await openIndexedDB();
+    idb = await openIndexedDB();
+    // 库本身不存在（首次安装）属于「确认无数据」，不算失败
+    if (!idb.objectStoreNames.contains('databases')) {
+      idb.close();
+      return null;
+    }
     const tx = idb.transaction('databases', 'readonly');
     const store = tx.objectStore('databases');
     const data = await new Promise<Uint8Array | undefined>((resolve, reject) => {
@@ -54,11 +60,14 @@ async function loadDbFromIndexedDB(): Promise<Uint8Array | null> {
       req.onsuccess = () => resolve(req.result as Uint8Array | undefined);
       req.onerror = () => reject(req.error);
     });
-    idb.close();
     return data ?? null;
   } catch (err) {
+    // C3: 读库失败必须向上抛——调用方据此中止初始化，绝不能当作「无数据」
+    // 建空库（否则一次瞬时 I/O 故障就会让空库覆盖用户全部数据）
     console.error('[DB Persist] Failed to load from IndexedDB:', err);
-    return null;
+    throw err instanceof Error ? err : new Error(String(err));
+  } finally {
+    idb?.close();
   }
 }
 
@@ -67,9 +76,39 @@ export async function flushDatabase(): Promise<void> {
   if (!sqliteDb || !sqlJsModule) {
     throw new Error('Database not initialized, cannot flush');
   }
+  // C2: 立即 flush 前先取消挂起的防抖 flush（避免紧跟着重复导出一次）
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
   const data = sqliteDb.export();
   await saveDbToIndexedDB(data);
   console.log('[DB Persist] Database flushed to IndexedDB, size:', data.length, 'bytes');
+}
+
+// === C2: 防抖 flush ===
+// 旧实现每个写方法（加歌/收藏/历史/下载状态）都立即 flushDatabase()，
+// 而 flush 是全量导出内存 SQLite → O(N) 字节级导出。导入 300 首歌单 = 300 次全量导出，
+// 总复杂度 O(N²)，实测分钟级。flushDatabaseSoon() 把同一防抖窗口内的多次写合并为
+// 一次导出；关键节点（导入收尾、任务完成）仍可显式 await flushDatabase() 立即落盘。
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+let flushChain: Promise<void> = Promise.resolve();
+
+export function flushDatabaseSoon(delayMs = 300): Promise<void> {
+  if (flushTimer === null) {
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      const p = flushDatabase().catch((err) => {
+        console.error('[DB Persist] Deferred flush failed:', err);
+      });
+      // 串行链：前一次 flush 未结束时排队等待，避免并发导出同一个 sql.js 实例
+      flushChain = flushChain.then(() => p, () => p);
+    }, delayMs);
+    // node 环境下避免定时器阻塞进程退出（浏览器无此方法）
+    const timer = flushTimer as unknown as { unref?: () => void };
+    if (typeof timer?.unref === 'function') timer.unref();
+  }
+  return flushChain;
 }
 
 // === 初始化数据库（支持从 IndexedDB 恢复）===
@@ -98,17 +137,37 @@ async function initDatabaseOnce(): Promise<AppDb> {
   });
   sqlJsModule = SQL;
 
-  // 尝试从 IndexedDB 恢复已有数据库
-  const savedData = await loadDbFromIndexedDB();
-  if (savedData && savedData.length > 0) {
+  // === C3: 恢复失败保护 ===
+  // 旧实现里任何恢复失败（IndexedDB 读失败 / 快照解析失败）都会静默落回「新建空库」，
+  // 且初始化结尾无条件 flush——一次瞬时 I/O 故障就会用空库覆盖用户全部数据。
+  // 现在：恢复失败 → 本次 init 直接中止（不建表、不 flush），db 保持 null 允许下次重试；
+  // 只有「确认无数据」（首次安装 / 存储中无记录 / 记录为 0 字节）才允许建空库。
+  let savedData: Uint8Array | null = null;
+  let restoreFailed = false;
+  try {
+    savedData = await loadDbFromIndexedDB();
+  } catch (err) {
+    console.error('[DB Persist] IndexedDB load failed, aborting DB init to protect local data:', err);
+    restoreFailed = true;
+  }
+
+  if (!restoreFailed && savedData && savedData.length > 0) {
     try {
       sqliteDb = new SQL.Database(savedData);
       console.log('[DB Persist] Restored database from IndexedDB, size:', savedData.length, 'bytes');
     } catch (err) {
-      console.error('[DB Persist] Failed to restore saved DB, creating new:', err);
-      sqliteDb = new SQL.Database();
+      console.error('[DB Persist] Saved DB snapshot is corrupt, aborting DB init to protect local data:', err);
+      restoreFailed = true;
     }
-  } else {
+  }
+
+  if (restoreFailed) {
+    throw new Error(
+      'Database restore failed; aborting init to avoid overwriting user data with an empty database'
+    );
+  }
+
+  if (!savedData || savedData.length === 0) {
     sqliteDb = new SQL.Database();
     console.log('[DB Persist] No saved DB found, creating new database');
   }
@@ -188,8 +247,13 @@ async function initDatabaseOnce(): Promise<AppDb> {
       played_at INTEGER,
       play_duration INTEGER,
       quality TEXT,
-      source_id TEXT
+      source_id TEXT,
+      title TEXT,
+      artist TEXT,
+      source TEXT,
+      duration INTEGER
     );
+
     CREATE TABLE IF NOT EXISTS source_configs (
       id TEXT PRIMARY KEY,
       name TEXT,
@@ -276,6 +340,13 @@ async function initDatabaseOnce(): Promise<AppDb> {
   // ALTER TABLE 不支持 IF NOT EXISTS（sql.js），用 try/catch 静默吞掉"重复列"错误
   try { sqliteDb.run(`ALTER TABLE playlist_songs ADD COLUMN match_status TEXT DEFAULT 'matched'`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
   try { sqliteDb.run(`ALTER TABLE playlist_songs ADD COLUMN failure_reason TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
+
+  // A-P0-2 兼容迁移：play_history 增量列（服务层写 title/artist/source/duration；
+  // 老安装的 play_history 表没有这四列，导致播放历史 100% 写入失败）
+  try { sqliteDb.run(`ALTER TABLE play_history ADD COLUMN title TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
+  try { sqliteDb.run(`ALTER TABLE play_history ADD COLUMN artist TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
+  try { sqliteDb.run(`ALTER TABLE play_history ADD COLUMN source TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
+  try { sqliteDb.run(`ALTER TABLE play_history ADD COLUMN duration INTEGER`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
 
   // v16 兼容迁移：downloads 增量列（下载页展示歌名/歌手；老安装的 downloads 表没有这两列）
   try { sqliteDb.run(`ALTER TABLE downloads ADD COLUMN title TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }

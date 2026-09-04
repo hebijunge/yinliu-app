@@ -3,6 +3,10 @@ import { ArrowLeft, Trash2, Download, RefreshCw, ChevronDown, Filter, FileText, 
 import { useNavigate } from 'react-router-dom';
 import { debugLogger, type DebugLogEntry, type DebugLogCategory, type DebugLogLevel } from '@shared/utils/debugLogger';
 import ConfirmDialog, { type ConfirmRequest } from '../components/common/ConfirmDialog';
+import { toast } from '../shared/components/Toast';
+
+/** P2 渲染优化：单次最多渲染的日志条数（最新优先），更多条目按需展开 */
+const RENDER_LIMIT_STEP = 300;
 
 const CATEGORY_LABELS: Record<DebugLogCategory, string> = {
   app: '应用',
@@ -46,9 +50,19 @@ export default function DebugLogPage() {
   // P2 修复：统一二次确认弹窗——用自绘 ConfirmDialog 取代原生 window.confirm
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const intervalRef = useRef<number | null>(null);
+  // P2 渲染优化：签名比对——日志未变化时跳过 setState，避免 1.5s 轮询全量重渲染
+  const lastSignatureRef = useRef('');
+  // P2 渲染优化：渲染条数上限（最新优先），按需展开更早日志
+  const [renderLimit, setRenderLimit] = useState(RENDER_LIMIT_STEP);
 
   const refresh = () => {
-    setEntries(debugLogger.getEntries());
+    const next = debugLogger.getEntries();
+    const first = next[0]?.id ?? '';
+    const last = next[next.length - 1]?.id ?? '';
+    const signature = `${next.length}:${first}:${last}`;
+    if (signature === lastSignatureRef.current) return; // 无变化，不触发重渲染
+    lastSignatureRef.current = signature;
+    setEntries(next);
   };
 
   useEffect(() => {
@@ -96,7 +110,8 @@ export default function DebugLogPage() {
   const handleDeleteByCategory = (category: DebugLogCategory) => {
     const count = entries.filter((e) => e.category === category).length;
     if (count === 0) {
-      alert('该类别暂无日志');
+      // P2：原生 alert 改统一 toast
+      toast.info('该类别暂无日志');
       return;
     }
     setConfirmRequest({
@@ -106,7 +121,8 @@ export default function DebugLogPage() {
       onConfirm: () => {
         const deleted = debugLogger.deleteByCategory(category);
         refresh();
-        alert(`已删除 ${deleted} 条日志`);
+        // P2：原生 alert 改统一 toast
+        toast.success(`已删除 ${deleted} 条日志`);
       },
     });
   };
@@ -120,6 +136,9 @@ export default function DebugLogPage() {
     if (filterLevel !== 'all' && entry.level !== filterLevel) return false;
     return true;
   });
+  // P2 渲染优化：只渲染最近 renderLimit 条（entries 最新在前），其余按需展开
+  const visibleEntries = filteredEntries.slice(0, renderLimit);
+  const hiddenCount = filteredEntries.length - visibleEntries.length;
 
   const formatTime = (timestamp: number) => {
     const d = new Date(timestamp);
@@ -296,7 +315,7 @@ export default function DebugLogPage() {
         </div>
       ) : (
         <div className="space-y-1">
-          {filteredEntries.map((entry) => (
+          {visibleEntries.map((entry) => (
             <div
               key={entry.id}
               className="p-3 rounded-2xl bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-colors group"
@@ -311,9 +330,10 @@ export default function DebugLogPage() {
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${CATEGORY_COLORS[entry.category]}`}>
                   {CATEGORY_LABELS[entry.category]}
                 </span>
+                {/* P2：移动端无 hover，行内删除按钮常显；桌面端保留 hover 出现 */}
                 <button
                   onClick={() => handleDeleteEntry(entry.id)}
-                  className="ml-auto p-1 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-500/10 text-red-500 transition-all"
+                  className="ml-auto p-1 rounded-lg opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:bg-red-500/10 text-red-500 transition-all"
                   title="删除本条"
                   aria-label="删除本条日志"
                 >
@@ -337,6 +357,16 @@ export default function DebugLogPage() {
             </div>
           ))}
         </div>
+      )}
+
+      {/* P2 渲染优化：更多更早日志按需展开 */}
+      {hiddenCount > 0 && (
+        <button
+          onClick={() => setRenderLimit((n) => n + RENDER_LIMIT_STEP)}
+          className="w-full mt-2 py-2.5 rounded-2xl text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+        >
+          展开更早的 {hiddenCount} 条日志（导出仍包含全部）
+        </button>
       )}
 
       {/* P2 修复：统一二次确认弹窗 */}

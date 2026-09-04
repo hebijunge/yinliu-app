@@ -113,6 +113,26 @@ function persist(state: EqState): void {
 
 const persisted = typeof window !== 'undefined' ? loadPersisted() : {};
 
+/** P2 节流：拖动滑杆时的高频落盘防抖（300ms trailing），避免每拖一格写一次 localStorage。
+ * 其它写操作（开关/预设/保存/删除）仍立即落盘；组件卸载前由 flushEqPersist 兜底冲刷。 */
+let persistTimer: number | null = null;
+function schedulePersist(state: EqState): void {
+  if (typeof window === 'undefined') return;
+  if (persistTimer !== null) window.clearTimeout(persistTimer);
+  persistTimer = window.setTimeout(() => {
+    persistTimer = null;
+    persist(state);
+  }, 300);
+}
+/** 立即冲刷待落盘的均衡器状态（用于页面卸载等关键时机） */
+export function flushEqPersist(): void {
+  if (persistTimer !== null) {
+    window.clearTimeout(persistTimer);
+    persistTimer = null;
+    persist(useEqStore.getState());
+  }
+}
+
 /**
  * 均衡器音频服务：负责 Web Audio 图的创建、挂接与增益应用。
  * 状态源是 useEqStore，服务只做音频侧执行。
@@ -306,7 +326,8 @@ export const useEqStore = create<EqState>((set, get) => ({
     const gains = get().gains.slice();
     gains[index] = clampGain(gain);
     set({ gains, presetId: 'custom' });
-    persist(get());
+    // P2 节流：拖动高频触发改 300ms 防抖落盘，音频增益仍即时生效
+    schedulePersist(get());
     eqService.applyGains(gains);
   },
 

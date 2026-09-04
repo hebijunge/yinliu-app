@@ -13,7 +13,7 @@ interface Props {
 const PRESET_MINUTES = [15, 30, 45, 60];
 
 export default function SleepTimerPanel({ onClose }: Props) {
-  const { active, mode, remainingSeconds, totalSeconds, startDuration, startEndOfTrack, cancel } =
+  const { active, mode, remainingSeconds, totalSeconds, fading, startDuration, startEndOfTrack, cancel } =
     useSleepTimerStore();
 
   const [customMinutes, setCustomMinutes] = useState('');
@@ -90,6 +90,12 @@ export default function SleepTimerPanel({ onClose }: Props) {
               <div className="text-sm text-[var(--text-secondary)] flex items-center gap-2">
                 <Music className="w-4 h-4" />
                 当前曲目播放完毕后自动暂停
+              </div>
+            )}
+            {/* P2：渐弱进行中给用户明确反馈（此时重新播放会中止渐弱并重置倒计时） */}
+            {fading && (
+              <div className="mt-2 text-xs text-[var(--accent)]">
+                正在渐弱音量，即将暂停…
               </div>
             )}
           </div>

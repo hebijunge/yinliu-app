@@ -259,7 +259,7 @@ export interface HealthStatus {
 }
 
 // === 下载相关 ===
-export type DownloadStatus = 'pending' | 'downloading' | 'paused' | 'completed' | 'failed';
+export type DownloadStatus = 'pending' | 'downloading' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
 export interface DownloadTask {
   id: string;

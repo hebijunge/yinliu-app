@@ -266,6 +266,8 @@ function App() {
 
     // 绑定下载事件到 Store
     const unsub4 = downloadEngine.on('stateChange', ({ task }) => {
+      // C-P0-7: 已取消任务不同步进 store（任务已被删除，同步会让已删任务在 UI 复活）
+      if (task.status === 'cancelled') return;
       // engine 的 task 不带 speed（speed 只在 progress 事件里），如果直接 upsertTask(task)
       // 会把 store 里前一次 progress 写入的 speed 抹成 undefined。保留 speed 让 UI 还能显示。
       const prev = useDownloadStore.getState().tasks.find((t) => t.id === task.id);

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, SlidersHorizontal, Plus, X, Check, RotateCcw } from 'lucide-react';
 import {
@@ -7,7 +7,9 @@ import {
   EQ_PRESETS,
   EQ_GAIN_MIN,
   EQ_GAIN_MAX,
+  flushEqPersist,
 } from '@core/player/equalizer';
+import ConfirmDialog from '../components/common/ConfirmDialog';
 
 export default function EqPage() {
   const navigate = useNavigate();
@@ -15,6 +17,21 @@ export default function EqPage() {
   const [showSave, setShowSave] = useState(false);
   const [presetName, setPresetName] = useState('');
   const [savedTip, setSavedTip] = useState('');
+  // P2：savedTip 定时器清理——卸载时不残留 setTimeout
+  const savedTipTimerRef = useRef<number | null>(null);
+  // P2：删除自定义预设二次确认
+  const [deletePresetName, setDeletePresetName] = useState<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (savedTipTimerRef.current !== null) {
+        window.clearTimeout(savedTipTimerRef.current);
+        savedTipTimerRef.current = null;
+      }
+      // 卸载前冲刷滑杆防抖中未落盘的增益
+      flushEqPersist();
+    };
+  }, []);
 
   const isBuiltIn = presetId in EQ_PRESETS;
   const currentLabel = presetId.startsWith('custom:')
@@ -26,7 +43,20 @@ export default function EqPage() {
       setSavedTip(presetName.trim());
       setPresetName('');
       setShowSave(false);
-      window.setTimeout(() => setSavedTip(''), 2000);
+      if (savedTipTimerRef.current !== null) {
+        window.clearTimeout(savedTipTimerRef.current);
+      }
+      savedTipTimerRef.current = window.setTimeout(() => {
+        setSavedTip('');
+        savedTipTimerRef.current = null;
+      }, 2000);
+    }
+  };
+
+  const confirmDeletePreset = () => {
+    if (deletePresetName) {
+      deleteCustomPreset(deletePresetName);
+      setDeletePresetName(null);
     }
   };
 
@@ -93,7 +123,7 @@ export default function EqPage() {
                 {p.name}
               </button>
               <button
-                onClick={() => deleteCustomPreset(p.name)}
+                onClick={() => setDeletePresetName(p.name)}
                 className={`p-1 rounded-full transition-colors ${
                   presetId === `custom:${p.name}` ? 'hover:bg-white/20' : 'hover:bg-[var(--bg-primary)]'
                 }`}
@@ -180,6 +210,16 @@ export default function EqPage() {
           若个别播放路径无法安全接入均衡器，会自动保持原声直出，不影响播放。
         </p>
       </div>
+
+      {/* P2：删除自定义预设二次确认 */}
+      <ConfirmDialog
+        open={!!deletePresetName}
+        title="删除自定义预设"
+        message={`确定要删除预设「${deletePresetName || ''}」吗？删除后不可恢复。`}
+        confirmText="删除"
+        onConfirm={confirmDeletePreset}
+        onCancel={() => setDeletePresetName(null)}
+      />
     </div>
   );
 }
