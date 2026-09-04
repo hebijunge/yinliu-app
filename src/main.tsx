@@ -5,8 +5,10 @@ import { QueryClient } from '@tanstack/query-core';
 import { QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 import './index.css';
+import { initDatabase } from './shared/database';
 import { initializeProviders } from './providers/music/registry';
 import { prewarmHomeCache } from './core/homeCache';
+import { streamCacheEngine } from './core/streaming';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -60,17 +62,93 @@ class ErrorBoundary extends React.Component<
   }
 }
 
+/** 品牌 Logo SVG — C Style 极简 */
+function LogoIcon({ className = '' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="6" y="6" width="52" height="52" rx="18" stroke="currentColor" strokeWidth="2" opacity="0.2" />
+      <path
+        d="M24 46V22l20-4v20"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+      <circle cx="20" cy="46" r="5" stroke="currentColor" strokeWidth="2" fill="none" />
+      <circle cx="40" cy="42" r="5" stroke="currentColor" strokeWidth="2" fill="none" />
+    </svg>
+  );
+}
+
+/** C Style 品牌加载页 — 极简留白 */
+function LoadingScreen() {
+  const [fadeOut, setFadeOut] = React.useState(false);
+
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      setFadeOut(true);
+    }, 1400);
+    return () => clearTimeout(timer);
+  }, []);
+
+  return (
+    <div
+      className={`fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[var(--bg-primary)] transition-opacity duration-700 ${
+        fadeOut ? 'opacity-0 pointer-events-none' : 'opacity-100'
+      }`}
+    >
+      {/* Clean Logo */}
+      <div className="relative w-20 h-20 mb-8">
+        <div className="absolute inset-0 flex items-center justify-center text-[var(--accent)]">
+          <LogoIcon className="w-14 h-14" />
+        </div>
+      </div>
+
+      {/* App name */}
+      <h1 className="text-3xl font-light tracking-[0.2em] mb-3 text-[var(--text-primary)]">
+        音流
+      </h1>
+      <p className="text-sm text-[var(--text-tertiary)] tracking-widest font-light">
+        多音源聚合音乐播放器
+      </p>
+
+      {/* Minimal progress line */}
+      <div className="mt-10 w-32 h-[2px] rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
+        <div className="h-full rounded-full bg-[var(--accent)] animate-loading-bar" />
+      </div>
+    </div>
+  );
+}
+
 async function bootstrap() {
   const root = ReactDOM.createRoot(document.getElementById('root')!);
 
-  // v23 修复走查 #7：去掉冷启动人为等待（旧 LoadingScreen 固定 1400ms）。
-  // 立即渲染主界面，数据库初始化由 App 内部完成；加载遮罩在数据库就绪后立即淡出（见 App.tsx BootOverlay）。
+  // 先渲染加载态，避免白屏
+  root.render(<LoadingScreen />);
+
+  let dbOk = false;
+  try {
+    await initDatabase();
+    dbOk = true;
+  } catch (dbError) {
+    console.error('Database initialization failed, falling back to memory mode:', dbError);
+  }
+
   try {
     initializeProviders();
   } catch (providerError) {
     console.error('Provider initialization failed:', providerError);
   }
 
+  // v22-lru-fix: App 启动时初始化流缓存引擎——加载元数据、执行启动 LRU 清理并启动定期清理
+  try {
+    await streamCacheEngine.init();
+  } catch (cacheError) {
+    console.error('Stream cache initialization failed:', cacheError);
+  }
+
+  // 无论数据库是否成功，都渲染主界面
   root.render(
     <React.StrictMode>
       <ErrorBoundary>

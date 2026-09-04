@@ -94,9 +94,12 @@ export class StreamFetcher {
     // 1. 先获取文件总大小（HEAD 请求）
     if (!(options.skipHead && this.totalSize > 0)) {
       try {
+        // v24: HEAD 加超时兜底（此前无 signal 无超时，CDN 挂起时整条起播链路被卡死，
+        // 表现为"加载好久"+ 播放按钮一直转圈）。超时后按无 totalSize 继续走分块下载。
         const headResp = await platformFetch(url, {
           method: 'HEAD',
           headers,
+          signal: AbortSignal.timeout(6000),
         });
         const contentLength = headResp.headers.get('content-length');
         if (contentLength) {

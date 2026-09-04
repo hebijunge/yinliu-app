@@ -94,13 +94,21 @@ class StreamingAudioPlayer {
   // 缓存
   private cacheKey = '';
   private cacheEntry: CacheEntry | null = null;
+  /** v22-lru-fix: 本次播放会话标记为活跃的缓存 key（reset 时释放） */
+  private lastActiveCacheKey = '';
 
   // 预取下一首
   private prefetchFetcher: StreamFetcher | null = null;
   private prefetchCallbacks?: StreamingCallbacks;
+  /** v22-lru-fix: 当前预取写入的缓存 key（预取结束/停止时释放活跃标记） */
+  private prefetchCacheKey = '';
 
   // Blob 刷新追踪
   private lastRefreshDownloaded = 0;
+
+  // P3 内存修复：chunks 是否被清空过。清空后内存合并数据必然不完整（有洞），
+  // 后续刷新必须走缓存读路径，禁止用 0 填洞的内存数据覆盖缓存
+  private chunksCleared = false;
 
   // v18 EQ：audio 元素创建监听（均衡器挂接新元素用）
   private audioElementListener: ((el: HTMLAudioElement | null) => void) | null = null;
@@ -196,6 +204,10 @@ class StreamingAudioPlayer {
 
     this.cacheKey = options.cacheKey;
     this.mimeType = this.inferMimeType(options.format);
+
+    // v22-lru-fix: 标记为活跃（播放/下载中），防止 LRU 清理误删使用中的缓存文件
+    streamCacheEngine.markActive(this.cacheKey);
+    this.lastActiveCacheKey = this.cacheKey;
 
     // v21.3: 加密流走独立路径（fetch + decryptStream + Blob 刷新）
     if (options.isEncrypted && options.decryptKey) {
@@ -298,6 +310,10 @@ class StreamingAudioPlayer {
     this.mimeType = this.inferMimeType(options.format);
     this.totalSize = data.length;
     this.totalDownloaded = data.length;
+
+    // v22-lru-fix: 标记为活跃（播放/下载中），防止 LRU 清理误删使用中的缓存文件
+    streamCacheEngine.markActive(this.cacheKey);
+    this.lastActiveCacheKey = this.cacheKey;
 
     // 初始化缓存
     await streamCacheEngine.init();
@@ -413,8 +429,8 @@ class StreamingAudioPlayer {
       if (this.state === 'loading') {
         // 数据量不足 MIN_START_SIZE，但流已结束，直接播放
         await this.onFirstChunkReady();
-      } else if (!this.useMSE && this.chunks.length > 0) {
-        // 最终刷新 blob
+      } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
+        // 最终刷新 blob（P3：chunks 已清空时也要刷新，尾部数据在缓存中）
         debugLogger.info('streaming', 'Encrypted stream completed, final blob refresh');
         await this.setupBlobPlayback();
       }
@@ -542,8 +558,8 @@ class StreamingAudioPlayer {
         // 数据量不足 MIN_START_SIZE，但流已结束，直接播放
         await this.onFirstChunkReady();
         this.chunks = []; // P2
-      } else if (!this.useMSE && this.chunks.length > 0) {
-        // 最终刷新 blob
+      } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
+        // 最终刷新 blob（P3：chunks 已清空时也要刷新，尾部数据在缓存中）
         debugLogger.info('streaming', 'Z3D stream completed, final blob refresh');
         await this.setupBlobPlayback();
         this.chunks = []; // P2
@@ -620,8 +636,11 @@ class StreamingAudioPlayer {
     // 停止当前下载
     await this.fetcher.stop();
 
-    // 清理当前缓冲（保留已下载的数据）
-    // 不清理 chunks，因为它们可能包含 seek 目标附近的数据
+    // P3 内存修复：seek 后从新位置重新下载，旧 chunks 与新数据区间不连续，
+    // 释放旧 chunks 并标记走缓存路径（数据已在缓存，已下载区间由 cacheEngine 维护）。
+    // 同时避免后续 mergeChunks 产出 0 填洞数据覆盖缓存
+    this.chunks = [];
+    this.chunksCleared = true;
 
     // 从 seek 位置重新开始下载（skipHead: totalSize 已知，省一次 HEAD 往返）
     const url = this.fetcher.getUrl();
@@ -645,6 +664,12 @@ class StreamingAudioPlayer {
     // 如果正在预取，先停止
     if (this.prefetchFetcher) {
       await this.prefetchFetcher.stop();
+      this.prefetchFetcher = null;
+      // v22-lru-fix: 上一次预取结束，释放其活跃标记
+      if (this.prefetchCacheKey) {
+        streamCacheEngine.markInactive(this.prefetchCacheKey);
+        this.prefetchCacheKey = '';
+      }
     }
 
     this.prefetchFetcher = new StreamFetcher();
@@ -663,6 +688,11 @@ class StreamingAudioPlayer {
           });
           // 预取完成，停止
           await this.prefetchFetcher?.stop();
+          // v22-lru-fix: 预取完成，释放活跃标记
+          streamCacheEngine.markInactive(options.cacheKey);
+          if (this.prefetchCacheKey === options.cacheKey) {
+            this.prefetchCacheKey = '';
+          }
         }
       },
     });
@@ -671,7 +701,21 @@ class StreamingAudioPlayer {
       debugLogger.warn('streaming', 'prefetchNext: url is required');
       return;
     }
-    await this.prefetchFetcher.start(options.url, options.headers, 0);
+
+    // v22-lru-fix: 预取下载中也标记为活跃，防止首块刚写入就被 LRU 清理删掉
+    this.prefetchCacheKey = options.cacheKey;
+    streamCacheEngine.markActive(options.cacheKey);
+
+    try {
+      await this.prefetchFetcher.start(options.url, options.headers, 0);
+    } catch (err) {
+      // v22-lru-fix: 预取失败立即释放活跃标记
+      streamCacheEngine.markInactive(options.cacheKey);
+      if (this.prefetchCacheKey === options.cacheKey) {
+        this.prefetchCacheKey = '';
+      }
+      throw err;
+    }
   }
 
   /**
@@ -692,24 +736,46 @@ class StreamingAudioPlayer {
     }
 
     // 清理 audio
+    // P3 内存修复：removeAttribute('src') + load() 彻底释放媒体资源与已解码缓冲，
+    // 避免 WebView/audio 元素继续持有旧媒体引用（src='' 在部分 WebView 会回退请求页面 URL）
     if (this.audio) {
       this.audio.pause();
-      this.audio.src = '';
+      this.audio.removeAttribute('src');
+      try {
+        this.audio.load();
+      } catch {
+        // 忽略
+      }
       this.audio = null;
     }
     this.audioElementListener?.(null);
 
     // 清理 MSE
+    // P3 内存修复：先 abort + removeSourceBuffer 断开关联，再 endOfStream，
+    // 避免 SourceBuffer/MediaSource 内部互相持引用延迟释放
     if (this.mediaSource) {
+      const ms = this.mediaSource;
       try {
-        if (this.mediaSource.readyState === 'open') {
-          this.mediaSource.endOfStream();
+        if (ms.readyState === 'open') {
+          if (this.sourceBuffer) {
+            try {
+              this.sourceBuffer.abort();
+            } catch {
+              // 忽略
+            }
+            try {
+              ms.removeSourceBuffer(this.sourceBuffer);
+            } catch {
+              // 忽略
+            }
+          }
+          ms.endOfStream();
         }
       } catch {
         // 忽略
       }
-      this.mediaSource = null;
       this.sourceBuffer = null;
+      this.mediaSource = null;
     }
 
     // 释放 blob URL
@@ -726,9 +792,19 @@ class StreamingAudioPlayer {
     this.seekResumePlay = false;
     this.mseQueue = [];
     this.mseUpdating = false;
+    // v22-lru-fix: 播放会话结束，释放当前播放/预取条目的活跃标记
+    if (this.lastActiveCacheKey) {
+      streamCacheEngine.markInactive(this.lastActiveCacheKey);
+      this.lastActiveCacheKey = '';
+    }
+    if (this.prefetchCacheKey) {
+      streamCacheEngine.markInactive(this.prefetchCacheKey);
+      this.prefetchCacheKey = '';
+    }
     this.cacheKey = '';
     this.cacheEntry = null;
     this.lastRefreshDownloaded = 0;
+    this.chunksCleared = false;
     this.isEncryptedStream = false;
     this.encryptedStreamAbortController = null;
 
@@ -746,14 +822,15 @@ class StreamingAudioPlayer {
     let blobSize = 0;
 
     // v18-fix: Android WebView 禁止 <audio> 加载 file:// 本地文件，默认优先 blob URL
-    // EQ 挂接在 audio 元素创建时处理，不依赖 URL 类型
+    // v22-mem-fix: readAsBlobUrl 在原生平台返回 convertFileSrc 映射的同源文件 URL
+    //   （https://localhost/_capacitor_file_/...），WebView 可加载且零拷贝；
+    //   Web 平台仍返回 blob URL。EQ 挂接在 audio 元素创建时处理，不依赖 URL 类型
     try {
       url = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
-      // v21.2 校验：读取到的 blob 大小必须与预期一致
+      // v21.2 校验：缓存实际大小必须与预期一致
       const entry = streamCacheEngine.getEntry(this.cacheKey);
       if (entry?.expectedTotalSize && entry.expectedTotalSize > 0) {
-        // 通过 fetch 验证 blob 的实际大小（readAsBlobUrl 已读取全部字节到内存，这里取 blob 长度）
-        // 由于 readAsBlobUrl 内部已用 readFileBytes 读取，直接检查 entry.totalSize 更轻量
+        // 校验基于元数据 entry.totalSize（v22-mem-fix 后播放 URL 零拷贝，无内存 blob 长度可查）
         blobSize = entry.totalSize;
         if (blobSize !== entry.expectedTotalSize) {
           throw new Error(
@@ -778,6 +855,10 @@ class StreamingAudioPlayer {
       });
     }
 
+    // P3 内存修复：覆盖前释放旧 URL，防止替换路径漏 revoke
+    if (this.blobUrl && this.blobUrl !== url) {
+      URL.revokeObjectURL(this.blobUrl);
+    }
     this.blobUrl = url;
     await this.setupAudioWithReadyWait(url);
 
@@ -813,11 +894,12 @@ class StreamingAudioPlayer {
    * v21.2 修复：size mismatch 时用实际 mergeChunks 数据建 blob，避免 totalSize 截断
    */
   private async setupBlobPlayback(): Promise<void> {
-    // 合并所有 chunks
+    // 合并所有 chunks（P3：返回 null 表示区间有洞，内存数据不完整）
     const allData = this.mergeChunks();
 
-    // v21.4 P2: Z3D 大文件内存控制——chunks 已清空时直接从缓存构造 blob
-    if (allData.length === 0) {
+    // P3 内存修复：chunks 已清空过 / 存在空洞 / 为空 → 数据已全部落地缓存，
+    // 直接从缓存构造 blob。严禁用内存数据合并后覆盖缓存（0 填洞会污染缓存文件）
+    if (this.chunksCleared || !allData || allData.length === 0) {
       try {
         const newUrl = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
         // v23-fix: seek 未回填时优先用 seek 目标位置恢复
@@ -845,6 +927,9 @@ class StreamingAudioPlayer {
         debugLogger.info('streaming', 'Blob refresh from cache (chunks cleared)', {
           cacheKey: this.cacheKey,
         });
+        // P3 内存修复：缓存路径下内存 chunks 已无用（数据在缓存中），释放
+        this.chunks = [];
+        this.chunksCleared = true;
         return;
       } catch (cacheErr) {
         debugLogger.warn('streaming', 'setupBlobPlayback: chunks empty and cache read failed', {
@@ -943,6 +1028,11 @@ class StreamingAudioPlayer {
         // 自动播放策略可能阻止
       }
     }
+
+    // P3 内存修复：数据已写入缓存/blob（URL 持有独立副本），释放内存中的 chunks。
+    // 后续刷新由 chunksCleared 标记引导走缓存读路径，不会用不完整内存数据覆盖缓存
+    this.chunks = [];
+    this.chunksCleared = true;
   }
 
   /**
@@ -1044,9 +1134,20 @@ class StreamingAudioPlayer {
       this.audioElementListener?.(this.audio);
 
       let resolved = false;
+      // 超时兜底（3秒），避免无限卡住
+      const timeoutId = setTimeout(() => {
+        if (!resolved) {
+          debugLogger.warn('streaming', 'Audio ready wait timeout (3s), proceeding anyway', {
+            src: url.slice(0, 80),
+          });
+          doResolve();
+        }
+      }, 3000);
       const doResolve = () => {
         if (!resolved) {
           resolved = true;
+          // P3 内存修复：resolve 后清理兜底定时器，避免多持有 audio 引用 3 秒
+          clearTimeout(timeoutId);
           resolve();
         }
       };
@@ -1062,16 +1163,6 @@ class StreamingAudioPlayer {
       this.audio.addEventListener('canplay', onReady, { once: true });
       this.audio.addEventListener('loadedmetadata', onReady, { once: true });
 
-      // 超时兜底（3秒），避免无限卡住
-      setTimeout(() => {
-        if (!resolved) {
-          debugLogger.warn('streaming', 'Audio ready wait timeout (3s), proceeding anyway', {
-            src: url.slice(0, 80),
-          });
-          doResolve();
-        }
-      }, 3000);
-
       // 持久状态监听器
       this.audio.addEventListener('canplay', () => {
         if (this.state === 'loading' || this.state === 'buffering') {
@@ -1080,6 +1171,8 @@ class StreamingAudioPlayer {
       });
 
       this.audio.addEventListener('ended', () => {
+        // P3 内存修复：播放结束即停掉 250ms 进度轮询，释放对 audio 的定时引用
+        this.stopProgressTracking();
         this.setState('completed');
         this.callbacks.onEnded?.();
       });
@@ -1093,6 +1186,7 @@ class StreamingAudioPlayer {
           src: url.slice(0, 80),
           state: this.state,
         });
+        this.stopProgressTracking();
         if (!isOnline() && (this.state === 'playing' || this.state === 'buffering')) {
           // E5: 断网导致的媒体错误按断网暂停处理，恢复网络后自动续播
           this.handleNetworkLost();
@@ -1144,6 +1238,8 @@ class StreamingAudioPlayer {
     });
 
     this.audio.addEventListener('ended', () => {
+      // P3 内存修复：播放结束即停掉 250ms 进度轮询，释放对 audio 的定时引用
+      this.stopProgressTracking();
       this.setState('completed');
       this.callbacks.onEnded?.();
     });
@@ -1156,6 +1252,7 @@ class StreamingAudioPlayer {
         message: errMsg,
         src: url.slice(0, 80),
       });
+      this.stopProgressTracking();
       if (!isOnline() && (this.state === 'playing' || this.state === 'buffering')) {
         // E5: 断网导致的媒体错误按断网暂停处理，恢复网络后自动续播
         this.handleNetworkLost();
@@ -1293,10 +1390,12 @@ class StreamingAudioPlayer {
           } catch {
             // 忽略
           }
-        } else if (!this.useMSE && this.chunks.length > 0) {
+        } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
           // v21.2 修复：Blob 模式下所有 chunk 下载完成后重建完整 blob
+          // P3 内存修复：chunks 已清空时也要重建（尾部数据落地缓存后 blob 可能落后）
           debugLogger.info('streaming', 'Blob mode: rebuilding blob from all chunks');
           await this.setupBlobPlayback();
+          this.lastRefreshDownloaded = this.totalDownloaded;
         }
       },
     };
@@ -1361,12 +1460,17 @@ class StreamingAudioPlayer {
 
   /**
    * 合并所有 chunks 为单个 Uint8Array
+   * P3 内存修复：区间不连续（早前 chunks 已清空 / seek 造成空洞）时返回 null。
+   * 调用方必须改走缓存读路径，禁止用 0 填洞的合并结果覆盖缓存文件
    */
-  private mergeChunks(): Uint8Array {
+  private mergeChunks(): Uint8Array | null {
     if (this.chunks.length === 0) return new Uint8Array(0);
 
     // 按 start 排序
     const sorted = [...this.chunks].sort((a, b) => a.start - b.start);
+
+    // 区间不连续：内存数据不完整
+    if (sorted[0].start > 0) return null;
 
     // 计算总大小
     const last = sorted[sorted.length - 1];

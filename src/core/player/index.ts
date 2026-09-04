@@ -17,6 +17,7 @@ import {
   clearMediaSession,
 } from './mediaSession';
 import { notifyPlaybackStateChange } from './audioFocus';
+import { PlayGate } from './playGate';
 import { playHistoryService } from '@shared/services/PlayHistoryService';
 import { debugLogger } from '@shared/utils/debugLogger';
 import { streamingAudioPlayer, type StreamingState, type StreamingCallbacks } from '@core/streaming';
@@ -94,8 +95,10 @@ export class PlayerEngine {
 
   // v16: 预加载缓存（url + blobUrl + actualSourceId）
   private prefetchCache = new Map<string, { url: string; result: PlayUrlResult; actualSourceId: string }>();
-  // v14.5: 播放去重 —— 当前正在进行的 resolvePlayUrl Promise
-  private resolvePlayUrlPromise: Promise<{ url: string; isLocal: boolean; result: PlayUrlResult; actualSourceId: string }> | null = null;
+  // v24: 播放闸门 —— 同 key 去重 + 不同 key 串行 + 异常路径释放。
+  // 替代 v14.5 的 resolvePlayUrlPromise 裸 Promise 去重（比较归属错误、Promise 永不清理、
+  // 判定位于副作用之后），消除重入/连点导致的状态机并发突变与图标错乱。
+  private playGate = new PlayGate();
   // v20.1-fix: 切歌取消旧取链 AbortController
   private playAbortController: AbortController | null = null;
 
@@ -419,24 +422,31 @@ export class PlayerEngine {
   }
 
   async playTrack(track: PlayerTrack, quality: Quality = Quality.STANDARD): Promise<PlayUrlResult> {
+    // v24: 播放闸门入口 —— 去重判定在任何副作用（abort / 清流 / setState）之前同步完成。
+    // 同 key（同曲同音质）进行中 → 直接复用该次播放的 Promise，不再重复触发取链；
+    // 不同 key → 串行排队，前一条播放管线落定后才开始下一条，状态机不存在并发突变窗口
+    // （修复：连点切歌时新请求的 reset 与旧流 load 并发赛跑，旧流回调事后把状态拉回 → 图标与实际播放不符）。
+    const key = `${track.sourceId}_${track.sourceSongId}_${quality}`;
+    const { reused, promise } = this.playGate.enter(key, () => this.doPlayTrack(track, quality));
+    if (reused) {
+      debugLogger.info('player', `播放去重命中: ${track.title}`, { key });
+      return promise;
+    }
+
+    // 非复用的新请求：同步取消上一首的取链（旧管线被 abort 后快速落定，闸门立即放行本请求，
+    // 串行排队不会拖慢切歌响应）。AbortController 在 doPlayTrack 任务内重新创建，
+    // 避免多次排队请求共享同一个 signal 造成的误伤。
+    if (this.playAbortController) {
+      this.playAbortController.abort();
+      debugLogger.info('player', `切歌取消旧取链: ${track.title}`);
+    }
+
+    // 以下同步副作用保持与旧版一致：UI 立即看到切歌意图（loading 态 + 通知栏更新）
     this.lastQuality = quality;
     this.currentTrack = track;
     this.setState('loading');
     this.setBuffering(false);
     this.prefetchTriggered = false;
-
-    // v23: 本次播放请求的代际号 —— 被更新的切歌取代后，其错误不再上报
-    const generation = ++this.playGeneration;
-
-    // v20.1-fix: 取消上一首的取链请求（快速切歌）
-    if (this.playAbortController) {
-      this.playAbortController.abort();
-      debugLogger.info('player', `切歌取消旧取链: ${track.title}`);
-    }
-    this.playAbortController = new AbortController();
-
-    // v16: 切歌后立即预加载下一首
-    this.schedulePrefetchNext();
 
     // 提前把 metadata 推到系统（用户切歌时立即更新通知）
     void updateMetadata({
@@ -445,6 +455,23 @@ export class PlayerEngine {
       album: track.album ?? '',
       artwork: track.coverUrl,
     });
+
+    return promise;
+  }
+
+  /**
+   * v24: 实际播放管线，经 PlayGate 串行执行——同一时刻只有一条管线在跑。
+   * 每条管线持有独立的 AbortController（v20.1-fix 快速切歌取消取链）与代际号
+   * （v23：被更新请求取代的过期错误不再上报 UI）。
+   */
+  private async doPlayTrack(track: PlayerTrack, quality: Quality): Promise<PlayUrlResult> {
+    // v23: 本次播放请求的代际号 —— 被更新的切歌取代后，其错误不再上报
+    const generation = ++this.playGeneration;
+
+    this.playAbortController = new AbortController();
+
+    // v16: 切歌后立即预加载下一首
+    this.schedulePrefetchNext();
 
     // 清理之前的 blob URL
     if (this.currentBlobUrl) {
@@ -458,14 +485,6 @@ export class PlayerEngine {
       this.isStreaming = false;
     }
 
-    // v14.5: 播放去重保护 —— 同曲同音质正在加载中，等待现有请求完成
-    const dedupKey = `${track.sourceId}_${track.sourceSongId}_${quality}`;
-    if (this.state === 'loading' && this.currentTrack?.sourceSongId === track.sourceSongId && this.resolvePlayUrlPromise) {
-      debugLogger.info('player', `播放去重等待: ${track.title}`, { dedupKey });
-      const { result } = await this.resolvePlayUrlPromise;
-      return result;
-    }
-
     debugLogger.info('player', `开始播放: ${track.title}`, {
       artist: track.artist,
       sourceId: track.sourceId,
@@ -473,9 +492,7 @@ export class PlayerEngine {
     });
 
     try {
-      const resolvePromise = this.resolvePlayUrl(track, quality);
-      this.resolvePlayUrlPromise = resolvePromise;
-      const { url, isLocal, result, actualSourceId } = await resolvePromise;
+      const { url, isLocal, result, actualSourceId } = await this.resolvePlayUrl(track, quality);
 
       if (isLocal) {
         this.currentBlobUrl = url;
