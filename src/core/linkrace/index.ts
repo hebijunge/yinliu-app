@@ -2,6 +2,7 @@ import type { EndpointCandidate } from '@providers/music/types';
 import type { PlayUrlResult } from '@core/types';
 import { Quality, qualityRank, YinliuError, ErrorCode } from '@core/types';
 import { platformFetch } from '@shared/utils/platformFetch';
+import { debugLogger } from '@shared/utils/debugLogger';
 
 /**
  * LinkRace 并发竞速取链引擎
@@ -80,7 +81,17 @@ export async function linkRace(
       }
 
       return null;
-    } catch {
+    } catch (err) {
+      // F1(v27 外部报告采纳项): 被胜出方 abort 的竞败请求不算候选失败——
+      // 先识别 AbortError 直接跳过（记 DEBUG 级信息），避免污染失败计数与诊断；
+      // 竞速口径不动：同源多候选并发竞速保持现状，只修误计数
+      if ((err instanceof DOMException && err.name === 'AbortError')
+        || (err instanceof Error && err.name === 'AbortError')) {
+        debugLogger.info('network', `linkrace 候选被取消（其他候选已胜出），不计入失败`, {
+          url: candidate.url.slice(0, 120),
+        });
+        return null;
+      }
       return null;
     }
   });

@@ -434,7 +434,11 @@ export class PlayerEngine {
               if (idx > 0) {
                 const fromName = PLATFORM_DISPLAY_NAMES[raceSources[0].id] || raceSources[0].id;
                 const toName = PLATFORM_DISPLAY_NAMES[trySourceId] || trySourceId;
-                const reason = lastError instanceof Error ? lastError.message : '不可用';
+                // F3(v27)：首个源实际未失败（仍在途被落败）时不写「不可用」误导排障，
+                // 如实记为「取链耗时高于备选」
+                const reason = lastError instanceof Error
+                  ? lastError.message
+                  : '取链耗时高于备选';
                 console.warn(`[PlayerEngine] Link race fallback: ${raceSources[0].id} → ${trySourceId} (${reason})`);
                 this.emit('linkFallback', {
                   track,
@@ -708,7 +712,8 @@ export class PlayerEngine {
       }
       // play() 可能因自动播放策略被拒绝
       this.setState('paused', 'system');
-      this.emit('error', { message: '自动播放被阻止，请点击播放' });
+      // F7(v27 P2-2)：与流式引擎 autoplay 文案合并为统一提示（此前两条文案并存）
+      this.emit('error', { message: '播放失败，请点击播放按钮重试' });
       debugLogger.warn('player', '自动播放被阻止', {
         track: track.title,
         error: err instanceof Error ? err.message : String(err),

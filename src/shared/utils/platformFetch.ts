@@ -66,13 +66,26 @@ export async function platformFetch(url: string, options: PlatformFetchOptions =
     return response;
   } catch (err) {
     const duration = Math.round(performance.now() - startTime);
-    debugLogger.error('network', `请求失败 ${options.method || 'GET'}`, {
-      url: truncateUrl(url),
-      method: options.method || 'GET',
-      duration: `${duration}ms`,
-      error: err instanceof Error ? err.message : String(err),
-      capacitor: isCapacitor,
-    });
+    // F4(v27 P1-1): 竞速落败/外部取消的 AbortError 不算真实失败，降级记 INFO——
+    // 胜出短路后其余在途请求被 abort 属预期路径，记 ERROR 会污染失败诊断
+    const isAbortError = (err instanceof DOMException && err.name === 'AbortError')
+      || (err instanceof Error && err.name === 'AbortError');
+    if (isAbortError) {
+      debugLogger.info('network', `请求被取消（竞速落败/外部中止） ${options.method || 'GET'}`, {
+        url: truncateUrl(url),
+        method: options.method || 'GET',
+        duration: `${duration}ms`,
+        capacitor: isCapacitor,
+      });
+    } else {
+      debugLogger.error('network', `请求失败 ${options.method || 'GET'}`, {
+        url: truncateUrl(url),
+        method: options.method || 'GET',
+        duration: `${duration}ms`,
+        error: err instanceof Error ? err.message : String(err),
+        capacitor: isCapacitor,
+      });
+    }
     throw err;
   }
 }

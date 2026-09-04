@@ -24,6 +24,8 @@ export interface ParsedLyrics {
  */
 export class LyricsManager {
   private cache = new Map<string, ParsedLyrics>();
+  /** F6(v27 P2-1)：同曲歌词在途请求去重（single-flight），避免重复网络请求 */
+  private pending = new Map<string, Promise<ParsedLyrics | null>>();
 
   /**
    * 获取歌曲歌词
@@ -36,6 +38,18 @@ export class LyricsManager {
     const cached = this.cache.get(cacheKey);
     if (cached) return cached;
 
+    // F6(v27)：single-flight —— 同曲歌词请求在途时直接复用，不重复发起
+    const pending = this.pending.get(cacheKey);
+    if (pending) return pending;
+
+    const task = this.fetchLyrics(songId, sourceId, cacheKey).finally(() => {
+      this.pending.delete(cacheKey);
+    });
+    this.pending.set(cacheKey, task);
+    return task;
+  }
+
+  private async fetchLyrics(songId: string, sourceId: string, cacheKey: string): Promise<ParsedLyrics | null> {
     // 从指定源获取
     const source = sourceRegistry.get(sourceId);
     if (source && source.getLyrics) {

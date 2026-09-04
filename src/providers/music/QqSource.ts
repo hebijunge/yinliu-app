@@ -1,5 +1,4 @@
-import { BaseHttpSource } from './BaseHttpSource';
-import type { EndpointCandidate } from './types';
+import { BaseHttpSource, type ResolvedCandidate } from './BaseHttpSource';
 import { Quality } from '@core/types';
 import type { SearchParams, SearchResult, SearchType, SongDetail, HealthStatus, PlayUrlResult, PlaylistSummary, TierSizes, QualityOption, QualityTier, MvQuality, MvUrlResult } from '@core/types';
 import { YinliuError, ErrorCode } from '@core/types';
@@ -637,21 +636,24 @@ export class QqSource extends BaseHttpSource {
 
   /**
    * 构建取链候选端点
-   * 包含：官方Vkey端点 + 5个第三方代理
+   * 包含：官方Vkey端点 + 第三方代理
+   * v27(F1/P0-1a)：全部候选带 resolve 解析函数——此前把 musicu.fcg 请求 URL / 代理
+   * JSON 响应直接当音频链返回，是 QQ 坏链（1395 字节 JSON 抢先胜出）的根因
    */
-  protected buildEndpointCandidates(songId: string, quality: Quality): EndpointCandidate[] {
-    const candidates: EndpointCandidate[] = this.buildOfficialEndpoints(songId, quality);
+  protected buildEndpointCandidates(songId: string, quality: Quality): ResolvedCandidate[] {
+    const candidates: ResolvedCandidate[] = this.buildOfficialEndpoints(songId, quality);
     candidates.push(...this.buildProxyEndpoints(songId, quality));
     return candidates;
   }
 
-  private buildOfficialEndpoints(songId: string, quality: Quality): EndpointCandidate[] {
-    const endpoints: EndpointCandidate[] = [];
+  private buildOfficialEndpoints(songId: string, quality: Quality): ResolvedCandidate[] {
+    const endpoints: ResolvedCandidate[] = [];
     const targetFormats = this.getFormatsForQuality(quality);
 
     for (const fmt of targetFormats) {
       // GetVkeyServer 明文档取链
       const vkeyUrl = this.buildVkeyUrl(songId, fmt.format);
+      const fmtSnapshot = { ...fmt };
       endpoints.push({
         url: vkeyUrl,
         method: 'GET',
@@ -660,18 +662,67 @@ export class QqSource extends BaseHttpSource {
         headers: {
           'Referer': 'https://y.qq.com',
         },
+        resolve: (response) => this.resolveOfficialVkey(response, quality, fmtSnapshot),
       });
     }
 
     return endpoints;
   }
 
-  private buildProxyEndpoints(songId: string, quality: Quality) {
+  /**
+   * F1(v27 P0-1a)：官方 GetVkeyServer 响应解析。
+   * musicu.fcg 返回 JSON 协议体——提取 req_2.data.midurlinfo[0].purl 拼 CDN 域名
+   * （req_2.data.sip[0]）成真实直链；purl 为空/提取失败一律 return null 判候选失败。
+   * 字段路径按真实响应防御性兼容；音质档位请求逻辑不动（守住产品决策口径）。
+   */
+  private async resolveOfficialVkey(
+    response: Response,
+    targetQuality: Quality,
+    fmt: { format: string; bitrate: number }
+  ): Promise<PlayUrlResult | null> {
+    try {
+      const data = await response.json();
+      const midurlinfo = data?.req_2?.data?.midurlinfo?.[0];
+      const purl: string = typeof midurlinfo?.purl === 'string' ? midurlinfo.purl : '';
+      if (!purl) return null;
+
+      let url: string;
+      if (/^https?:\/\//i.test(purl)) {
+        url = purl;
+      } else {
+        const sip = Array.isArray(data?.req_2?.data?.sip)
+          ? data.req_2.data.sip.find((s: unknown): s is string => typeof s === 'string' && /^https?:\/\//i.test(s))
+          : '';
+        if (!sip) return null;
+        url = `${sip}${purl}`;
+      }
+      if (!/^https?:\/\//i.test(url)) return null;
+
+      // 实际格式以 purl 文件后缀为准（请求档与实际回盘可能不一致）
+      const actualExt = url.split('?')[0].split('.').pop()?.toLowerCase() || fmt.format.split('.').pop() || 'mp3';
+      // 命中所请求档位格式前缀（如 M800/F000/RS01）才算音质准确，否则交竞速层兜底
+      const requestedPrefix = fmt.format.split('.')[0];
+      const accurate = url.includes(requestedPrefix);
+
+      return {
+        url,
+        quality: targetQuality,
+        bitrate: fmt.bitrate,
+        format: actualExt,
+        headers: { 'Referer': 'https://y.qq.com' },
+        accurate,
+      };
+    } catch {
+      // JSON 解析失败/字段缺失 → 判候选失败
+      return null;
+    }
+  }
+
+  private buildProxyEndpoints(songId: string, quality: Quality): ResolvedCandidate[] {
+    // v27(P1-3)：剔除硬编码 IP 代理 175.27.166.236（日志实证连接失败，纯噪音候选）
     const proxyUrls = [
       // 海棠代理
       `https://musicapi.haitangw.net/music/qq.php?id=${songId}`,
-      // kgqq1代理
-      `https://175.27.166.236/kgqq1/qq.php?id=${songId}`,
       // metingapi代理
       `https://metingapi.nanorocky.top/?server=tencent&type=url&id=${songId}`,
       // vkeys代理
@@ -680,12 +731,40 @@ export class QqSource extends BaseHttpSource {
       `https://musicserver.haitangw.cc/v1/music/resolve-url?source=qq&id=${songId}`,
     ];
 
-    return proxyUrls.map((url): EndpointCandidate => ({
+    return proxyUrls.map((url): ResolvedCandidate => ({
       url,
       method: 'GET',
       timeout: 10000,
       priority: 2,
+      // F1(v27)：代理返回 JSON/文本，从中提取第一条音频直链；提取失败判候选失败。
+      // 代理回盘音质不可控，标记 accurate=false 交由竞速层兜底降级
+      resolve: (response) => this.resolveProxyResponse(response, quality),
     }));
+  }
+
+  /**
+   * F1(v27)：代理响应通用解析——从 JSON/文本响应中提取第一条音频直链。
+   * 此前代理 JSON 响应体被直接当音频链返回（坏链同源问题）。
+   */
+  private async resolveProxyResponse(response: Response, targetQuality: Quality): Promise<PlayUrlResult | null> {
+    let text = '';
+    try {
+      text = await response.text();
+    } catch {
+      return null;
+    }
+    const url = extractFirstAudioUrl(text);
+    if (!url) return null;
+
+    const ext = url.split('?')[0].split('.').pop()?.toLowerCase() || '';
+    const knownExts = new Set(['mp3', 'flac', 'm4a', 'aac', 'ape', 'ogg', 'wav', 'mgg', 'mflac']);
+    return {
+      url,
+      quality: targetQuality,
+      bitrate: this.estimateBitrate(null, targetQuality),
+      format: knownExts.has(ext) ? ext : 'mp3',
+      accurate: false,
+    };
   }
 
   private buildVkeyUrl(songId: string, format: string): string {
@@ -881,6 +960,22 @@ export class QqSource extends BaseHttpSource {
       return { healthy: false, message: 'QQ音乐服务不可用' };
     }
   }
+}
+
+/**
+ * F1(v27)：从任意 JSON/文本响应中提取第一条音频直链。
+ * 匹配 http(s) URL 且以已知音频扩展名结尾（不含引号/空白/HTML 标签边界）。
+ */
+function extractFirstAudioUrl(text: string): string | null {
+  const matches = text.match(/https?:\/\/[^\s"'<>\\]+/g);
+  if (!matches) return null;
+  for (const raw of matches) {
+    const url = raw.replace(/[),.;!]+$/, '');
+    if (/\.(mp3|flac|m4a|aac|ape|ogg|wav|mgg|mflac|mflac0|mgg1)(\?|#|$)/i.test(url)) {
+      return url;
+    }
+  }
+  return null;
 }
 
 function mvQualityRank(q: MvQuality): number {

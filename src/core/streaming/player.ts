@@ -103,6 +103,11 @@ class StreamingAudioPlayer {
   /** v22-lru-fix: 本次播放会话标记为活跃的缓存 key（reset 时释放） */
   private lastActiveCacheKey = '';
 
+  // F7(v27 P2-2 + 外部报告 F3)：播放错误去重锁——同一播放错误从 play() 拦截路径
+  // 与 audio error 事件路径重复上报时，同 key 短窗口内只报一次
+  private lastErrorReport: { key: string; at: number } | null = null;
+  private static readonly ERROR_DEDUP_WINDOW_MS = 3000;
+
   // 预取下一首
   private prefetchFetcher: StreamFetcher | null = null;
   private prefetchCallbacks?: StreamingCallbacks;
@@ -371,8 +376,30 @@ class StreamingAudioPlayer {
       this.startProgressTracking();
     } catch (err) {
       this.setState('paused');
-      this.callbacks.onError?.('播放被阻止，请点击播放按钮');
+      // F7(v27 P2-2)：两条 autoplay 文案合并为统一提示；经去重锁上报，
+      // 自动重试被拦截时保持暂停态+引导点击，不重复报错
+      this.reportError('播放失败，请点击播放按钮重试');
     }
+  }
+
+  /**
+   * F7(v27 P2-2 + 外部报告 F3)：播放错误去重上报。
+   * 同一播放错误（同 cacheKey + 同文案）在短窗口内只向 callbacks.onError 报一次，
+   * 拦截 play() catch 与 audio error 事件双路径的重复上报。
+   */
+  private reportError(message: string): void {
+    const key = `${this.cacheKey}|${message}`;
+    const now = Date.now();
+    if (
+      this.lastErrorReport &&
+      this.lastErrorReport.key === key &&
+      now - this.lastErrorReport.at < StreamingAudioPlayer.ERROR_DEDUP_WINDOW_MS
+    ) {
+      debugLogger.info('streaming', '重复播放错误已去重拦截（短窗口内只报一次）', { key });
+      return;
+    }
+    this.lastErrorReport = { key, at: now };
+    this.callbacks.onError?.(message);
   }
 
   /**
@@ -1272,7 +1299,7 @@ class StreamingAudioPlayer {
           return;
         }
         this.setState('error');
-        this.callbacks.onError?.('音频播放失败');
+        this.reportError('音频播放失败'); // F7(v27)：经去重锁上报，双路径同错误短窗口只报一次
         doResolve(); // 错误时也resolve，避免卡住
       });
 
@@ -1337,7 +1364,7 @@ class StreamingAudioPlayer {
         return;
       }
       this.setState('error');
-      this.callbacks.onError?.('音频播放失败');
+      this.reportError('音频播放失败'); // F7(v27)：经去重锁上报，双路径同错误短窗口只报一次
     });
 
     this.audio.addEventListener('waiting', () => {
