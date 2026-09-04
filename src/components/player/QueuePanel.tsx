@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { X, Trash2, ChevronUp, ChevronDown, Play, GripVertical } from 'lucide-react';
 import { usePlayerStore } from '../../shared/store/playerStore';
 import { playerEngine } from '../../core/player';
+import { useGuardedAction } from '../../shared/hooks/useGuardedAction';
 
 interface Props {
   onClose: () => void;
@@ -54,9 +55,11 @@ export default function QueuePanel({ onClose }: Props) {
     }
   };
 
-  const handleClear = () => {
+  const clearQueue = () => {
     usePlayerStore.getState().clearQueue();
   };
+  // E4 狂点守卫：清空队列进行中禁用 + 完成后 300ms 防抖
+  const { run: handleClear, busy: clearingQueue } = useGuardedAction(clearQueue);
 
   const handleDragStart = (index: number) => {
     setDragIndex(index);
@@ -100,7 +103,8 @@ export default function QueuePanel({ onClose }: Props) {
           {queue.length > 0 && (
             <button
               onClick={handleClear}
-              className="p-2 rounded-xl hover:bg-red-500/10 text-[var(--text-tertiary)] hover:text-red-400 transition-colors focus-ring"
+              disabled={clearingQueue}
+              className={`p-2 rounded-xl hover:bg-red-500/10 text-[var(--text-tertiary)] hover:text-red-400 transition-colors focus-ring ${clearingQueue ? 'opacity-40 pointer-events-none' : ''}`}
               title="清空队列"
             >
               <Trash2 className="w-4 h-4" />

@@ -7,6 +7,8 @@ import { playerEngine } from '@core/player';
 import { useSearchStore } from '@shared/store/searchStore';
 import { toast } from '@shared/components/Toast';
 import EmptyState from '../components/common/EmptyState';
+import OfflineEmptyState from '../shared/components/OfflineEmptyState';
+import { useNetworkStatus } from '../shared/hooks/useNetworkStatus';
 import { toUserMessage } from '../shared/utils/errorCopy';
 import SmartCover from '../components/ui/SmartCover';
 
@@ -28,6 +30,8 @@ type TabKey = 'charts' | 'playlists';
  */
 export default function LibraryPage() {
   const { selectedQuality } = useSearchStore();
+  // E1 离线空态：断网时榜单/歌单无法聚合拉取，给出统一离线出口
+  const online = useNetworkStatus();
 
   // ===== 顶部 Tab 切换 =====
   const [activeTab, setActiveTab] = useState<TabKey>('charts');
@@ -183,6 +187,12 @@ export default function LibraryPage() {
               <Loader2 className="w-6 h-6 animate-spin text-[var(--text-tertiary)]" />
               <span className="ml-2 text-sm text-[var(--text-tertiary)]">加载中…</span>
             </div>
+          ) : !online && chartResults.length === 0 ? (
+            // E1: 断网且无缓存 —— 统一离线空态，附重新加载出口
+            <OfflineEmptyState
+              description="当前无网络连接，无法获取聚合榜单；恢复网络后点击重新加载"
+              onRetry={() => void loadCharts(chartCat)}
+            />
           ) : chartError ? (
             <EmptyState
               icon={AlertCircle}
@@ -199,6 +209,8 @@ export default function LibraryPage() {
             />
           ) : (
             <div className="space-y-4">
+              {/* E1: 断网但有已加载的榜单 —— 照常展示并标注「离线内容」 */}
+              {!online && <OfflineEmptyState hasCachedContent />}
               {chartResults.map((result) => (
                 <div key={result.sourceId}>
                   {/* 源标题 */}
@@ -313,6 +325,12 @@ export default function LibraryPage() {
               <Loader2 className="w-6 h-6 animate-spin text-[var(--text-tertiary)]" />
               <span className="ml-2 text-sm text-[var(--text-tertiary)]">加载中…</span>
             </div>
+          ) : !online && playlistResults.length === 0 ? (
+            // E1: 断网且无缓存 —— 统一离线空态，附重新加载出口
+            <OfflineEmptyState
+              description="当前无网络连接，无法获取聚合歌单；恢复网络后点击重新加载"
+              onRetry={() => void loadPlaylists(playlistCat)}
+            />
           ) : playlistError ? (
             <EmptyState
               icon={AlertCircle}
@@ -329,6 +347,8 @@ export default function LibraryPage() {
             />
           ) : (
             <div className="space-y-4">
+              {/* E1: 断网但有已加载的歌单 —— 照常展示并标注「离线内容」 */}
+              {!online && <OfflineEmptyState hasCachedContent />}
               {playlistResults.map((result) => (
                 <div key={result.sourceId}>
                   {/* 源标题 */}
