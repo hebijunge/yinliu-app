@@ -8,6 +8,7 @@ import { useSearchStore } from '@shared/store/searchStore';
 import { toast } from '@shared/components/Toast';
 import EmptyState from '../components/common/EmptyState';
 import { toUserMessage } from '../shared/utils/errorCopy';
+import SmartCover from '../components/ui/SmartCover';
 
 const SOURCE_BADGE_COLORS: Record<string, string> = {
   netease: 'bg-red-500',
@@ -161,7 +162,7 @@ export default function ChartPage() {
               </span>
               <div className="w-12 h-12 rounded-lg bg-[var(--bg-secondary)] overflow-hidden flex-shrink-0">
                 {song.coverUrl ? (
-                  <img src={song.coverUrl} alt={song.title} className="w-full h-full object-cover" loading="lazy" />
+                  <SmartCover src={song.coverUrl} alt={song.title} className="w-full h-full" />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center">
                     <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
@@ -210,7 +211,7 @@ export default function ChartPage() {
                       </span>
                       <div className="w-10 h-10 rounded-lg bg-[var(--bg-secondary)] overflow-hidden flex-shrink-0">
                         {song.coverUrl ? (
-                          <img src={song.coverUrl} alt={song.title} className="w-full h-full object-cover" loading="lazy" />
+                          <SmartCover src={song.coverUrl} alt={song.title} className="w-full h-full" />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center">
                             <Music className="w-4 h-4 text-[var(--text-tertiary)]" />

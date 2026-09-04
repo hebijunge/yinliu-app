@@ -6,6 +6,7 @@ import { playerEngine } from '@core/player';
 import { useSearchStore } from '@shared/store/searchStore';
 import { useFavoritePlaylistStore } from '@shared/store/favoritePlaylistStore';
 import type { SearchResult } from '@core/types';
+import SmartCover from '../components/ui/SmartCover';
 
 const SOURCE_BADGE_COLORS: Record<string, string> = {
   netease: 'bg-red-500',
@@ -184,7 +185,7 @@ export default function PlaylistAggregationPage() {
                           >
                             <div className="w-16 h-16 rounded-lg bg-[var(--bg-primary)] overflow-hidden flex-shrink-0">
                               {playlist.coverUrl ? (
-                                <img src={playlist.coverUrl} alt={playlist.title} className="w-full h-full object-cover" loading="lazy" />
+                                <SmartCover src={playlist.coverUrl} alt={playlist.title} className="w-full h-full" />
                               ) : (
                                 <div className="w-full h-full flex items-center justify-center">
                                   <ListMusic className="w-6 h-6 text-[var(--text-tertiary)]" />
@@ -253,7 +254,7 @@ export default function PlaylistAggregationPage() {
                                     <span className="w-5 text-center text-xs text-[var(--text-tertiary)]">{idx + 1}</span>
                                     <div className="w-8 h-8 rounded bg-[var(--bg-secondary)] overflow-hidden flex-shrink-0">
                                       {song.coverUrl ? (
-                                        <img src={song.coverUrl} alt={song.title} className="w-full h-full object-cover" loading="lazy" />
+                                        <SmartCover src={song.coverUrl} alt={song.title} className="w-full h-full" />
                                       ) : (
                                         <div className="w-full h-full flex items-center justify-center">
                                           <Music className="w-3 h-3 text-[var(--text-tertiary)]" />

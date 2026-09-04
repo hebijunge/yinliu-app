@@ -4,6 +4,7 @@ import { usePlayHistoryStore, type HistoryRecord } from '../shared/store/playHis
 import { usePlaylistStore, type PlaylistSongInput } from '../shared/store/playlistStore';
 import { usePlayerStore } from '../shared/store/playerStore';
 import { playerEngine } from '../core/player';
+import { useVirtualList } from '../shared/hooks/useVirtualList';
 
 const SOURCE_COLORS: Record<string, string> = {
   netease: 'bg-red-500',
@@ -114,10 +115,13 @@ export default function HistoryPage() {
     [toggleFavorite]
   );
 
+  // P3：播放历史列表虚拟化（固定行高 78px）
+  const { scrollRef, virtualItems, totalSize, rowStyle } = useVirtualList(records, 78);
+
   return (
-    <div className="max-w-4xl mx-auto pb-8">
+    <div className="max-w-4xl mx-auto w-full h-full flex flex-col pb-8">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-[var(--accent-soft)] flex items-center justify-center">
             <Clock className="w-5 h-5 text-[var(--accent)]" />
@@ -155,12 +159,15 @@ export default function HistoryPage() {
           <p className="text-sm text-[var(--text-tertiary)]">去发现页搜索并播放一首歌试试</p>
         </div>
       ) : (
-        <div className="space-y-1.5">
-          {records.map((record) => {
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto pr-1">
+          <div style={{ height: totalSize, position: 'relative' }}>
+            {virtualItems.map((vRow) => {
+            const record = records[vRow.index];
             const isFav = isFavorite({ title: record.title, artist: record.artist });
             return (
               <div
                 key={record.id}
+                style={rowStyle(vRow)}
                 className="group flex items-center gap-3 p-3 rounded-2xl bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors border border-transparent hover:border-[var(--border-subtle)]"
               >
                 {/* Cover / Icon */}
@@ -228,7 +235,8 @@ export default function HistoryPage() {
                 </div>
               </div>
             );
-          })}
+            })}
+          </div>
         </div>
       )}
 

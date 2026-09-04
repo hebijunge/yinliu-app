@@ -3,6 +3,7 @@ import { Search, BookOpen, ChevronLeft, ChevronRight, Loader2 } from 'lucide-rea
 import { FanqieSource } from '../providers/reading/FanqieSource';
 import type { BookSearchResult, ChapterInfo, ChapterContent } from '../providers/reading/types';
 import { SkeletonPlaylistGrid } from '../components/ui/Skeleton';
+import SmartCover from '../components/ui/SmartCover';
 
 const fanqieSource = new FanqieSource();
 
@@ -200,7 +201,7 @@ export default function ReadingPage() {
             >
               <div className="aspect-[3/4] bg-[var(--bg-tertiary)] flex items-center justify-center">
                 {book.coverUrl ? (
-                  <img src={book.coverUrl} alt="" className="w-full h-full object-cover" />
+                  <SmartCover src={book.coverUrl} alt="" className="w-full h-full" />
                 ) : (
                   <BookOpen className="w-10 h-10 text-[var(--text-tertiary)]" />
                 )}
