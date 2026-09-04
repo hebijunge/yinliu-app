@@ -1193,6 +1193,7 @@ class StreamingAudioPlayer {
           doResolve(); // 错误时也resolve，避免卡住
           return;
         }
+        this.stopProgressTracking();
         this.setState('error');
         this.callbacks.onError?.('音频播放失败');
         doResolve(); // 错误时也resolve，避免卡住
@@ -1258,6 +1259,7 @@ class StreamingAudioPlayer {
         this.handleNetworkLost();
         return;
       }
+      this.stopProgressTracking();
       this.setState('error');
       this.callbacks.onError?.('音频播放失败');
     });
