@@ -89,12 +89,19 @@ export abstract class BaseHttpSource implements MusicSource {
   private static readonly MEMORY_TTL = 24 * 60 * 60 * 1000; // 24小时
   /** 缓存默认 TTL（毫秒）：25 分钟（略低于各源 URL 实际有效期） */
   private static readonly CACHE_TTL = 25 * 60 * 1000;
-  /** 全局取链超时（毫秒） */
-  private static readonly LINK_RACE_TIMEOUT = 20000;
-  /** 单个候选重试次数 */
-  private static readonly MAX_RETRIES = 2;
-  /** 重试退避基数（毫秒） */
-  private static readonly RETRY_BACKOFF_BASE = 500;
+  /** 全局取链超时（毫秒）。v26 收紧：20s → 9s —— 9/3 日志实证首源慢超时串行叠加是出声延迟首要根因，
+   *  单源给 9s 预算后即应让位（平台链错峰竞速会并行补位，见 player v26） */
+  private static readonly LINK_RACE_TIMEOUT = 9000;
+  /** 单个候选重试次数。v26 收紧：2 → 1（弱网下多轮重试叠加 8~10s 超时是 9/3 日志 ~9s 取链耗时的直接来源；
+   *  快速失败后由平台链并行竞速补位，整体成功率不降） */
+  private static readonly MAX_RETRIES = 1;
+  /** 重试退避基数（毫秒）。v26：500 → 300 */
+  private static readonly RETRY_BACKOFF_BASE = 300;
+  /** 单候选超时钳制上限（毫秒）。v26 新增：各源显式设置的 candidate.timeout（如酷我 nmobi 10s）
+   *  一律钳到 ≤4s，防止个别源的宽松超时绕过全局收紧（9/3 日志中 kuwo 候选 3 次超时串行叠加的元凶） */
+  private static readonly MAX_CANDIDATE_TIMEOUT = 4000;
+  /** 候选未显式设超时时的默认值。v26：8000 → 4000 */
+  private static readonly DEFAULT_CANDIDATE_TIMEOUT = 4000;
 
   async getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal): Promise<PlayUrlResult> {
     const lockKey = `${this.id}_${songId}_${quality}`;
@@ -207,8 +214,9 @@ export abstract class BaseHttpSource implements MusicSource {
    * 2. 成功通道记忆：优先尝试上次成功的候选
    * 3. 每个候选独立 timeout，超时即放弃
    * 4. 支持 POST body
-   * 5. 全局超时保护（20s）
-   * 6. 单候选指数退避重试（最多2次）
+   * 5. 全局超时保护（v26 收紧为 9s）
+   * 6. 单候选指数退避重试（v26 收紧为最多 1 次重试）
+   * 7. v26：候选超时钳制 ≤4s（各源显式宽松超时一律钳制，防串行叠加）
    */
   protected async linkRace(candidates: ResolvedCandidate[], targetQuality: Quality, songId?: string, signal?: AbortSignal): Promise<PlayUrlResult> {
     if (candidates.length === 0) {
@@ -329,7 +337,9 @@ export abstract class BaseHttpSource implements MusicSource {
     signal?: AbortSignal
   ): Promise<(PlayUrlResult & { _candidateKey: string }) | null> {
     const candidateKey = c.key || c.url;
-    const timeout = c.timeout || 8000;
+    // v26：候选超时统一钳制 ≤ MAX_CANDIDATE_TIMEOUT（4s）——各源显式设置的宽松超时
+    // （如酷我 nmobi 10s）在弱网下会串行叠加出 20s+ 的取链耗时（9/3 日志实证）
+    const timeout = Math.min(c.timeout || BaseHttpSource.DEFAULT_CANDIDATE_TIMEOUT, BaseHttpSource.MAX_CANDIDATE_TIMEOUT);
 
     try {
       const response = await platformFetch(c.url, {

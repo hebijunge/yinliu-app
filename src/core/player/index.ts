@@ -1,6 +1,7 @@
 import type { PlayUrlResult } from '@core/types';
 import { Quality } from '@core/types';
 import { sourceRegistry } from '@providers/music/registry';
+import type { MusicSource } from '@providers/music/types';
 import { downloadEngine } from '@core/download';
 import { readLocalAudioAsUrl } from '@modules/music/localScanner';
 import {
@@ -370,66 +371,122 @@ export class PlayerEngine {
       throw new Error(`Source ${track.sourceId} not found and no fallback available`);
     }
 
-    let lastError: unknown = null;
-    for (let i = 0; i < chain.length; i++) {
-      const trySourceId = chain[i];
-      const source = sourceRegistry.get(trySourceId);
-      if (!source) continue;
-      if (!source.enabled) {
-        continue;
-      }
-      const trySongId = sourceSongIdMap.get(trySourceId) || track.sourceSongId;
+    // v26: 多平台候选错峰并行竞速 —— 取代 v13 纯串行降级链。
+    // 9/3 日志实证：串行链在弱网下被首源的「候选超时×重试」串行叠加拖到 20s+ 才降级，
+    // 是点击后约 10 秒才出声的首要根因。新策略：
+    //   - 按链序错峰启动（间隔 STAGGER_MS），链序靠前的源保有先手窗口，优先级语义保留；
+    //   - 任一源失败立即补位启动下一源；
+    //   - 第一个成功者获胜，随即取消其余在途取链（独立 AbortController，不误伤播放管线）。
+    const STAGGER_MS = 2000;
+    const raceSources = chain
+      .map((id) => ({ id, source: sourceRegistry.get(id) }))
+      .filter((s): s is { id: string; source: MusicSource } => !!s.source && s.source.enabled);
 
-      try {
-        const playUrl = await source.getPlayUrl(trySongId, quality, this.playAbortController?.signal);
-        if (i > 0) {
-          const fromName = PLATFORM_DISPLAY_NAMES[chain[i - 1]] || chain[i - 1];
-          const toName = PLATFORM_DISPLAY_NAMES[trySourceId] || trySourceId;
-          const reason = lastError instanceof Error ? lastError.message : '不可用';
-          console.warn(
-            `[PlayerEngine] Link fallback: ${chain[i - 1]} → ${trySourceId} (${reason})`
-          );
-          this.emit('linkFallback', {
-            track,
-            fromSourceId: chain[i - 1],
-            toSourceId: trySourceId,
-            reason,
-          });
-          toast.info(
-            `已切换到 ${toName} 播放`,
-            `${fromName} 取链失败（${reason}），已自动降级到 ${toName}`
-          );
-          debugLogger.warn('player', `取链降级: ${fromName} → ${toName}`, {
-            track: track.title,
-            from: chain[i - 1],
-            to: trySourceId,
-            reason,
-          });
-        }
-        debugLogger.info('player', `在线取链成功: ${track.title}`, {
-          sourceId: trySourceId,
-          quality,
-          format: playUrl.format,
-        });
-        return { url: playUrl.url, isLocal: false, result: playUrl, actualSourceId: trySourceId };
-      } catch (err) {
-        lastError = err;
-        console.warn(
-          `[PlayerEngine] getPlayUrl failed on ${trySourceId}:`,
-          err instanceof Error ? err.message : err
-        );
-        debugLogger.warn('player', `取链失败: ${trySourceId} · ${track.title}`, {
-          sourceId: trySourceId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+    if (raceSources.length === 0) {
+      throw new Error(`Source ${track.sourceId} not found and no fallback available`);
     }
 
-    throw new Error(
-      `All ${chain.length} sources failed for "${track.title}": ${
-        lastError instanceof Error ? lastError.message : 'unknown'
-      }`
-    );
+    const raceController = new AbortController();
+    const onExternalAbort = () => raceController.abort();
+    this.playAbortController?.signal.addEventListener('abort', onExternalAbort, { once: true });
+
+    try {
+      return await new Promise<{ url: string; isLocal: boolean; result: PlayUrlResult; actualSourceId: string }>((resolve, reject) => {
+        let settled = false;
+        let nextToLaunch = 0;
+        let pending = 0;
+        let lastError: unknown = null;
+        let staggerTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const cleanup = () => {
+          if (staggerTimer !== null) { clearTimeout(staggerTimer); staggerTimer = null; }
+          this.playAbortController?.signal.removeEventListener('abort', onExternalAbort);
+        };
+
+        const failAll = () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          raceController.abort();
+          const msg = lastError instanceof Error ? lastError.message : 'unknown';
+          reject(new Error(`All ${raceSources.length} sources failed for "${track.title}": ${msg}`));
+        };
+
+        const launchNext = () => {
+          if (settled) return;
+          if (nextToLaunch >= raceSources.length || raceController.signal.aborted) {
+            if (pending === 0) failAll();
+            return;
+          }
+
+          const idx = nextToLaunch++;
+          const { id: trySourceId, source } = raceSources[idx];
+          const trySongId = sourceSongIdMap.get(trySourceId) || track.sourceSongId;
+          pending++;
+
+          source.getPlayUrl(trySongId, quality, raceController.signal)
+            .then((playUrl) => {
+              pending--;
+              if (settled) return;
+              settled = true;
+              cleanup();
+              raceController.abort(); // 胜出即取消其余在途取链
+              if (idx > 0) {
+                const fromName = PLATFORM_DISPLAY_NAMES[raceSources[0].id] || raceSources[0].id;
+                const toName = PLATFORM_DISPLAY_NAMES[trySourceId] || trySourceId;
+                const reason = lastError instanceof Error ? lastError.message : '不可用';
+                console.warn(`[PlayerEngine] Link race fallback: ${raceSources[0].id} → ${trySourceId} (${reason})`);
+                this.emit('linkFallback', {
+                  track,
+                  fromSourceId: raceSources[0].id,
+                  toSourceId: trySourceId,
+                  reason,
+                });
+                toast.info(
+                  `已切换到 ${toName} 播放`,
+                  `${fromName} 取链失败（${reason}），已自动降级到 ${toName}`
+                );
+                debugLogger.warn('player', `取链降级: ${fromName} → ${trySourceId}`, {
+                  track: track.title,
+                  from: raceSources[0].id,
+                  to: trySourceId,
+                  reason,
+                });
+              }
+              debugLogger.info('player', `在线取链成功: ${track.title}`, {
+                sourceId: trySourceId,
+                quality,
+                format: playUrl.format,
+              });
+              resolve({ url: playUrl.url, isLocal: false, result: playUrl, actualSourceId: trySourceId });
+            })
+            .catch((err) => {
+              pending--;
+              lastError = err;
+              console.warn(
+                `[PlayerEngine] getPlayUrl failed on ${trySourceId}:`,
+                err instanceof Error ? err.message : err
+              );
+              debugLogger.warn('player', `取链失败: ${trySourceId} · ${track.title}`, {
+                sourceId: trySourceId,
+                error: err instanceof Error ? err.message : String(err),
+              });
+              if (!settled) launchNext(); // 失败立即补位启动下一源
+            });
+
+          // 错峰调度：仍有未启动的源时按间隔继续启动（失败补位路径会重置计时）
+          if (!settled && nextToLaunch < raceSources.length) {
+            if (staggerTimer !== null) clearTimeout(staggerTimer);
+            staggerTimer = setTimeout(() => { staggerTimer = null; launchNext(); }, STAGGER_MS);
+          }
+        };
+
+        launchNext();
+      });
+    } finally {
+      // 兜底：任何异常退出路径都确保外部 abort 监听被移除
+      this.playAbortController?.signal.removeEventListener('abort', onExternalAbort);
+    }
   }
 
   async playTrack(track: PlayerTrack, quality: Quality = Quality.STANDARD): Promise<PlayUrlResult> {
