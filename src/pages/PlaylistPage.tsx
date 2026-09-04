@@ -20,6 +20,8 @@ export default function PlaylistPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
+  // D9 修复：创建歌单的提交中状态（防双击重复创建）与失败兜底
+  const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [isLoading] = useState(false);
@@ -139,16 +141,26 @@ export default function PlaylistPage() {
               autoFocus
             />
             <button
-              onClick={() => {
-                if (newName.trim()) {
-                  addPlaylist(newName.trim());
+              disabled={creating || !newName.trim()}
+              onClick={async () => {
+                const name = newName.trim();
+                if (!name || creating) return;
+                setCreating(true);
+                try {
+                  // D9 修复：等待创建完成并做失败兜底——旧实现 fire-and-forget，
+                  // 写库失败时弹窗照常关闭、用户以为创建成功，列表里却什么都没有
+                  await addPlaylist(name);
                   setNewName('');
                   setShowCreate(false);
+                } catch (err) {
+                  toast.error('创建歌单失败', toUserMessage(err, '请检查存储空间后重试'));
+                } finally {
+                  setCreating(false);
                 }
               }}
               className="yinliu-btn"
             >
-              创建
+              {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : '创建'}
             </button>
             <button onClick={() => setShowCreate(false)} className="yinliu-btn-secondary">
               取消

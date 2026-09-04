@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Clock, Play, Plus, ListPlus, Trash2, Music, X, Heart, Search } from 'lucide-react';
+import { formatRelativeTime } from '../shared/utils/sourceBadge';
 import { usePlayHistoryStore, type HistoryRecord } from '../shared/store/playHistoryStore';
 import { usePlaylistStore, type PlaylistSongInput } from '../shared/store/playlistStore';
 import { usePlayerStore } from '../shared/store/playerStore';
@@ -14,17 +15,6 @@ const SOURCE_COLORS: Record<string, string> = {
   kugou: 'bg-cyan-500',
   migu: 'bg-orange-500',
 };
-
-function formatRelativeTime(ts: number): string {
-  const now = Date.now();
-  const diff = now - ts;
-  if (diff < 60_000) return '刚刚';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`;
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 function formatDuration(s?: number): string {
   if (!s || !isFinite(s)) return '--:--';

@@ -44,7 +44,17 @@ export const useToastStore = create<ToastState>((set) => ({
       description: t.description,
       type: t.type,
     };
-    set((s) => ({ toasts: [...s.toasts, item].slice(-3) }));
+    // D9 修复：容量满时优先淘汰最旧的非 error 项——
+    // 旧实现 slice(-3) 会把尚在展示期的 error 提示被后续 info/success 立刻挤掉
+    set((s) => {
+      let list: ToastItem[] = [...s.toasts, item];
+      while (list.length > 3) {
+        const oldestNonError = list.findIndex((x) => x.type !== 'error');
+        const removeAt = oldestNonError === -1 ? 0 : oldestNonError;
+        list = list.filter((_, i) => i !== removeAt);
+      }
+      return { toasts: list };
+    });
     return id;
   },
   dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),

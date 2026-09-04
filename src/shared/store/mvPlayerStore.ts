@@ -7,6 +7,10 @@ interface MvSourceWithQualities extends MvSourceInfo {
   qualitiesFetched: boolean;
 }
 
+// C10 修复：请求代数计数器。旧实现异步回调只检查 isOpen——
+// 快速关闭 A 再打开 B 时，A 的迟到回调会误判「仍打开」并把 A 的 URL 写进 B 的会话。
+let requestGen = 0;
+
 interface MvPlayerStore {
   isOpen: boolean;
   title: string;
@@ -20,6 +24,8 @@ interface MvPlayerStore {
   isLoading: boolean;
   isFetchingQualities: boolean;
   error: string | null;
+  /** C10: 当前会话请求代数，用于使过期异步回调失效 */
+  requestGen: number;
 
   openMv: (result: AggregatedSearchResult) => void;
   closeMv: () => void;
@@ -67,8 +73,11 @@ export const useMvPlayerStore = create<MvPlayerStore>((set, get) => ({
   isLoading: false,
   isFetchingQualities: false,
   error: null,
+  requestGen: 0,
 
   openMv: (result) => {
+    const gen = ++requestGen;
+    const isStale = () => get().requestGen !== gen || !get().isOpen;
     const mvSources = result.mvSources || [];
     let sources: MvSourceWithQualities[];
 
@@ -104,11 +113,11 @@ export const useMvPlayerStore = create<MvPlayerStore>((set, get) => ({
       error: null,
     });
 
-    // 并发获取所有源的画质，然后自动加载
+    // 并发获取所有源的画质，然后自动加载（带请求代数守卫）
     fetchQualitiesForSources(sources).then((updatedSources) => {
-      const state = get();
-      if (!state.isOpen) return; // 用户已关闭
+      if (isStale()) return; // 已关闭或已被更新的请求取代
 
+      const state = get();
       const currentSource = updatedSources.find((s) => s.sourceId === state.currentSourceId);
       const bestQuality = currentSource?.availableQualities?.[0] || null;
 
@@ -121,8 +130,7 @@ export const useMvPlayerStore = create<MvPlayerStore>((set, get) => ({
       if (currentSource && bestQuality) {
         set({ isLoading: true, videoUrl: null, error: null });
         loadMvUrl(currentSource.sourceId, currentSource.sourceMvId, bestQuality).then((url) => {
-          const s2 = get();
-          if (!s2.isOpen) return;
+          if (isStale()) return;
           if (url) {
             set({ videoUrl: url, isLoading: false });
           } else {
@@ -134,6 +142,7 @@ export const useMvPlayerStore = create<MvPlayerStore>((set, get) => ({
   },
 
   closeMv: () => {
+    requestGen++; // 使在途回调全部失效
     set({
       isOpen: false,
       title: '',
@@ -154,6 +163,8 @@ export const useMvPlayerStore = create<MvPlayerStore>((set, get) => ({
     const state = get();
     const source = state.sources.find((s) => s.sourceId === sourceId);
     if (!source) return;
+    const gen = ++requestGen;
+    const isStale = () => get().requestGen !== gen || !get().isOpen;
 
     const bestQuality = source.availableQualities?.[0] || null;
 
@@ -167,8 +178,7 @@ export const useMvPlayerStore = create<MvPlayerStore>((set, get) => ({
 
     if (bestQuality) {
       loadMvUrl(source.sourceId, source.sourceMvId, bestQuality).then((url) => {
-        const s2 = get();
-        if (!s2.isOpen) return;
+        if (isStale()) return;
         if (url) {
           set({ videoUrl: url, isLoading: false });
         } else {
@@ -182,6 +192,8 @@ export const useMvPlayerStore = create<MvPlayerStore>((set, get) => ({
     const state = get();
     const source = state.sources.find((s) => s.sourceId === state.currentSourceId);
     if (!source) return;
+    const gen = ++requestGen;
+    const isStale = () => get().requestGen !== gen || !get().isOpen;
 
     set({
       currentQuality: quality,
@@ -191,8 +203,7 @@ export const useMvPlayerStore = create<MvPlayerStore>((set, get) => ({
     });
 
     loadMvUrl(source.sourceId, source.sourceMvId, quality).then((url) => {
-      const s2 = get();
-      if (!s2.isOpen) return;
+      if (isStale()) return;
       if (url) {
         set({ videoUrl: url, isLoading: false });
       } else {

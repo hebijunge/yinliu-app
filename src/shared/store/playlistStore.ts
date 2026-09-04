@@ -1,12 +1,6 @@
 import { create } from 'zustand';
-import { normalizeTitle, normalizeArtist } from '@core/search';
-import { playlistService, type Playlist, type PlaylistSong } from '@shared/services/PlaylistService';
+import { playlistService, makeFavoriteKey, type Playlist, type PlaylistSong } from '@shared/services/PlaylistService';
 import { playlistImporter, type ImportReport, type PreviewResult } from '@modules/music/playlistImporter';
-
-/** 跨源归一化收藏键：基于歌名+歌手归一化，同一首歌不同平台共享同一键 */
-function makeFavoriteKey(title: string, artist?: string): string {
-  return `${normalizeTitle(title)}|${normalizeArtist(artist || '')}`;
-}
 
 interface PlaylistStore {
   playlists: Playlist[];
@@ -179,7 +173,12 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
         // 封面写入失败不影响加歌主流程
       }
     }
-    await get().loadPlaylistSongs(playlistId, { force: true }); // 增歌后强制刷新当前视图
+    // C10 修复：仅当目标歌单正在被查看时才强制刷新视图。
+    // 旧实现无条件 force 重载目标歌单，会把 loadedPlaylistId / currentPlaylistSongs
+    // 改成目标歌单的数据——用户加歌到后台歌单时，当前视图被 clobber 成另一张歌单的内容。
+    if (get().loadedPlaylistId === playlistId) {
+      await get().loadPlaylistSongs(playlistId, { force: true }); // 增歌后强制刷新当前视图
+    }
     await get().loadPlaylists(); // 刷新 songCount
   },
 

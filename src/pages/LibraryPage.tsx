@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Trophy, ListMusic, Music, Loader2, AlertCircle, ChevronRight } from 'lucide-react';
+import { SOURCE_BADGE_COLORS } from '../shared/utils/sourceBadge';
 import { CHART_CATEGORIES } from '@modules/chart/chartMappings';
 import { aggregateChartsByCategory, type SourceChartResult, type AggregatedChartSong } from '@modules/chart/aggregator';
 import { aggregatePlaylistsByCategory, type SourcePlaylistResult } from '@modules/playlist/aggregator';
@@ -9,14 +10,6 @@ import { toast } from '@shared/components/Toast';
 import EmptyState from '../components/common/EmptyState';
 import { toUserMessage } from '../shared/utils/errorCopy';
 import SmartCover from '../components/ui/SmartCover';
-
-const SOURCE_BADGE_COLORS: Record<string, string> = {
-  netease: 'bg-red-500',
-  kugou: 'bg-blue-500',
-  qq: 'bg-yellow-500',
-  kuwo: 'bg-orange-500',
-  migu: 'bg-teal-500',
-};
 
 type TabKey = 'charts' | 'playlists';
 

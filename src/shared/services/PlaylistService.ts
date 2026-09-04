@@ -31,7 +31,8 @@ export interface Playlist {
 }
 
 /** 跨源归一化收藏键：基于歌名+歌手归一化 */
-function makeFavoriteKey(title: string, artist?: string): string {
+/** D9 合一：跨源归一化收藏键（此前 playlistStore 内有一份重复实现） */
+export function makeFavoriteKey(title: string, artist?: string): string {
   return `${normalizeTitle(title)}|${normalizeArtist(artist || '')}`;
 }
 

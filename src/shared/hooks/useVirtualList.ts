@@ -21,7 +21,10 @@ export function useVirtualList<T>(
   });
 
   const virtualItems = virtualizer.getVirtualItems();
-  const totalSize = virtualizer.getTotalSize();
+  // D9 修复：行高固定（estimateSize 恒为 rowHeight），总高 = count × rowHeight。
+  // 旧实现渲染期读 virtualizer.getTotalSize()，items 异步加载/替换后的首帧
+  // 会拿到内部缓存的陈旧总高，容器高度闪烁/截断。
+  const totalSize = items.length * rowHeight;
 
   /** 供行容器定位使用的公共样式：绝对定位 + 固定行高 */
   const rowStyle = useCallback(

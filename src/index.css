@@ -341,13 +341,14 @@ html.dark {
 .car-mode .yinliu-btn-secondary,
 .car-mode select,
 .car-mode input,
-.car-mode .yinliu-input,
-.car-mode [class*="rounded"] {
+.car-mode .yinliu-input {
+/* D9 收窄：旧规则含 .car-mode [class*="rounded"]，会把小徽标/开关等非触控
+   圆角元素也强制 48px，误伤布局；交互元素已由上方按钮/表单选择器覆盖 */
   min-height: var(--touch-min-size, 48px);
   min-width: var(--touch-min-size, 48px);
 }
 
-.car-mode nav [class*="py-"] {
+.car-mode .mobile-nav-item {
   padding-top: 0.75rem !important;
   padding-bottom: 0.75rem !important;
 }
@@ -426,11 +427,13 @@ html.dark {
   .yinliu-btn-secondary,
   select,
   input,
-  .yinliu-input,
-  [class*="rounded"] {
+  .yinliu-input {
     min-height: 40px;
     min-width: 40px;
   }
+  /* D9 收窄：移除 [class*="rounded"] 兜底——它把任意带圆角的展示元素
+     （徽标/进度条/缩略图）也拉成 40px 触控区；真触控目标已被
+     button / [role="button"] / a / .yinliu-* 选择器覆盖 */
 
   /* 底部导航栏高度 56 dp，图标 24 dp */
   .mobile-nav-item {
@@ -507,4 +510,18 @@ html.dark {
 }
 .sheet-backdrop-fade {
   animation: sheet-backdrop-fade 0.25s ease-out both;
+}
+
+/* ===== v22 D1: 触屏设备 hover-only 交互不可达 =====
+   hover:none + pointer:coarse 环境下 hover 态无法悬停触发（或点击后粘滞），
+   「默认隐藏、hover 显形」的控件整体常显，保证触屏可达。
+   覆盖：PlaylistPage / HistoryPage / QueuePanel / LocalMusicPage / DebugLogPage /
+   SongListItem / SearchPage / FullScreenPlayer / PlayerBar / VideoPlayer。 */
+@media (hover: none) and (pointer: coarse) {
+  .group-hover\:opacity-100 {
+    opacity: 1 !important;
+  }
+  .hover\:opacity-100 {
+    opacity: 1 !important;
+  }
 }

@@ -106,7 +106,9 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
 
   addToQueue: (track) =>
     set((s) => {
-      const exists = s.queue.findIndex((t) => t.id === track.id);
+      // D9 队列语义统一：去重键用 sourceId+sourceSongId（裸 id 跨音源会碰撞，且各页 id 格式不一）
+      const key = (t: PlayerTrack) => `${t.sourceId}:${t.sourceSongId}`;
+      const exists = s.queue.findIndex((t) => key(t) === key(track));
       if (exists !== -1) return s; // Already in queue
       const queue = [...s.queue, track];
       const currentIndex = s.currentIndex === -1 ? 0 : s.currentIndex;

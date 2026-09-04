@@ -182,16 +182,6 @@ async function initDatabaseOnce(): Promise<void> {
       quality TEXT,
       source_id TEXT
     );
-    CREATE TABLE IF NOT EXISTS source_configs (
-      id TEXT PRIMARY KEY,
-      name TEXT,
-      enabled INTEGER DEFAULT 1,
-      priority INTEGER DEFAULT 0,
-      max_quality TEXT,
-      auth_required INTEGER DEFAULT 0,
-      auth_params TEXT,
-      stability_score INTEGER
-    );
     CREATE TABLE IF NOT EXISTS books (
       id TEXT PRIMARY KEY,
       source_id TEXT,
@@ -273,23 +263,8 @@ async function initDatabaseOnce(): Promise<void> {
   try { sqliteDb.run(`ALTER TABLE downloads ADD COLUMN title TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
   try { sqliteDb.run(`ALTER TABLE downloads ADD COLUMN artist TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
 
-  // 插入默认音源配置
-  const defaults = [
-    { id: 'netease', name: '网易云音乐', enabled: 1, priority: 100, maxQuality: 'hires' },
-    { id: 'qq', name: 'QQ音乐', enabled: 1, priority: 90, maxQuality: 'hifi' },
-    { id: 'kuwo', name: '酷我音乐', enabled: 1, priority: 80, maxQuality: 'master' },
-    { id: 'kugou', name: '酷狗音乐', enabled: 1, priority: 70, maxQuality: 'hires' },
-    { id: 'migu', name: '咪咕音乐', enabled: 1, priority: 60, maxQuality: 'hires' },
-    { id: 'qishui', name: '汽水音乐', enabled: 0, priority: 50, maxQuality: 'standard' },
-    { id: 'qianqian', name: '千千音乐', enabled: 0, priority: 40, maxQuality: 'high' },
-  ];
-
-  for (const s of defaults) {
-    sqliteDb.run(
-      `INSERT OR IGNORE INTO source_configs (id, name, enabled, priority, max_quality) VALUES (?, ?, ?, ?, ?)`,
-      [s.id, s.name, s.enabled, s.priority, s.maxQuality]
-    );
-  }
+  // C10: 音源启用真值源已收敛到 settingsStore.enabledSources（经 main.tsx 同步到 registry）。
+  // 旧 source_configs 表只写不读、构成第二真值源，建表与默认行写入已移除（老库残留表无害）。
 
   // 初始化「我喜欢的音乐」歌单（固定 id='favorites'，普通歌单，不做特殊分支）
   sqliteDb.run(

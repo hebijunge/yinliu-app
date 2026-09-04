@@ -92,8 +92,21 @@ function removeEntryRaw(storageKey: string, index: CacheIndex): void {
   delete index[storageKey];
 }
 
+/** D9 孤儿自愈：数据已被外部清除/淘汰失败但索引仍记账的幻影条目，读取时同步摘除记账 */
+function healOrphanIndex(index: CacheIndex): void {
+  if (typeof localStorage === 'undefined') return;
+  for (const k of Object.keys(index)) {
+    try {
+      if (localStorage.getItem(k) === null) delete index[k];
+    } catch {
+      /* 存储不可用时跳过自愈 */
+    }
+  }
+}
+
 /** 按 LRU（lastUsedAt 最旧优先）淘汰，直到总字节数 ≤ 上限；excludeKey 的条目不淘汰 */
 function evictToLimit(index: CacheIndex, excludeKey?: string): void {
+  healOrphanIndex(index);
   const entries = Object.entries(index)
     .filter(([k]) => k !== excludeKey)
     .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt);

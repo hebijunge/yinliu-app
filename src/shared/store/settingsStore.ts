@@ -60,6 +60,7 @@ function persist(state: SettingsState): void {
       carMode: state.carMode,
       enableFloatingLyrics: state.enableFloatingLyrics,
       repeatMode: state.repeatMode,
+      downloadDir: state.downloadDir,
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch {
@@ -210,7 +211,8 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       enableFloatingLyrics: false,
       repeatMode: 'sequence',
     });
-    downloadEngine.setDownloadDir('yinliu/downloads');
+    // C10 修复：clearAll 原先只重置了目录，音质/并发设置仍留在下载引擎里
+    applyDownloadSettings(Quality.STANDARD, 3, 'yinliu/downloads');
     debugLogger.setEnabled(false);
   },
 }));

@@ -67,12 +67,23 @@ export function useResponsiveLayout(): ResponsiveLayout {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    window.addEventListener('resize', updateLayout);
+    // D9 修复：resize 高频触发时 updateLayout 会连续 setState 全量重渲染，
+    // 用 rAF 节流——每帧最多应用一次，连续事件只保留最新尺寸
+    let rafId: number | null = null;
+    const scheduleUpdate = () => {
+      if (rafId != null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        updateLayout();
+      });
+    };
+
+    window.addEventListener('resize', scheduleUpdate);
 
     // 监听设备方向变化（横屏/竖屏切换）
     const orientationHandler = () => {
       // 方向变化后尺寸会随之变化，resize事件通常也会触发，但做双重保险
-      setTimeout(updateLayout, 50);
+      setTimeout(scheduleUpdate, 50);
     };
     window.addEventListener('orientationchange', orientationHandler);
 
@@ -80,7 +91,8 @@ export function useResponsiveLayout(): ResponsiveLayout {
     updateLayout();
 
     return () => {
-      window.removeEventListener('resize', updateLayout);
+      if (rafId != null) cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', scheduleUpdate);
       window.removeEventListener('orientationchange', orientationHandler);
     };
   }, [updateLayout]);

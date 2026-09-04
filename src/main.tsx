@@ -8,8 +8,11 @@ import './index.css';
 import { streamCacheEngine } from './core/streaming';
 import { initDatabase } from './shared/database';
 import { initializeProviders } from './providers/music/registry';
+import { sourceRegistry } from './providers/music/registry';
+import { useSettingsStore } from './shared/store/settingsStore';
 import { prewarmHomeCache } from './core/homeCache';
 import { sourceHealthChecker } from './core/health/SourceHealthChecker';
+import { runKugouLegacyIdMigration } from './modules/music/kugouLegacyIdMigrator';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -122,6 +125,23 @@ function LoadingScreen() {
   );
 }
 
+/**
+ * C10: 音源启用真值源收敛——settingsStore.enabledSources 是唯一真值源，
+ * 启动时与变更时同步到 sourceRegistry 各源的 enabled 位，
+ * 使聚合搜索 / 榜单 / 歌单分类等走 getEnabled() 的链路即时生效。
+ */
+function syncSourceEnabled(): void {
+  const apply = (enabledSources: Record<string, boolean>) => {
+    for (const source of sourceRegistry.getAll()) {
+      source.enabled = enabledSources[source.id] !== false;
+    }
+  };
+  apply(useSettingsStore.getState().enabledSources);
+  useSettingsStore.subscribe((state, prev) => {
+    if (state.enabledSources !== prev.enabledSources) apply(state.enabledSources);
+  });
+}
+
 async function bootstrap() {
   const root = ReactDOM.createRoot(document.getElementById('root')!);
 
@@ -130,6 +150,8 @@ async function bootstrap() {
   // P1 冷启动并行化：initializeProviders 与 initDatabase 用 Promise.allSettled 并行推进，
   // 二者互不阻塞、也不阻塞首帧渲染（initDatabase 幂等且并发去重，App 内 await 的是同一 promise）。
   const providerInit = Promise.resolve().then(() => initializeProviders());
+  // C10: providers 注册完成后，把持久化的音源启用状态同步进 registry（并订阅后续变更）
+  providerInit.then(() => syncSourceEnabled());
   const dbInit = initDatabase();
   void Promise.allSettled([providerInit, dbInit]).then(([providersResult, dbResult]) => {
     if (providersResult.status === 'rejected') {
@@ -138,6 +160,10 @@ async function bootstrap() {
     if (dbResult.status === 'rejected') {
       console.error('Database initialization failed (bootstrap side):', dbResult.reason);
     }
+    // v22 B5: 酷狗存量 legacy id（kg_N → kg_hash）一次性映射迁移（后台、幂等、只跑一次）
+    void runKugouLegacyIdMigration().catch((err) =>
+      console.error('Kugou legacy id migration failed:', err)
+    );
   });
 
   // v22-lru-fix: App 启动时初始化流缓存引擎——加载元数据、执行启动 LRU 清理并启动定期清理

@@ -1,21 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Heart, Music, ChevronRight, Play, Trash2, ListMusic } from 'lucide-react';
+import { SOURCE_BADGE_COLORS } from '../shared/utils/sourceBadge';
 import { useFavoritePlaylistStore } from '@shared/store/favoritePlaylistStore';
 import { sourceRegistry } from '@providers/music/registry';
 import { playerEngine } from '@core/player';
+import { usePlayerStore } from '@shared/store/playerStore';
 import { useSearchStore } from '@shared/store/searchStore';
 import type { SearchResult } from '@core/types';
 import SmartCover from '../components/ui/SmartCover';
-
-const SOURCE_BADGE_COLORS: Record<string, string> = {
-  netease: 'bg-red-500',
-  kugou: 'bg-blue-500',
-  qq: 'bg-yellow-500',
-  kuwo: 'bg-orange-500',
-  migu: 'bg-teal-500',
-  qishui: 'bg-purple-500',
-  bilibili: 'bg-pink-500',
-};
 
 export default function FavoritePlaylistsPage() {
   const { items, loadItems, removeFavorite } = useFavoritePlaylistStore();
@@ -66,7 +58,8 @@ export default function FavoritePlaylistsPage() {
       uri: `stream://${s.sourceId}/${s.sourceSongId}`,
     }));
     if (tracks.length > 0) {
-      playerEngine.setQueue(tracks, 0);
+      // D9 队列语义统一：经 store 入队，保证队列视图/迷你播放器同步
+      usePlayerStore.getState().setQueue(tracks, 0);
       void playerEngine.playTrack(tracks[0], selectedQuality);
     }
   }, [selectedQuality]);

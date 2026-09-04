@@ -1,5 +1,3 @@
-import { useState, useEffect } from 'react';
-
 /**
  * 网络状态监听（P0/E5 基础件）
  *
@@ -49,12 +47,5 @@ export function subscribeNetwork(listener: NetworkListener): () => void {
   };
 }
 
-/**
- * React hook：组件内读取/响应在线状态。
- * （E1 离线横幅如已实现可复用；E5 播放引擎直接用 subscribeNetwork。）
- */
-export function useNetworkOnline(): boolean {
-  const [online, setOnline] = useState(isOnline);
-  useEffect(() => subscribeNetwork(setOnline), []);
-  return online;
-}
+// D9 合一：组件侧请使用 shared/hooks/useNetworkStatus（基于本模块的 subscribeNetwork，
+// 叠加 WebView 事件滞后兜底轮询）；本模块不再重复提供 hook。

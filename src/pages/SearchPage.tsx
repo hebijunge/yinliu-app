@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play, User, Disc, Video, X, SearchX } from 'lucide-react';
+import { formatRelativeTime } from '../shared/utils/sourceBadge';
 import { toast } from '../shared/components/Toast';
 import { useSearchStore } from '../shared/store/searchStore';
 import { searchEngine } from '../core/search';
@@ -22,17 +23,6 @@ import { SkeletonSearchResult } from '../components/ui/Skeleton';
 import { toUserMessage } from '../shared/utils/errorCopy';
 import { useInfiniteList } from '../shared/hooks/useInfiniteList';
 import SmartCover from '../components/ui/SmartCover';
-
-function formatRelativeTime(ts: number): string {
-  const now = Date.now();
-  const diff = now - ts;
-  if (diff < 60_000) return '刚刚';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`;
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 export default function SearchPage() {
   const {
@@ -61,7 +51,11 @@ export default function SearchPage() {
 
   // v16/P12: 搜索结果分页加载——收编为 useInfiniteList（页面级 window 滚动触底分帧挂载）
   const PAGE_SIZE = 15;
-  const { visibleCount: displayCount } = useInfiniteList(results.length, null, { step: PAGE_SIZE });
+  const { visibleCount: displayCount } = useInfiniteList(results.length, null, {
+    step: PAGE_SIZE,
+    // D9 修复：以「关键词+类型」为数据集标识，流式 onPartial 增量到达不再重置分页
+    resetKey: `${keyword}|${searchType}`,
+  });
 
   // 搜索后自动滚动到结果
   const resultSectionRef = useRef<HTMLDivElement>(null);
