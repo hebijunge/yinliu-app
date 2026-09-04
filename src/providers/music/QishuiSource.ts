@@ -436,20 +436,9 @@ export class QishuiSource extends BaseHttpSource {
       cipherBytes
     );
 
-    // 去除 PKCS7 padding
-    const padded = new Uint8Array(decrypted);
-    const padLen = padded[padded.length - 1];
-    if (padLen > 16 || padLen === 0) {
-      throw new Error('Invalid PKCS7 padding');
-    }
-    // 验证 padding
-    for (let i = 0; i < padLen; i++) {
-      if (padded[padded.length - 1 - i] !== padLen) {
-        throw new Error('Invalid PKCS7 padding');
-      }
-    }
-    const unpadded = padded.slice(0, padded.length - padLen);
-    return new TextDecoder('utf-8').decode(unpadded);
+    // WebCrypto 的 AES-CBC decrypt 已自动校验并剥离 PKCS7 padding，
+    // 此处不得再次手工去填充（历史上因双重剥离导致汽水全链路解密失败）。
+    return new TextDecoder('utf-8').decode(new Uint8Array(decrypted));
   }
 
   /**

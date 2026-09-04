@@ -17,6 +17,7 @@ export default function ReadingPage() {
   const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
   const [showCatalog, setShowCatalog] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [chapterError, setChapterError] = useState<string | null>(null);
 
   const handleSearch = useCallback(async () => {
     if (!keyword.trim()) return;
@@ -33,33 +34,46 @@ export default function ReadingPage() {
 
   const loadBook = async (book: BookSearchResult) => {
     setIsLoading(true);
+    setChapterError(null);
     setSelectedBook(book);
     try {
       const list = await fanqieSource.getChapterList(book.sourceBookId);
       setChapters(list);
       if (list.length > 0) {
-        await loadChapter(0);
+        // 显式传入 book 与章节列表，避免读到尚未更新的 state 闭包（B-P0-6）
+        await loadChapter(0, book, list);
+      } else {
+        setChapterError('该书暂无章节目录');
       }
     } catch (err) {
       console.error('加载书籍失败:', err);
+      setChapterError(err instanceof Error ? `加载书籍失败：${err.message}` : '加载书籍失败，请稍后重试');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const loadChapter = async (index: number) => {
-    if (!selectedBook || index < 0 || index >= chapters.length) return;
+  // book / chapterList 支持显式传入：loadBook 首次进入时 state 尚未更新，
+  // 默认参数只在 UI 触发的同轮渲染调用时使用（此时 state 已是最新）。
+  const loadChapter = async (
+    index: number,
+    book: BookSearchResult | null = selectedBook,
+    chapterList: ChapterInfo[] = chapters
+  ) => {
+    if (!book || index < 0 || index >= chapterList.length) return;
 
     setIsLoading(true);
+    setChapterError(null);
     setCurrentChapterIndex(index);
     try {
       const content = await fanqieSource.getChapterContent(
-        selectedBook.sourceBookId,
+        book.sourceBookId,
         index
       );
       setCurrentChapter(content);
     } catch (err) {
       console.error('加载章节失败:', err);
+      setChapterError(err instanceof Error ? `章节加载失败：${err.message}` : '章节加载失败，请稍后重试');
     } finally {
       setIsLoading(false);
       setShowCatalog(false);
@@ -117,6 +131,11 @@ export default function ReadingPage() {
         {/* Chapter Content */}
         <div className="yinliu-card min-h-[50vh]">
           <h1 className="text-xl font-semibold mb-5 text-[var(--text-primary)]">{currentChapter.title}</h1>
+          {chapterError && (
+            <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500">
+              {chapterError}
+            </div>
+          )}
           {isLoading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="w-6 h-6 animate-spin text-[var(--accent)]" />
@@ -188,6 +207,19 @@ export default function ReadingPage() {
       {/* Skeleton Loading */}
       {isSearching && (
         <SkeletonPlaylistGrid count={4} />
+      )}
+
+      {/* 书籍/章节加载错误态 */}
+      {chapterError && (
+        <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-500 flex items-center justify-between gap-3">
+          <span>{chapterError}</span>
+          <button
+            onClick={() => setChapterError(null)}
+            className="text-red-500/70 hover:text-red-500 shrink-0"
+          >
+            知道了
+          </button>
+        </div>
       )}
 
       {/* Results */}

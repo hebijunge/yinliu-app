@@ -117,7 +117,6 @@ src/
 
 ### 前置要求
 - Node.js >= 18
-- Rust >= 1.70 (桌面端开发)
 - Android Studio (Android构建)
 - Xcode (iOS构建，macOS only)
 
@@ -126,14 +125,14 @@ src/
 npm install
 ```
 
-### 桌面端开发
-```bash
-# 启动开发服务器
-npm run tauri:dev
+### 桌面端支持说明
 
-# 构建桌面端应用
-npm run tauri:build
-```
+**当前版本暂不支持桌面端（Windows / macOS / Linux）。** 桌面端曾基于 Tauri（`src-tauri/`）构建，
+因引用了未安装的 Tauri HTTP 插件权限（`http:default`）导致构建失败，且 Web/Capacitor 版本
+已覆盖全部核心功能，本周期已将 `src-tauri/` 目录从仓库摘除，并同步移除 `package.json` 中的
+`tauri` 系列脚本与 `@tauri-apps/cli` 依赖。CSP 由 `index.html` 的 meta 标签统一管理
+（已包含 `media-src blob:` 等流式播放所需指令），不受本次摘除影响。如后续恢复桌面端，
+建议基于 Capacitor Electron 或重新评估 Tauri 方案后再引入。
 
 ### 移动端开发
 ```bash
