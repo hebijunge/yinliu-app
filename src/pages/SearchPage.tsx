@@ -17,6 +17,7 @@ import SongRow from '../components/song/SongRow';
 import QualitySizeSheet from '../components/song/QualitySizeSheet';
 import EmptyState from '../components/common/EmptyState';
 import { SkeletonSearchResult } from '../components/ui/Skeleton';
+import { toUserMessage } from '../shared/utils/errorCopy';
 
 function formatRelativeTime(ts: number): string {
   const now = Date.now();
@@ -137,7 +138,7 @@ export default function SearchPage() {
     } catch (err) {
       console.error('Search failed:', err);
       if (isLatest()) {
-        setSearchError(err instanceof Error ? err.message : '搜索失败，请稍后重试');
+        setSearchError(toUserMessage(err, '搜索失败，请稍后重试'));
         setResults([]);
         setSourceStats({});
       }
@@ -206,7 +207,7 @@ export default function SearchPage() {
         })),
       }, selectedQuality);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '播放失败';
+      const msg = toUserMessage(err, '播放失败');
       toast.error('播放失败', msg);
     }
   };
@@ -232,7 +233,7 @@ export default function SearchPage() {
       downloadEngine.startDownload(task.id);
       toast.success('已加入下载队列', `${result.title}`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '下载失败';
+      const msg = toUserMessage(err, '下载失败');
       toast.error('下载失败', msg);
     }
   };

@@ -15,6 +15,7 @@ import { useSearchStore } from '../shared/store/searchStore';
 import { toast } from '../shared/components/Toast';
 import EmptyState from '../components/common/EmptyState';
 import { SkeletonSearchResult } from '../components/ui/Skeleton';
+import { toUserMessage } from '../shared/utils/errorCopy';
 
 /** 下拉刷新触发阈值（px） */
 const PULL_THRESHOLD = 72;
@@ -108,7 +109,7 @@ export default function HomePage() {
       await fetchAndCache();
       toast.success('已更新', '热歌榜已刷新，缓存时间已重置');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '网络异常';
+      const msg = toUserMessage(err, '网络异常');
       toast.error('刷新失败', `已保留当前列表：${msg}`);
     } finally {
       refreshingRef.current = false;
@@ -196,7 +197,7 @@ export default function HomePage() {
         })),
       }, selectedQuality);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '播放失败';
+      const msg = toUserMessage(err, '播放失败');
       toast.error('播放失败', msg);
     }
   };

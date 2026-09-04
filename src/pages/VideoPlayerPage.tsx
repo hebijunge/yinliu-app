@@ -6,6 +6,7 @@ import type { MvInfo, MvQuality } from '../core/types';
 import { sourceRegistry } from '../providers/music/registry';
 import { playerEngine } from '../core/player';
 import { toast } from '../shared/components/Toast';
+import { toUserMessage } from '../shared/utils/errorCopy';
 
 export default function VideoPlayerPage() {
   const [searchParams] = useSearchParams();
@@ -70,7 +71,7 @@ export default function VideoPlayerPage() {
       await resolveAndPlay(mvId, sourceId, qualities, currentQuality);
 
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '加载失败';
+      const msg = toUserMessage(err, '加载失败');
       setError(msg);
       setState('error');
       toast.error('MV加载失败', msg);
@@ -160,7 +161,7 @@ export default function VideoPlayerPage() {
         }
       }, 500);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '切换失败';
+      const msg = toUserMessage(err, '切换失败');
       toast.error('画质切换失败', msg);
       setState('error');
     }

@@ -12,6 +12,7 @@ import QualitySizeSheet from '../components/song/QualitySizeSheet';
 import { playerEngine } from '../core/player';
 import { useSearchStore } from '../shared/store/searchStore';
 import { toast } from '../shared/components/Toast';
+import { toUserMessage } from '../shared/utils/errorCopy';
 
 /**
  * 专区页（v20）：粤语专区 / DJ 专区
@@ -116,7 +117,7 @@ export default function ZonePage() {
         selectedQuality
       );
     } catch (err) {
-      toast.error('播放失败', err instanceof Error ? err.message : String(err));
+      toast.error('播放失败', toUserMessage(err, '请稍后重试'));
     }
   };
 
@@ -136,7 +137,7 @@ export default function ZonePage() {
         songs: (d?.songs || []).map((s) => ({ song: s, sourceId: chart.sourceId, sourceName: chart.sourceName })),
       });
     } catch (err) {
-      toast.error('榜单详情拉取失败', err instanceof Error ? err.message : String(err));
+      toast.error('榜单详情拉取失败', toUserMessage(err, '请稍后重试'));
       setDetail({ title: `${chart.sourceName} · ${chart.chartName}`, loading: false, songs: [] });
     }
   };
@@ -157,7 +158,7 @@ export default function ZonePage() {
         songs: (d?.songs || []).map((s) => ({ song: s, sourceId, sourceName })),
       });
     } catch (err) {
-      toast.error('歌单详情拉取失败', err instanceof Error ? err.message : String(err));
+      toast.error('歌单详情拉取失败', toUserMessage(err, '请稍后重试'));
       setDetail({ title: pl.title, loading: false, songs: [] });
     }
   };

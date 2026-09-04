@@ -35,10 +35,24 @@ export async function platformFetch(url: string, options: PlatformFetchOptions =
     return response;
   };
 
+  // E2: 未显式传 timeout 的请求默认 8s 超时，避免弱网下请求无限挂起
+  const effectiveOptions: PlatformFetchOptions = {
+    ...options,
+    timeout: options.timeout ?? DEFAULT_TIMEOUT_MS,
+  };
+
+  // E2: 幂等 GET 且无外部取消信号时，网络级失败自动重试 1 次
+  const isIdempotentGet = (effectiveOptions.method || 'GET').toUpperCase() === 'GET' && !options.signal;
+
   try {
-    const response = options.timeout && options.timeout > 0
-      ? await fetchWithTimeout(doFetch(), options.timeout, options.signal)
-      : await doFetch();
+    let response: Response;
+    if (isIdempotentGet) {
+      response = await fetchWithRetry(doFetch, 1, effectiveOptions.signal);
+    } else {
+      response = effectiveOptions.timeout && effectiveOptions.timeout > 0
+        ? await fetchWithTimeout(doFetch(), effectiveOptions.timeout, effectiveOptions.signal)
+        : await doFetch();
+    }
 
     const duration = Math.round(performance.now() - startTime);
     debugLogger.info('network', `请求完成 ${options.method || 'GET'} ${response.status}`, {
@@ -61,6 +75,43 @@ export async function platformFetch(url: string, options: PlatformFetchOptions =
     });
     throw err;
   }
+}
+
+/** 默认超时：8s */
+export const DEFAULT_TIMEOUT_MS = 8000;
+
+/** 网络级失败（超时/断连）才重试；4xx/5xx 响应不算失败，不重试 */
+function isRetryableError(err: unknown): boolean {
+  if (err instanceof DOMException) {
+    return err.name === 'TimeoutError';
+  }
+  if (err instanceof Error) {
+    return /Failed to fetch|NetworkError|ECONN|timed out|timeout|SSL|GnuTLS/i.test(err.message);
+  }
+  return false;
+}
+
+async function fetchWithRetry(
+  doFetch: () => Promise<Response>,
+  retries: number,
+  externalSignal?: AbortSignal
+): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      // 退避 600ms，避免立即重试打到同一故障点
+      await new Promise((r) => setTimeout(r, 600));
+    }
+    try {
+      return await fetchWithTimeout(doFetch(), DEFAULT_TIMEOUT_MS, externalSignal);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') throw err;
+      lastErr = err;
+      if (attempt < retries && isRetryableError(err)) continue;
+      throw err;
+    }
+  }
+  throw lastErr;
 }
 
 async function fetchWithTimeout(

@@ -7,6 +7,7 @@ import { playerEngine } from '@core/player';
 import { useSearchStore } from '@shared/store/searchStore';
 import { toast } from '@shared/components/Toast';
 import EmptyState from '../components/common/EmptyState';
+import { toUserMessage } from '../shared/utils/errorCopy';
 
 const SOURCE_BADGE_COLORS: Record<string, string> = {
   netease: 'bg-red-500',
@@ -48,7 +49,7 @@ export default function LibraryPage() {
     } catch (err) {
       console.error('榜单加载失败:', err);
       setChartResults([]);
-      setChartError(err instanceof Error ? err.message : '榜单加载失败，请稍后重试');
+      setChartError(toUserMessage(err, '榜单加载失败，请稍后重试'));
     } finally {
       setChartLoading(false);
     }
@@ -72,7 +73,7 @@ export default function LibraryPage() {
     } catch (err) {
       console.error('歌单加载失败:', err);
       setPlaylistResults([]);
-      setPlaylistError(err instanceof Error ? err.message : '歌单加载失败，请稍后重试');
+      setPlaylistError(toUserMessage(err, '歌单加载失败，请稍后重试'));
     } finally {
       setPlaylistLoading(false);
     }
@@ -120,7 +121,7 @@ export default function LibraryPage() {
         uri: `stream://${song.sourceId}/${song.sourceSongId}`,
       }, selectedQuality);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '播放失败';
+      const msg = toUserMessage(err, '播放失败');
       toast.error('播放失败', msg);
     }
   };
@@ -381,7 +382,7 @@ export default function LibraryPage() {
                                       sourceSongId: song.sourceSongId,
                                       uri: `stream://${song.sourceId}/${song.sourceSongId}`,
                                     }, selectedQuality).catch((err) => {
-                                      const msg = err instanceof Error ? err.message : '播放失败';
+                                      const msg = toUserMessage(err, '播放失败');
                                       toast.error('播放失败', msg);
                                     });
                                   }}

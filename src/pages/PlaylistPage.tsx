@@ -10,6 +10,7 @@ import { toast } from '../shared/components/Toast';
 import ConfirmDialog, { type ConfirmRequest } from '../components/common/ConfirmDialog';
 import { playlistImporter } from '../modules/music/playlistImporter';
 import type { ImportReport } from '../modules/music/playlistImporter';
+import { toUserMessage } from '../shared/utils/errorCopy';
 
 export default function PlaylistPage() {
   const { playlists, addPlaylist, removePlaylist, renamePlaylist, isImporting, lastImportReport, importPlaylistFromUrl, clearLastImportReport, currentPlaylistSongs, loadPlaylistSongs, refreshPlaylistCovers } = usePlaylistStore();
@@ -64,7 +65,7 @@ export default function PlaylistPage() {
       );
       // 不立即关闭 modal，让用户查看导入报告
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '未知错误';
+      const msg = toUserMessage(err, '未知错误');
       setImportError(msg);
       toast.error('导入失败', msg);
     }
@@ -93,7 +94,7 @@ export default function PlaylistPage() {
       await playerEngine.playTrack(tracks[0]);
       toast.success('开始播放', `正在播放「${tracks[0].title}」`);
     } catch (err) {
-      toast.error('播放失败', err instanceof Error ? err.message : '未知错误');
+      toast.error('播放失败', toUserMessage(err, '未知错误'));
     }
   };
 
@@ -288,7 +289,7 @@ export default function PlaylistPage() {
                         confirmText: '删除',
                         onConfirm: () => {
                           removePlaylist(pl.id).catch((err) => {
-                            toast.error('删除歌单失败', err instanceof Error ? err.message : '未知错误');
+                            toast.error('删除歌单失败', toUserMessage(err, '未知错误'));
                           });
                         },
                       });
@@ -409,7 +410,7 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
     setLoadError(null);
     loadPlaylistSongs(playlistId).catch((err) => {
       console.error('歌单加载失败:', err);
-      setLoadError(err instanceof Error ? err.message : '歌单加载失败，请稍后重试');
+      setLoadError(toUserMessage(err, '歌单加载失败，请稍后重试'));
     });
   }, [playlistId, loadPlaylistSongs]);
 
@@ -458,7 +459,7 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
           onRetry={() => {
             setLoadError(null);
             loadPlaylistSongs(playlistId).catch((err) => {
-              setLoadError(err instanceof Error ? err.message : '歌单加载失败，请稍后重试');
+              setLoadError(toUserMessage(err, '歌单加载失败，请稍后重试'));
             });
           }}
         />
@@ -534,7 +535,7 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
                           uri: `stream://${s.source}/${s.songId}`,
                         }, currentQuality);
                       } catch (err) {
-                        const msg = err instanceof Error ? err.message : '播放失败';
+                        const msg = toUserMessage(err, '播放失败');
                         toast.error('播放失败', msg);
                       }
                     }}
@@ -552,7 +553,7 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
                       confirmText: '移除',
                       onConfirm: () => {
                         removeSongFromPlaylist(playlistId, s.songId).catch((err) => {
-                          toast.error('移除歌曲失败', err instanceof Error ? err.message : '未知错误');
+                          toast.error('移除歌曲失败', toUserMessage(err, '未知错误'));
                         });
                       },
                     });
