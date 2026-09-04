@@ -109,6 +109,11 @@ export class PlayerEngine {
   // v23: 缓冲状态缓存（去重，避免重复 emit）
   private bufferingActive = false;
 
+  // v25: 起播前暂停标记 —— 用户/系统在"点击播放 → 数据就绪自动起播"窗口内
+  // 暂停时置位。数据就绪后不再自动起播（否则覆盖暂停意图：音乐自己响、
+  // UI 停在暂停图标）。playTrack 新管线开始时与 resume() 时复位
+  private pauseBeforeStartPending = false;
+
   private emit<K extends keyof PlayerEventMap>(event: K, data: PlayerEventMap[K]) {
     const callbacks = this.listeners[event] || [];
     callbacks.forEach((cb) => cb(data as unknown));
@@ -468,10 +473,15 @@ export class PlayerEngine {
     // v23: 本次播放请求的代际号 —— 被更新的切歌取代后，其错误不再上报
     const generation = ++this.playGeneration;
 
+    // v25: 新播放意图 → 清除上一轮的"起播前暂停"标记
+    this.pauseBeforeStartPending = false;
+
     this.playAbortController = new AbortController();
 
-    // v16: 切歌后立即预加载下一首
-    this.schedulePrefetchNext();
+    // v25: 不再在点击时刻调度"预取下一首"。旧实现在点击 800ms 后就发起下一首的
+    // 取链 + 首块 256KB 下载，与当前曲目尚未完成的首块下载抢带宽，
+    // 慢网络下显著拖慢起播（十几秒不出声的推手之一）。
+    // 现改为：当前曲目真正开始播放（canplay）后才调度，见 loadAndPlay / onCanPlay 回调。
 
     // 清理之前的 blob URL
     if (this.currentBlobUrl) {
@@ -563,10 +573,14 @@ export class PlayerEngine {
     void eqService.attachElement(this.audio);
 
     this.audio.addEventListener('canplay', () => {
+      // v25: 起播前已被暂停 → 就绪事件不改写播放态（保持暂停，等用户恢复）
+      if (this.pauseBeforeStartPending || this.state === 'paused') return;
       // 标记为用户主动播放意图
       this.setState('playing', 'user');
       this.setBuffering(false);
       this.startProgressTracking();
+      // v25: 起播完成后才预加载下一首（不再与当前曲目首块下载抢带宽）
+      this.schedulePrefetchNext();
     });
 
     this.audio.addEventListener('waiting', () => {
@@ -608,9 +622,28 @@ export class PlayerEngine {
       }
     });
 
+    // v25: 起播前已被暂停 → 不发起自动起播（此前 pause() 会令 play() 以
+    // AbortError 拒绝，依赖 catch 兜底；这里显式跳过更直接）
+    if (this.pauseBeforeStartPending) {
+      debugLogger.info('player', '数据就绪但起播前已被暂停，跳过自动起播', {
+        track: track.title,
+      });
+      return;
+    }
+
     try {
       await this.audio.play();
     } catch (err) {
+      // v25: 用户已在起播完成前点了暂停（pause() 会令未完成的 play() 以 AbortError 拒绝）
+      // → 保持暂停态即可，不再误报"自动播放被阻止"错误提示、也不改写状态
+      const isAbort = err instanceof DOMException && err.name === 'AbortError';
+      if (isAbort || this.state === 'paused') {
+        debugLogger.info('player', '起播完成前已被暂停，取消自动起播', {
+          track: track.title,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
       // play() 可能因自动播放策略被拒绝
       this.setState('paused', 'system');
       this.emit('error', { message: '自动播放被阻止，请点击播放' });
@@ -663,6 +696,7 @@ export class PlayerEngine {
           format,
           isEncrypted,
           decryptKey,
+          autoStart: !this.pauseBeforeStartPending, // v25
         });
       } catch (err) {
         debugLogger.error('player', 'CENC 流式解密播放失败', {
@@ -692,6 +726,7 @@ export class PlayerEngine {
           cacheKey,
           format,
           z3dDecryptInfo,
+          autoStart: !this.pauseBeforeStartPending, // v25
         });
       } catch (err) {
         debugLogger.error('player', 'Z3D 流式解密播放失败', {
@@ -735,6 +770,7 @@ export class PlayerEngine {
         await streamingAudioPlayer.loadDecryptedData(decrypted.data, {
           cacheKey,
           format: decrypted.format,
+          autoStart: !this.pauseBeforeStartPending, // v25
         });
 
         // 设置回调（loadDecryptedData 不经过流式下载，但仍需状态回调）
@@ -791,6 +827,7 @@ export class PlayerEngine {
         await streamingAudioPlayer.loadDecryptedData(decrypted, {
           cacheKey,
           format: decryptedFormat,
+          autoStart: !this.pauseBeforeStartPending, // v25
         });
 
         // 设置回调（loadDecryptedData 不经过流式下载，但仍需状态回调）
@@ -817,6 +854,7 @@ export class PlayerEngine {
       format,
       isEncrypted,
       decryptKey,
+      autoStart: !this.pauseBeforeStartPending, // v25
     });
   }
 
@@ -833,6 +871,10 @@ export class PlayerEngine {
 
   // v16: 增强预取下一首（流式+非流式统一，存入预加载缓存）
   private async prefetchNextTrack(): Promise<void> {
+    // v25: 加载/缓冲/错误期间不预取 —— 加载期与当前曲目首块下载抢带宽，
+    // 缓冲期与补数请求抢带宽。仅播放中或暂停态（带宽空闲）允许
+    if (this.state !== 'playing' && this.state !== 'paused') return;
+
     const nextIndex = this.currentIndex + 1;
     if (nextIndex < 0 || nextIndex >= this.queue.length) return;
 
@@ -953,14 +995,26 @@ export class PlayerEngine {
       onCanPlay: () => {
         this.setState('playing', 'user');
         this.startProgressTracking();
+        // v25: 起播完成后才预加载下一首（不再与当前曲目首块下载抢带宽）
+        this.schedulePrefetchNext();
       },
     };
   }
 
   pause(): void {
     if (this.isStreaming) {
+      // v25: 起播前（loading）暂停 → 记录意图并抑制流式引擎的数据就绪自动起播，
+      // 否则首块到位后 onFirstChunkReady 会无条件 play()，覆盖用户暂停意图：
+      // 音乐自己开始响，UI 却停在"播放"图标（状态与实际脱节）
+      if (this.state === 'loading') {
+        this.pauseBeforeStartPending = true;
+        streamingAudioPlayer.suppressAutoStart();
+      }
       streamingAudioPlayer.pause();
     } else {
+      if (this.state === 'loading') {
+        this.pauseBeforeStartPending = true;
+      }
       this.audio?.pause();
     }
     this.setState('paused', 'user');
@@ -983,6 +1037,11 @@ export class PlayerEngine {
       if (wasPlaying) {
         this.systemPausePending = true;
       }
+      // v25: 加载阶段被系统暂停（焦点丢失/耳机拔出）同样抑制数据就绪自动起播
+      if (this.state === 'loading') {
+        this.pauseBeforeStartPending = true;
+        streamingAudioPlayer.suppressAutoStart();
+      }
       streamingAudioPlayer.pause();
       this.systemPausePending = false;
     } else if (this.audio) {
@@ -1000,6 +1059,9 @@ export class PlayerEngine {
   }
 
   resume(): void {
+    // v25: 用户恢复播放 → 清除"起播前暂停"意图（含流式引擎的起播抑制，
+    // 流式 play() 内部也会复位该抑制标记）
+    this.pauseBeforeStartPending = false;
     if (this.isStreaming) {
       void streamingAudioPlayer.play();
     } else {

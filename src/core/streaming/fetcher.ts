@@ -7,6 +7,11 @@
  * - 后续块 512KB 持续缓冲
  * - 支持 seek：从任意字节位置开始下载
  * - 支持取消/暂停
+ * - v25: HEAD 预检与首块下载并行（此前 start() 串行 await HEAD——CDN 慢/挂起时
+ *   最多阻塞 6s 才开始下载首块，是"点击播放后十几秒才有声音"的主因。
+ *   首块下载本身不需要 totalSize，HEAD 只服务于后续块的边界钳制）；
+ *   同时从首个响应学习 totalSize（206 短返回 = 尾块 / 200 = 全量），
+ *   HEAD 失败或未返回时下载不再失速。
  */
 
 import { platformFetch } from '@shared/utils/platformFetch';
@@ -52,6 +57,12 @@ export class StreamFetcher {
   private overallReceived = 0;
   private callbacks: FetcherCallbacks = {};
 
+  // v25: 并行 HEAD 预检 —— start() 不再串行等待，downloadLoop 在需要 totalSize
+  // （首块之后的边界钳制）时才 await 该 Promise
+  private headPromise: Promise<void> | null = null;
+  // v25: 本轮 start() 是否真正需要 HEAD（skipHead 或 totalSize 已知时为 false）
+  private headPending = false;
+
   // seek 目标（用于中断后重新定位）
   private seekTargetByte = -1;
 
@@ -91,33 +102,16 @@ export class StreamFetcher {
     this.overallReceived = 0;
     this.seekTargetByte = -1;
 
-    // 1. 先获取文件总大小（HEAD 请求）
+    // 1. v25: HEAD 预检改为与下载并行发射。它只为后续块提供 totalSize 钳制，
+    //    首块（start..start+256KB）无需 totalSize 即可请求。
+    //    - 已知 totalSize（seek 的 skipHead）→ 不再发 HEAD；
+    //    - HEAD 失败/超时（6s）→ 按无 totalSize 继续（与旧版失败路径一致），
+    //      并由 downloadChunk 从响应学习 totalSize 兜底。
+    this.headPromise = null;
+    this.headPending = false;
     if (!(options.skipHead && this.totalSize > 0)) {
-      try {
-        // v24: HEAD 加超时兜底（此前无 signal 无超时，CDN 挂起时整条起播链路被卡死，
-        // 表现为"加载好久"+ 播放按钮一直转圈）。超时后按无 totalSize 继续走分块下载。
-        const headResp = await platformFetch(url, {
-          method: 'HEAD',
-          headers,
-          signal: AbortSignal.timeout(6000),
-        });
-        const contentLength = headResp.headers.get('content-length');
-        if (contentLength) {
-          this.totalSize = parseInt(contentLength, 10);
-        }
-        // 检查是否支持 Range
-        const acceptRanges = headResp.headers.get('accept-ranges');
-        if (acceptRanges !== 'bytes') {
-          debugLogger.warn('streaming', 'Server may not support Range requests', {
-            acceptRanges,
-            url: url.slice(0, 80),
-          });
-        }
-      } catch (err) {
-        debugLogger.warn('streaming', 'HEAD request failed, proceeding without total size', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+      this.headPending = true;
+      this.headPromise = this.probeHead();
     }
 
     this.state = 'fetching';
@@ -125,10 +119,40 @@ export class StreamFetcher {
       url: url.slice(0, 80),
       startByte,
       totalSize: this.totalSize,
+      headParallel: this.headPending,
     });
 
-    // 2. 开始分块下载（后台执行，不阻塞）
+    // 2. 立即开始分块下载（后台执行，不等 HEAD）
     void this.downloadLoop();
+  }
+
+  /** v25: HEAD 预检（并行执行，失败静默——由响应学习 totalSize 兜底） */
+  private async probeHead(): Promise<void> {
+    try {
+      const headResp = await platformFetch(this.url, {
+        method: 'HEAD',
+        headers: this.headers,
+        signal: AbortSignal.timeout(6000),
+      });
+      const contentLength = headResp.headers.get('content-length');
+      if (contentLength) {
+        this.totalSize = parseInt(contentLength, 10);
+      }
+      // 检查是否支持 Range
+      const acceptRanges = headResp.headers.get('accept-ranges');
+      if (acceptRanges !== 'bytes') {
+        debugLogger.warn('streaming', 'Server may not support Range requests', {
+          acceptRanges,
+          url: this.url.slice(0, 80),
+        });
+      }
+    } catch (err) {
+      debugLogger.warn('streaming', 'HEAD request failed, proceeding without total size', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      this.headPending = false;
+    }
   }
 
   /** 当前下载的 URL（seek 重启下载时复用） */
@@ -201,6 +225,13 @@ export class StreamFetcher {
         } else {
           this.currentChunkIndex = 1 + Math.floor((this.currentByteOffset - FIRST_CHUNK_SIZE) / CHUNK_SIZE);
         }
+      }
+
+      // v25: 首块之后的块需要 totalSize 做边界钳制（避免请求越过 EOF 得到 416）。
+      // 此时并行 HEAD 大概率已完成（首块 256KB 下载耗时 ≥ HEAD 往返）；
+      // 若 HEAD 仍未返回（极慢 CDN），在此等待——仅影响第二块之后的节奏，不阻塞起播。
+      if (this.headPending && this.currentChunkIndex > 0) {
+        await this.headPromise;
       }
 
       // 计算当前块范围
@@ -282,6 +313,21 @@ export class StreamFetcher {
 
     const arrayBuffer = await response.arrayBuffer();
     const data = new Uint8Array(arrayBuffer);
+
+    // v25: 从响应学习 totalSize（HEAD 失败 / CDN 不返回 content-length 时兜底）
+    // - 206 且返回字节数 < 请求范围 → 已到文件尾
+    // - 200 → 服务器不支持 Range，返回的是完整文件
+    if (response.status === 206 && data.length < chunk.size) {
+      this.totalSize = chunk.start + data.length;
+      debugLogger.info('streaming', 'Learned totalSize from short 206 response (tail)', {
+        totalSize: this.totalSize,
+      });
+    } else if (response.status === 200 && this.totalSize === 0) {
+      this.totalSize = chunk.start + data.length;
+      debugLogger.info('streaming', 'Learned totalSize from full 200 response', {
+        totalSize: this.totalSize,
+      });
+    }
 
     // 如果服务器不支持 Range，可能返回完整内容
     // 此时需要截取我们需要的部分

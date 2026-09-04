@@ -10,3 +10,6 @@ src-tauri/target/
 .vscode/
 .idea/
 tests/.build/
+
+tests/.build/
+scripts/.build/

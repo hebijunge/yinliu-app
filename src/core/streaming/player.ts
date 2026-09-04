@@ -57,6 +57,12 @@ interface StreamingOptions {
     z3dUrl: string;
     p3dUrl: string;
   };
+  /**
+   * v25: 数据就绪后是否自动起播（默认 true）。
+   * 引擎在"点击播放 → 数据就绪"窗口内收到暂停意图时传 false，
+   * 避免自动起播覆盖用户/系统的暂停。
+   */
+  autoStart?: boolean;
 }
 
 const PRELOAD_THRESHOLD = 0.5; // 播放进度超过 50% 时预取下一首
@@ -121,10 +127,23 @@ class StreamingAudioPlayer {
   private networkUnsubscribe: (() => void) | null = null;
   private networkPaused = false;
 
+  // v25: 起播抑制标记 —— 用户在首块下载完成前点了暂停时，由引擎调 suppressAutoStart()
+  // 置位；首块就绪后不再自动起播（否则会覆盖用户暂停意图：音乐自己开始响，
+  // 而 UI 停留在"播放"图标 → 状态与实际脱节）。显式调用 play() 时复位。
+  private startSuppressed = false;
+
   // === 公共接口 ===
 
   setCallbacks(callbacks: StreamingCallbacks): void {
     this.callbacks = callbacks;
+  }
+
+  /**
+   * v25: 抑制本次加载的自动起播（用户在首块就绪前点了暂停）。
+   * 只影响"数据就绪后自动 play"这一次行为；显式 play()（用户恢复播放）会复位。
+   */
+  suppressAutoStart(): void {
+    this.startSuppressed = true;
   }
 
   /** v18 EQ：监听 audio 元素创建/销毁（均衡器据此挂接） */
@@ -201,6 +220,9 @@ class StreamingAudioPlayer {
   async load(options: StreamingOptions): Promise<void> {
     await this.reset();
     this.ensureNetworkGuard(); // E5: 首次加载时挂断网守卫
+    // v25: 起播抑制由引擎通过 autoStart 参数声明（覆盖"暂停发生在 load 之前"
+    // 的窗口），suppressAutoStart() 覆盖 load 之后的窗口
+    this.startSuppressed = options.autoStart === false;
 
     this.cacheKey = options.cacheKey;
     this.mimeType = this.inferMimeType(options.format);
@@ -305,6 +327,7 @@ class StreamingAudioPlayer {
    */
   async loadDecryptedData(data: Uint8Array, options: StreamingOptions): Promise<void> {
     await this.reset();
+    this.startSuppressed = options.autoStart === false; // v25
 
     this.cacheKey = options.cacheKey;
     this.mimeType = this.inferMimeType(options.format);
@@ -334,6 +357,9 @@ class StreamingAudioPlayer {
    * 播放（在 load 后调用，或从暂停恢复）
    */
   async play(): Promise<void> {
+    // v25: 先复位起播抑制再判空 —— resume() 可能发生在首块就绪前
+    // （audio 尚未创建），此时也要取消抑制，让数据就绪后能正常自动起播
+    this.startSuppressed = false;
     if (!this.audio) return;
 
     try {
@@ -807,6 +833,7 @@ class StreamingAudioPlayer {
     this.chunksCleared = false;
     this.isEncryptedStream = false;
     this.encryptedStreamAbortController = null;
+    this.startSuppressed = false; // v25
 
     this.setState('idle');
   }
@@ -869,6 +896,15 @@ class StreamingAudioPlayer {
       throw new Error(`Audio element entered error state during cache playback: code=${errCode}, msg=${errMsg}`);
     }
 
+    // v25: 用户在加载期间点了暂停 → 不自动起播，停在暂停态等待用户恢复
+    if (this.startSuppressed) {
+      debugLogger.info('streaming', 'Cache playback ready but start suppressed (user paused)', {
+        cacheKey: this.cacheKey,
+      });
+      this.setState('paused');
+      return;
+    }
+
     this.setState('ready');
     await this.play();
   }
@@ -883,6 +919,17 @@ class StreamingAudioPlayer {
       await this.setupBlobPlayback();
     }
 
+    // v25: 用户在首块就绪前点了暂停 → 不自动起播。
+    // 此前这里无条件 play()，会覆盖用户暂停意图：音乐自动开始响，
+    // 而引擎/UI 停留在暂停态 → 图标与实际播放脱节
+    if (this.startSuppressed) {
+      debugLogger.info('streaming', 'First chunk ready but start suppressed (user paused)', {
+        cacheKey: this.cacheKey,
+      });
+      this.setState('paused');
+      return;
+    }
+
     this.setState('ready');
     this.callbacks.onCanPlay?.();
     await this.play();
@@ -894,6 +941,16 @@ class StreamingAudioPlayer {
    * v21.2 修复：size mismatch 时用实际 mergeChunks 数据建 blob，避免 totalSize 截断
    */
   private async setupBlobPlayback(): Promise<void> {
+    // v25: 刷新后是否恢复播放。只有刷新前确实在播（playing/buffering），
+    // 或 seek 前在播（seekResumePlay）才恢复；用户暂停态下一律保持暂停。
+    // 此前两个刷新分支都无条件 audio.play() —— 用户暂停后下载仍在继续，
+    // 下一次 blob 刷新会擅自恢复播放，而引擎状态仍是 paused →
+    // 图标显示"播放"但音乐在响（状态与实际脱节的直接来源）
+    const shouldResume =
+      this.state === 'playing' ||
+      this.state === 'buffering' ||
+      (this.pendingSeekTime >= 0 && this.seekResumePlay);
+
     // 合并所有 chunks（P3：返回 null 表示区间有洞，内存数据不完整）
     const allData = this.mergeChunks();
 
@@ -918,10 +975,13 @@ class StreamingAudioPlayer {
           if (currentTime > 0) {
             this.audio.currentTime = currentTime;
           }
-          try {
-            await this.audio.play();
-          } catch {
-            // 自动播放策略可能阻止
+          // v25: 仅在刷新前处于播放/缓冲态时恢复，暂停态保持暂停
+          if (shouldResume) {
+            try {
+              await this.audio.play();
+            } catch {
+              // 自动播放策略可能阻止
+            }
           }
         }
         debugLogger.info('streaming', 'Blob refresh from cache (chunks cleared)', {
@@ -948,16 +1008,24 @@ class StreamingAudioPlayer {
       });
     }
 
-    // 写入缓存
-    await streamCacheEngine.writeData(this.cacheKey, allData);
+    // v25: 跳过冗余写缓存。走到这里时内存 chunks 必然从 0 连续（mergeChunks 非 null
+    // 且未清空过），而这些字节刚刚已经由 appendData 逐块写入缓存 ——
+    // 旧实现再用 writeData 全量重写一遍（起播前重复 I/O，拖慢首播）。
+    // 仅当缓存与内存数据不一致（异常/降级路径）时才回写兜底
+    const cacheEntry = streamCacheEngine.getEntry(this.cacheKey);
+    const cacheAlreadyMatches = !!cacheEntry && cacheEntry.totalSize === allData.length;
+    if (!cacheAlreadyMatches) {
+      // 写入缓存
+      await streamCacheEngine.writeData(this.cacheKey, allData);
 
-    // 验证缓存写入成功
-    const entry = streamCacheEngine.getEntry(this.cacheKey);
-    if (!entry || entry.totalSize !== allData.length) {
-      debugLogger.error('streaming', 'setupBlobPlayback: cache write verification failed', {
-        cacheTotalSize: entry?.totalSize,
-        mergedSize: allData.length,
-      });
+      // 验证缓存写入成功
+      const entry = streamCacheEngine.getEntry(this.cacheKey);
+      if (!entry || entry.totalSize !== allData.length) {
+        debugLogger.error('streaming', 'setupBlobPlayback: cache write verification failed', {
+          cacheTotalSize: entry?.totalSize,
+          mergedSize: allData.length,
+        });
+      }
     }
 
     // 获取播放URL：默认优先 blob URL（不受 WebView file:// 安全策略限制）
@@ -1022,10 +1090,13 @@ class StreamingAudioPlayer {
       if (currentTime > 0) {
         this.audio.currentTime = currentTime;
       }
-      try {
-        await this.audio.play();
-      } catch {
-        // 自动播放策略可能阻止
+      // v25: 仅在刷新前处于播放/缓冲态时恢复，暂停态保持暂停（见函数顶部说明）
+      if (shouldResume) {
+        try {
+          await this.audio.play();
+        } catch {
+          // 自动播放策略可能阻止
+        }
       }
     }
 
@@ -1193,7 +1264,6 @@ class StreamingAudioPlayer {
           doResolve(); // 错误时也resolve，避免卡住
           return;
         }
-        this.stopProgressTracking();
         this.setState('error');
         this.callbacks.onError?.('音频播放失败');
         doResolve(); // 错误时也resolve，避免卡住
@@ -1259,7 +1329,6 @@ class StreamingAudioPlayer {
         this.handleNetworkLost();
         return;
       }
-      this.stopProgressTracking();
       this.setState('error');
       this.callbacks.onError?.('音频播放失败');
     });
