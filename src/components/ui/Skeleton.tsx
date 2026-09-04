@@ -36,18 +36,19 @@ export function SkeletonCover({ size = '3.5rem', className = '' }: { size?: stri
   );
 }
 
-/** Skeleton for a search result item */
+/** Skeleton for a search result item — P1: 结构与 SongRow 对齐（p-3 / gap-3 / 48px 封面 / space-y-2），结果到达时无布局跳变 */
 export function SkeletonSearchResult({ count = 5 }: { count?: number }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="flex items-center gap-4 p-4 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)]">
-          <SkeletonCover size="3.5rem" />
+        <div key={i} className="flex items-center gap-3 p-3 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-subtle)]">
+          <Skeleton className="flex-shrink-0 rounded-lg" style={{ width: '3rem', height: '3rem' }} />
           <div className="flex-1 min-w-0">
-            <Skeleton className="h-4 w-3/4 mb-2.5" />
-            <Skeleton className="h-3 w-1/2" />
+            <Skeleton className="h-4 w-3/4 mb-2" />
+            <Skeleton className="h-3 w-1/2 mb-1.5" />
+            <Skeleton className="h-3 w-20" />
           </div>
-          <Skeleton className="h-9 w-9 rounded-full" />
+          <Skeleton className="h-8 w-8 rounded-full flex-shrink-0" />
         </div>
       ))}
     </div>

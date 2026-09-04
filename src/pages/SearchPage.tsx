@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, memo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play, User, Disc, Video, X, SearchX } from 'lucide-react';
 import { toast } from '../shared/components/Toast';
@@ -23,6 +23,13 @@ import { useInfiniteList } from '../shared/hooks/useInfiniteList';
 import { toUserMessage } from '../shared/utils/errorCopy';
 import SmartCover from '../components/ui/SmartCover';
 
+/**
+ * P1: 首屏渲染量收敛 —— 搜索首批渲染行数 15→10（首屏可视约 6 行，10 行已含
+ * 触底预载余量）；骨架屏数量与该值对齐，消除「骨架 6 行 → 结果 15 行」的
+ * 布局跳变。分页增量与骨架屏共用同一常量。
+ */
+const SEARCH_PAGE_SIZE = 10;
+
 function formatRelativeTime(ts: number): string {
   const now = Date.now();
   const diff = now - ts;
@@ -33,6 +40,129 @@ function formatRelativeTime(ts: number): string {
   const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+
+interface SearchResultListProps {
+  searchType: SearchType;
+  results: AggregatedSearchResult[];
+  displayCount: number;
+  onPlay: (song: AggregatedSearchResult) => void;
+  onMore: (song: AggregatedSearchResult) => void;
+  onArtistClick: (result: AggregatedSearchResult) => void;
+  onAlbumClick: (result: AggregatedSearchResult) => void;
+  onMvClick: (result: AggregatedSearchResult) => void;
+}
+
+/**
+ * P1: 搜索结果列表（四种类型统一容器，memo 包裹）。
+ * 仅当 类型/结果集/已加载数/回调引用 变化时才重渲染；
+ * 歌曲行走 memo 化的 SongRow，分页增量挂载时旧行不再重绘。
+ */
+const SearchResultList = memo(function SearchResultList({
+  searchType, results, displayCount,
+  onPlay, onMore, onArtistClick, onAlbumClick, onMvClick,
+}: SearchResultListProps) {
+  return (
+    <>
+      {/* 歌曲结果：列表 */}
+      {searchType === 'song' && (
+        <div className="space-y-2">
+          {results.slice(0, displayCount).map((result) => (
+            <SongRow
+              key={result.id}
+              song={result}
+              onPlay={onPlay}
+              onMore={onMore}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* 歌手结果：网格卡片 */}
+      {searchType === 'artist' && (
+        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
+          {results.slice(0, displayCount).map((result) => (
+            <button
+              key={result.id}
+              onClick={() => onArtistClick(result)}
+              className="text-left group focus-ring rounded-2xl"
+            >
+              <div className="aspect-square w-full rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors">
+                {result.coverUrl ? (
+                  <SmartCover src={result.coverUrl} alt={result.title} className="w-full h-full" />
+                ) : (
+                  <User className="w-10 h-10 text-[var(--text-tertiary)]" />
+                )}
+              </div>
+              <div className="text-sm font-medium truncate text-[var(--text-primary)]">{result.title}</div>
+              {result.subtitle && (
+                <div className="text-xs text-[var(--text-tertiary)] truncate">{result.subtitle}</div>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* 专辑结果：网格卡片 */}
+      {searchType === 'album' && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+          {results.slice(0, displayCount).map((result) => (
+            <button
+              key={result.id}
+              onClick={() => onAlbumClick(result)}
+              className="text-left group focus-ring rounded-2xl"
+            >
+              <div className="aspect-square w-full rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors">
+                {result.coverUrl ? (
+                  <SmartCover src={result.coverUrl} alt={result.title} className="w-full h-full" />
+                ) : (
+                  <Disc className="w-10 h-10 text-[var(--text-tertiary)]" />
+                )}
+              </div>
+              <div className="text-sm font-medium truncate text-[var(--text-primary)]">{result.title}</div>
+              <div className="text-xs text-[var(--text-tertiary)] truncate">{result.artist || result.subtitle || ''}</div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* MV结果：网格卡片 */}
+      {searchType === 'mv' && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+          {results.slice(0, displayCount).map((result) => (
+            <button
+              key={result.id}
+              onClick={() => onMvClick(result)}
+              className="text-left group focus-ring rounded-2xl"
+            >
+              <div className="aspect-video w-full rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors relative">
+                {result.coverUrl ? (
+                  <SmartCover src={result.coverUrl} alt={result.title} className="w-full h-full" />
+                ) : (
+                  <Video className="w-10 h-10 text-[var(--text-tertiary)]" />
+                )}
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+                  <Play className="w-10 h-10 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                </div>
+                {result.duration && result.duration > 0 && (
+                  <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px]">
+                    {Math.floor(result.duration / 60)}:{String(result.duration % 60).padStart(2, '0')}
+                  </div>
+                )}
+                {result.mvSources && result.mvSources.length > 1 && (
+                  <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px]">
+                    {result.mvSources.length} 源
+                  </div>
+                )}
+              </div>
+              <div className="text-sm font-medium truncate text-[var(--text-primary)]">{result.title}</div>
+              <div className="text-xs text-[var(--text-tertiary)] truncate">{result.artist || result.subtitle || ''}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+});
 
 export default function SearchPage() {
   const {
@@ -60,8 +190,6 @@ export default function SearchPage() {
   }, []);
 
   // v16: 搜索结果分页加载（E2 批次：收编为公共 useInfiniteList，触底分帧挂载）
-  const PAGE_SIZE = 15;
-
   // 搜索后自动滚动到结果
   const resultSectionRef = useRef<HTMLDivElement>(null);
 
@@ -73,7 +201,7 @@ export default function SearchPage() {
   const [searchError, setSearchError] = useState<string | null>(null);
 
   // v18: 搜索结果变化时重置分页（useInfiniteList 收编）
-  const inf = useInfiniteList({ total: results.length, pageSize: PAGE_SIZE, rootMargin: '400px' });
+  const inf = useInfiniteList({ total: results.length, pageSize: SEARCH_PAGE_SIZE, rootMargin: '400px' });
   useEffect(() => {
     inf.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -140,6 +268,14 @@ export default function SearchPage() {
     }
   }, [inputValue, selectedSources, searchType, setKeyword, setSearching, addToHistory, setResults, setSourceStats]);
 
+  // P1: 始终指向最新 handleSearch 的 ref —— 点击歌手/专辑等回调不再依赖
+  // handleSearch 本体（其闭包含 inputValue，逐字符输入都会重建），保证
+  // 传给结果列表的回调引用稳定，避免已加载行被连带重渲染
+  const handleSearchRef = useRef(handleSearch);
+  useEffect(() => {
+    handleSearchRef.current = handleSearch;
+  }, [handleSearch]);
+
   // 支持从首页带词跳转（/search?q=xxx）：进入页面自动搜索一次
   const [searchParams] = useSearchParams();
   const lastAutoQRef = useRef<string>('');
@@ -153,30 +289,31 @@ export default function SearchPage() {
     }
   }, [qParam, handleSearch]);
 
-  // 点击歌手 → 用歌手名搜索歌曲
+  // 点击歌手 → 用歌手名搜索歌曲（P1: 经 ref 调最新搜索，回调引用稳定）
   const handleArtistClick = useCallback((result: AggregatedSearchResult) => {
     if (result.title) {
       setInputValue(result.title);
       setSearchType('song');
-      setTimeout(() => handleSearch(), 0);
+      setTimeout(() => void handleSearchRef.current(), 0);
     }
-  }, [setSearchType, handleSearch]);
+  }, [setSearchType]);
 
-  // 点击专辑 → 用专辑名搜索歌曲
+  // 点击专辑 → 用专辑名搜索歌曲（P1: 经 ref 调最新搜索，回调引用稳定）
   const handleAlbumClick = useCallback((result: AggregatedSearchResult) => {
     if (result.title) {
       setInputValue(result.title);
       setSearchType('song');
-      setTimeout(() => handleSearch(), 0);
+      setTimeout(() => void handleSearchRef.current(), 0);
     }
-  }, [setSearchType, handleSearch]);
+  }, [setSearchType]);
 
   // v19.2: 点击MV → 应用内播放器打开，支持多源聚合与切源
   const handleMvClick = useCallback((result: AggregatedSearchResult) => {
     useMvPlayerStore.getState().openMv(result);
   }, []);
 
-  const handlePlay = async (result: AggregatedSearchResult) => {
+  // P1: useCallback 稳定引用（依赖仅音质偏好），配合 SongRow memo 避免整列表重绘
+  const handlePlay = useCallback(async (result: AggregatedSearchResult) => {
     if (!result.sources || result.sources.length === 0) {
       toast.error('暂无可用音源', '该歌曲在所有平台均无播放链接');
       return;
@@ -201,7 +338,7 @@ export default function SearchPage() {
       const msg = toUserMessage(err, '播放失败');
       toast.error('播放失败', msg);
     }
-  };
+  }, [selectedQuality]);
 
   const handleDownload = async (result: AggregatedSearchResult) => {
     if (!result.sources || result.sources.length === 0) {
@@ -603,103 +740,19 @@ export default function SearchPage() {
             )}
           </h2>
         )}
-        {/* 歌曲结果：列表 */}
-        {searchType === 'song' && (
-          <div className="space-y-2">
-            {results.slice(0, inf.displayCount).map((result) => (
-              <SongRow
-                key={result.id}
-                song={result}
-                onPlay={() => handlePlay(result)}
-                onMore={() => setQualitySheetSong(result)}
-              />
-            ))}
-          </div>
-        )}
-
-        {/* 歌手结果：网格卡片 */}
-        {searchType === 'artist' && (
-          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
-            {results.slice(0, inf.displayCount).map((result) => (
-              <button
-                key={result.id}
-                onClick={() => handleArtistClick(result)}
-                className="text-left group focus-ring rounded-2xl"
-              >
-                <div className="aspect-square w-full rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors">
-                  {result.coverUrl ? (
-                    <SmartCover src={result.coverUrl} alt={result.title} className="w-full h-full" />
-                  ) : (
-                    <User className="w-10 h-10 text-[var(--text-tertiary)]" />
-                  )}
-                </div>
-                <div className="text-sm font-medium truncate text-[var(--text-primary)]">{result.title}</div>
-                {result.subtitle && (
-                  <div className="text-xs text-[var(--text-tertiary)] truncate">{result.subtitle}</div>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* 专辑结果：网格卡片 */}
-        {searchType === 'album' && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-            {results.slice(0, inf.displayCount).map((result) => (
-              <button
-                key={result.id}
-                onClick={() => handleAlbumClick(result)}
-                className="text-left group focus-ring rounded-2xl"
-              >
-                <div className="aspect-square w-full rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors">
-                  {result.coverUrl ? (
-                    <SmartCover src={result.coverUrl} alt={result.title} className="w-full h-full" />
-                  ) : (
-                    <Disc className="w-10 h-10 text-[var(--text-tertiary)]" />
-                  )}
-                </div>
-                <div className="text-sm font-medium truncate text-[var(--text-primary)]">{result.title}</div>
-                <div className="text-xs text-[var(--text-tertiary)] truncate">{result.artist || result.subtitle || ''}</div>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* MV结果：网格卡片 */}
-        {searchType === 'mv' && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-            {results.slice(0, inf.displayCount).map((result) => (
-              <button
-                key={result.id}
-                onClick={() => handleMvClick(result)}
-                className="text-left group focus-ring rounded-2xl"
-              >
-                <div className="aspect-video w-full rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors relative">
-                  {result.coverUrl ? (
-                    <SmartCover src={result.coverUrl} alt={result.title} className="w-full h-full" />
-                  ) : (
-                    <Video className="w-10 h-10 text-[var(--text-tertiary)]" />
-                  )}
-                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
-                    <Play className="w-10 h-10 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </div>
-                  {result.duration && result.duration > 0 && (
-                    <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px]">
-                      {Math.floor(result.duration / 60)}:{String(result.duration % 60).padStart(2, '0')}
-                    </div>
-                  )}
-                  {result.mvSources && result.mvSources.length > 1 && (
-                    <div className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px]">
-                      {result.mvSources.length} 源
-                    </div>
-                  )}
-                </div>
-                <div className="text-sm font-medium truncate text-[var(--text-primary)]">{result.title}</div>
-                <div className="text-xs text-[var(--text-tertiary)] truncate">{result.artist || result.subtitle || ''}</div>
-              </button>
-            ))}
-          </div>
-        )}
+        {/* P1: 结果列表抽为 memo 组件 —— 搜索框输入、筛选/弹窗开关等页面级
+            状态变化不再触达列表；分页挂载新批次时，已加载行经 SongRow memo
+            与稳定回调直接跳过重渲染 */}
+        <SearchResultList
+          searchType={searchType}
+          results={results}
+          displayCount={inf.displayCount}
+          onPlay={handlePlay}
+          onMore={setQualitySheetSong}
+          onArtistClick={handleArtistClick}
+          onAlbumClick={handleAlbumClick}
+          onMvClick={handleMvClick}
+        />
 
         {/* v16: 滚动加载更多触发器 */}
         {results.length > 0 && (
@@ -718,7 +771,7 @@ export default function SearchPage() {
 
       {/* 骨架屏：搜索进行中且尚无结果时展示 */}
       {isSearching && results.length === 0 && (
-        <SkeletonSearchResult count={6} />
+        <SkeletonSearchResult count={SEARCH_PAGE_SIZE} />
       )}
 
       {/* 搜索失败：错误提示 + 重试按钮 */}

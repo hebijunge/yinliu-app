@@ -158,9 +158,22 @@ class PlaylistService {
       matchStatus?: string;
       failureReason?: string;
     }
-  ): Promise<void> {
+  ): Promise<boolean> {
     const sqliteDb = getSqliteDb();
     const now = Date.now();
+
+    // P1: 去重前移数据层 —— 同歌单 + 同平台 + 同 songId 唯一（DB 层另有唯一索引兜底）。
+    // 不再依赖 store 中「当前打开歌单」的渲染态判断，给任何歌单（含未打开的）加歌都能正确去重
+    const existStmt = sqliteDb.prepare(
+      `SELECT 1 FROM playlist_songs WHERE playlist_id = ? AND song_id = ? AND source = ? LIMIT 1`
+    );
+    existStmt.bind([playlistId, song.songId, song.source]);
+    const exists = existStmt.step();
+    existStmt.free();
+    if (exists) {
+      // 重复添加：直接跳过，调用方据 false 返回值省去强制重取（列表稳定无闪烁）
+      return false;
+    }
 
     // 获取当前最大 sort_index
     const countStmt = sqliteDb.prepare(
@@ -201,6 +214,7 @@ class PlaylistService {
     );
 
     await flushDatabase();
+    return true;
   }
 
   async removeSongFromPlaylist(playlistId: string, songId: string): Promise<void> {

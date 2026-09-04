@@ -281,6 +281,35 @@ async function initDatabaseOnce(): Promise<AppDb> {
   try { sqliteDb.run(`ALTER TABLE downloads ADD COLUMN title TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
   try { sqliteDb.run(`ALTER TABLE downloads ADD COLUMN artist TEXT`); } catch (e) { /* 旧 DB 已有该列时忽略 */ }
 
+  // P1 兼容迁移：歌单内同源歌曲唯一索引（去重前移数据层）
+  // 同歌单 + 同平台 + 同 songId 唯一；历史重复行先清理（保留最早一条），否则唯一索引创建失败
+  try {
+    const dupStmt = sqliteDb.prepare(
+      `SELECT COUNT(*) as cnt FROM (
+         SELECT playlist_id, song_id, source FROM playlist_songs
+         GROUP BY playlist_id, song_id, source HAVING COUNT(*) > 1
+       )`
+    );
+    let dupGroupCount = 0;
+    if (dupStmt.step()) {
+      dupGroupCount = Number((dupStmt.getAsObject() as Record<string, unknown>).cnt || 0);
+    }
+    dupStmt.free();
+    if (dupGroupCount > 0) {
+      sqliteDb.run(
+        `DELETE FROM playlist_songs WHERE id NOT IN (
+           SELECT MIN(id) FROM playlist_songs GROUP BY playlist_id, song_id, source
+         )`
+      );
+      console.log('[DB Migrate] playlist_songs 历史重复行已清理，重复组数:', dupGroupCount);
+    }
+    sqliteDb.run(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_playlist_songs_unique ON playlist_songs(playlist_id, song_id, source)`
+    );
+  } catch (e) {
+    console.error('[DB Migrate] playlist_songs 唯一索引迁移失败:', e);
+  }
+
   // 插入默认音源配置
   const defaults = [
     { id: 'netease', name: '网易云音乐', enabled: 1, priority: 100, maxQuality: 'hires' },

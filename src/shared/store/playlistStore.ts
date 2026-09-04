@@ -164,14 +164,14 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   },
 
   addSongToPlaylist: async (playlistId, song) => {
-    // 同歌单同源去重：同一平台同一 songId 不重复添加
-    const exists = get().currentPlaylistSongs.some(
-      (s) => s.playlistId === playlistId && s.songId === song.songId && s.source === song.source
-    );
-    if (exists) {
+    // P1: 去重下沉到 PlaylistService（数据层存在性检查 + DB 唯一索引兜底）。
+    // store 不再用 currentPlaylistSongs 渲染态判断——那是「当前打开歌单」的列表，
+    // 给未打开的歌单加歌时判重会失效；数据层去重对任何歌单都成立。
+    const inserted = await playlistService.addSongToPlaylist(playlistId, song);
+    if (!inserted) {
+      // 重复添加：直接返回，不触发 force 重取——列表保持稳定，无闪烁
       return;
     }
-    await playlistService.addSongToPlaylist(playlistId, song);
     // 歌单无封面时取第一首歌封面作为歌单封面
     const target = get().playlists.find((p) => p.id === playlistId);
     if (!target?.coverUrl && song.coverUrl) {

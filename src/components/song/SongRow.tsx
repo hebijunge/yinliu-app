@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { Music, MoreVertical } from 'lucide-react';
 import { SOURCE_COLORS } from './sourceColors';
 import { PLATFORM_SHORT_NAMES } from '../../core/platformPriority';
@@ -18,11 +19,13 @@ export interface SongRowData {
   sources: { sourceId: string; sourceName: string }[];
 }
 
-interface SongRowProps {
-  song: SongRowData;
-  onPlay: (song: SongRowData) => void;
+// P1: 泛型化 —— 调用方可传入完整业务类型（如搜索的 AggregatedSearchResult），
+// 回调按同一类型收发，memo 比较时引用稳定即可跳过重渲染
+interface SongRowProps<T extends SongRowData = SongRowData> {
+  song: T;
+  onPlay: (song: T) => void;
   /** ⋮ 更多按钮回调（打开音质弹窗） */
-  onMore: (song: SongRowData) => void;
+  onMore: (song: T) => void;
 }
 
 /**
@@ -30,7 +33,11 @@ interface SongRowProps {
  * 供 首页热歌榜 / 曲库榜单 / 曲库歌单 / 搜索结果 复用。
  * 整行点击播放；右侧 ⋮ 打开音质弹窗。
  */
-export default function SongRow({ song, onPlay, onMore }: SongRowProps) {
+/**
+ * memo 包裹：搜索分页挂载新批次时，已加载行在 props（song 引用 + 稳定回调）
+ * 不变的前提下直接跳过重渲染，避免整列表重绘（P1 搜索分页优化）。
+ */
+function SongRowInner<T extends SongRowData = SongRowData>({ song, onPlay, onMore }: SongRowProps<T>) {
   // v23：标识「正在播放」曲目 —— 与播放器当前曲目按 sourceSongId+sourceId（兜底 id）比对
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const isCurrentTrack = !!currentTrack && (
@@ -106,3 +113,6 @@ export default function SongRow({ song, onPlay, onMore }: SongRowProps) {
     </div>
   );
 }
+
+const SongRow = memo(SongRowInner) as typeof SongRowInner;
+export default SongRow;
