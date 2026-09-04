@@ -2,7 +2,9 @@ import { drizzle } from 'drizzle-orm/sql-js';
 import initSqlJs from 'sql.js';
 import * as schema from './schema';
 
-let db: ReturnType<typeof drizzle<typeof schema>> | null = null;
+const makeDrizzleDb = (sqlite: any) => drizzle(sqlite, { schema });
+type AppDb = ReturnType<typeof makeDrizzleDb>;
+let db: AppDb | null = null;
 let sqliteDb: any | null = null;
 let sqlJsModule: Awaited<ReturnType<typeof initSqlJs>> | null = null;
 
@@ -71,7 +73,24 @@ export async function flushDatabase(): Promise<void> {
 }
 
 // === 初始化数据库（支持从 IndexedDB 恢复）===
-export async function initDatabase(): Promise<typeof db> {
+// P1 冷启动：并发去重 —— bootstrap（main.tsx）与 App 挂载可能同时调用，
+// 复用同一 init promise，避免 sql.js WASM 重复加载与建库竞态。
+let dbInitPromise: Promise<AppDb> | null = null;
+
+export function initDatabase(): Promise<AppDb> {
+  if (db) return Promise.resolve(db);
+  const existing = dbInitPromise;
+  if (existing !== null) return existing;
+  const p = initDatabaseOnce().catch((err) => {
+    // 失败允许重试：清掉缓存的 promise，下次调用重新初始化
+    dbInitPromise = null;
+    throw err;
+  });
+  dbInitPromise = p;
+  return p;
+}
+
+async function initDatabaseOnce(): Promise<AppDb> {
   if (db) return db;
 
   const SQL = await initSqlJs({

@@ -4,12 +4,15 @@ import type { DownloadTask, DownloadStatus } from '@core/types';
 interface DownloadStore {
   tasks: DownloadTask[];
   activeTaskId: string | null;
+  /** E1: 是否存在因断网自动暂停、等待恢复网络后继续的任务 */
+  offlinePaused: boolean;
 
   setTasks: (tasks: DownloadTask[]) => void;
   upsertTask: (task: DownloadTask) => void;
   removeTask: (taskId: string) => void;
   setActiveTask: (taskId: string | null) => void;
   updateTaskStatus: (taskId: string, status: DownloadStatus, updates?: Partial<DownloadTask>) => void;
+  setOfflinePaused: (v: boolean) => void;
 
   // Phase 1: 新增 computed getters & actions
   /** 下载队列任务（非 completed）：pending / downloading / paused / failed */
@@ -25,6 +28,7 @@ interface DownloadStore {
 export const useDownloadStore = create<DownloadStore>((set, get) => ({
   tasks: [],
   activeTaskId: null,
+  offlinePaused: false,
 
   setTasks: (tasks) => set({ tasks }),
 
@@ -46,6 +50,8 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     })),
 
   setActiveTask: (taskId) => set({ activeTaskId: taskId }),
+
+  setOfflinePaused: (v) => set({ offlinePaused: v }),
 
   updateTaskStatus: (taskId, status, updates) =>
     set((s) => ({

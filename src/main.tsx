@@ -5,10 +5,10 @@ import { QueryClient } from '@tanstack/query-core';
 import { QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 import './index.css';
+import { streamCacheEngine } from './core/streaming';
 import { initDatabase } from './shared/database';
 import { initializeProviders } from './providers/music/registry';
 import { prewarmHomeCache } from './core/homeCache';
-import { streamCacheEngine } from './core/streaming';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -124,22 +124,20 @@ function LoadingScreen() {
 async function bootstrap() {
   const root = ReactDOM.createRoot(document.getElementById('root')!);
 
-  // 先渲染加载态，避免白屏
-  root.render(<LoadingScreen />);
-
-  let dbOk = false;
-  try {
-    await initDatabase();
-    dbOk = true;
-  } catch (dbError) {
-    console.error('Database initialization failed, falling back to memory mode:', dbError);
-  }
-
-  try {
-    initializeProviders();
-  } catch (providerError) {
-    console.error('Provider initialization failed:', providerError);
-  }
+  // v23 修复走查 #7：去掉冷启动人为等待（旧 LoadingScreen 固定 1400ms）。
+  // 立即渲染主界面，数据库初始化由 App 内部完成；加载遮罩在数据库就绪后立即淡出（见 App.tsx BootOverlay）。
+  // P1 冷启动并行化：initializeProviders 与 initDatabase 用 Promise.allSettled 并行推进，
+  // 二者互不阻塞、也不阻塞首帧渲染（initDatabase 幂等且并发去重，App 内 await 的是同一 promise）。
+  const providerInit = Promise.resolve().then(() => initializeProviders());
+  const dbInit = initDatabase();
+  void Promise.allSettled([providerInit, dbInit]).then(([providersResult, dbResult]) => {
+    if (providersResult.status === 'rejected') {
+      console.error('Provider initialization failed:', providersResult.reason);
+    }
+    if (dbResult.status === 'rejected') {
+      console.error('Database initialization failed (bootstrap side):', dbResult.reason);
+    }
+  });
 
   // v22-lru-fix: App 启动时初始化流缓存引擎——加载元数据、执行启动 LRU 清理并启动定期清理
   try {

@@ -7,6 +7,7 @@ import {
 import { usePlayerStore } from '../../shared/store/playerStore';
 import { usePlaylistStore } from '../../shared/store/playlistStore';
 import { useResponsiveLayout } from '../../shared/hooks/useResponsiveLayout';
+import { useNetworkStatus } from '../../shared/hooks/useNetworkStatus';
 import { playerEngine } from '../../core/player';
 import { PLATFORM_DISPLAY_NAMES } from '../../core/platformPriority';
 import { lyricsManager } from '../../modules/music/lyrics';
@@ -38,6 +39,8 @@ export default function FullScreenPlayer({ onClose }: Props) {
   const { state, currentTrack, currentTime, duration, volume, queue, repeatMode, currentQuality, actualQuality, isPreview, actualSourceId, isBuffering } = usePlayerStore();
   const isPlaying = state === 'playing';
   const { isLandscape } = useResponsiveLayout();
+  // E1: 播放页离线感知（错误态区分断网原因）
+  const online = useNetworkStatus();
 
   const [showLyrics, setShowLyrics] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
@@ -250,7 +253,7 @@ export default function FullScreenPlayer({ onClose }: Props) {
           className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs bg-red-500/10 text-red-500 hover:bg-red-500/20 transition-colors focus-ring"
         >
           <RotateCcw className="w-3.5 h-3.5" />
-          播放失败，点击重试
+          {online ? '播放失败，点击重试' : '无网络连接，恢复网络后点击重试'}
         </button>
       )}
       <button

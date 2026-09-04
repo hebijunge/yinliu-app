@@ -11,6 +11,7 @@ import { PLATFORM_DISPLAY_NAMES } from '../../core/platformPriority';
 import { lyricsManager } from '../../modules/music/lyrics';
 import { downloadEngine } from '../../core/download';
 import { useSettingsStore } from '../../shared/store/settingsStore';
+import { useGuardedAction } from '../../shared/hooks/useGuardedAction';
 import FullScreenPlayer from './FullScreenPlayer';
 import QueuePanel from './QueuePanel';
 import type { ParsedLyrics } from '../../modules/music/lyrics';
@@ -91,6 +92,9 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
       }
     );
   }, [currentTrack]);
+
+  // E4: 下载守卫（300ms 防抖，防狂点重复下发同一任务）
+  const { run: guardedDownload, busy: downloadBusy } = useGuardedAction(handleDownload);
 
   const { toggleFavorite, isFavorite } = usePlaylistStore();
   const isFav = currentTrack ? isFavorite({ title: currentTrack.title, artist: currentTrack.artist }) : false;
@@ -405,11 +409,12 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
                 </button>
               )}
               <button
-                onClick={handleDownload}
-                className="p-1.5 rounded-full hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors focus-ring"
+                onClick={guardedDownload}
+                disabled={downloadBusy}
+                className="p-1.5 rounded-full hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] transition-colors focus-ring disabled:opacity-40"
                 title="下载"
               >
-                <Download className="w-4 h-4" />
+                {downloadBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
               </button>
               <button
                 onClick={() => {

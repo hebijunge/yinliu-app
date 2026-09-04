@@ -5,6 +5,7 @@ import { usePlaylistStore, type PlaylistSongInput } from '../shared/store/playli
 import { usePlayerStore } from '../shared/store/playerStore';
 import { playerEngine } from '../core/player';
 import { useVirtualList } from '../shared/hooks/useVirtualList';
+import { useGuardedAction } from '../shared/hooks/useGuardedAction';
 
 const SOURCE_COLORS: Record<string, string> = {
   netease: 'bg-red-500',
@@ -38,6 +39,13 @@ export default function HistoryPage() {
   const [pickerFor, setPickerFor] = useState<HistoryRecord | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const { currentQuality } = usePlayerStore();
+
+  // E4: 清空历史守卫（进行中禁用 + 300ms 防抖，防双击重复清空）
+  const handleClearHistory = async () => {
+    await clearHistory();
+    setConfirmClear(false);
+  };
+  const { run: guardedClearHistory, busy: clearingBusy } = useGuardedAction(handleClearHistory);
 
   useEffect(() => {
     loadRecords();
@@ -307,13 +315,11 @@ export default function HistoryPage() {
                 取消
               </button>
               <button
-                onClick={async () => {
-                  await clearHistory();
-                  setConfirmClear(false);
-                }}
-                className="px-5 py-3 rounded-2xl bg-red-500 text-white text-sm font-medium hover:bg-red-600 transition-colors focus-ring"
+                onClick={guardedClearHistory}
+                disabled={clearingBusy}
+                className="px-5 py-3 rounded-2xl bg-red-500 text-white text-sm font-medium hover:bg-red-600 transition-colors focus-ring disabled:opacity-40"
               >
-                清空
+                {clearingBusy ? '清空中…' : '清空'}
               </button>
             </div>
           </div>
