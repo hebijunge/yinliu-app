@@ -20,6 +20,7 @@ import { detectMSECapability, isMSEAvailable } from './mseDetector';
 import { debugLogger } from '@shared/utils/debugLogger';
 import { QishuiCencDecryptor } from '@providers/music/QishuiCencDecryptor';
 import { fetchZ3dKey, createZ3dDecryptStream } from '@shared/audio/crypto';
+import { subscribeNetwork, isOnline } from '@shared/utils/networkMonitor';
 
 export type StreamingState =
   | 'idle'
@@ -108,6 +109,10 @@ class StreamingAudioPlayer {
   private isEncryptedStream = false;
   private encryptedStreamAbortController: AbortController | null = null;
 
+  // E5: 断网守卫 —— 断网暂停、恢复自动续播（进度保留）
+  private networkUnsubscribe: (() => void) | null = null;
+  private networkPaused = false;
+
   // === 公共接口 ===
 
   setCallbacks(callbacks: StreamingCallbacks): void {
@@ -117,6 +122,53 @@ class StreamingAudioPlayer {
   /** v18 EQ：监听 audio 元素创建/销毁（均衡器据此挂接） */
   setAudioElementListener(l: ((el: HTMLAudioElement | null) => void) | null): void {
     this.audioElementListener = l;
+  }
+
+  /**
+   * E5: 安装断网/恢复守卫（幂等，首次 load 时挂上）
+   * ① 播放中断网 → 暂停并提示；② 恢复网络 → 保留进度自动续播；
+   * ③ 自动续播失败 → 错误态（进度保留，由上层提供重试入口）。
+   */
+  private ensureNetworkGuard(): void {
+    if (this.networkUnsubscribe) return;
+    this.networkUnsubscribe = subscribeNetwork((online) => {
+      if (online) {
+        void this.handleNetworkRestore();
+      } else {
+        this.handleNetworkLost();
+      }
+    });
+  }
+
+  /** E5: 断网 → 暂停并提示（仅播放/缓冲态介入，错误态与空闲态不动） */
+  private handleNetworkLost(): void {
+    if (this.state !== 'playing' && this.state !== 'buffering') return;
+    this.networkPaused = true;
+    this.audio?.pause();
+    this.setState('paused');
+    this.stopProgressTracking();
+    debugLogger.warn('streaming', 'E5 network lost, playback paused', {
+      at: this.audio?.currentTime ?? 0,
+    });
+    this.callbacks.onError?.('网络中断，已暂停播放，恢复网络后将自动续播');
+  }
+
+  /** E5: 网络恢复 → 保留进度自动续播；失败则进入错误态并提示重试 */
+  private async handleNetworkRestore(): Promise<void> {
+    if (!this.networkPaused) return;
+    this.networkPaused = false;
+    const at = this.audio?.currentTime ?? 0;
+    try {
+      await this.audio?.play();
+      this.setState('playing');
+      this.startProgressTracking();
+      debugLogger.info('streaming', 'E5 network restored, auto-resumed', { at });
+    } catch (err) {
+      debugLogger.error('streaming', 'E5 auto-resume failed', { at, err: String(err) });
+      this.pendingSeekTime = at; // 重试时从断点续播
+      this.setState('error');
+      this.callbacks.onError?.('网络恢复后重连失败，播放进度已保留，请点击重试');
+    }
   }
 
   getAudioElement(): HTMLAudioElement | null {
@@ -140,6 +192,7 @@ class StreamingAudioPlayer {
    */
   async load(options: StreamingOptions): Promise<void> {
     await this.reset();
+    this.ensureNetworkGuard(); // E5: 首次加载时挂断网守卫
 
     this.cacheKey = options.cacheKey;
     this.mimeType = this.inferMimeType(options.format);
@@ -1040,6 +1093,12 @@ class StreamingAudioPlayer {
           src: url.slice(0, 80),
           state: this.state,
         });
+        if (!isOnline() && (this.state === 'playing' || this.state === 'buffering')) {
+          // E5: 断网导致的媒体错误按断网暂停处理，恢复网络后自动续播
+          this.handleNetworkLost();
+          doResolve(); // 错误时也resolve，避免卡住
+          return;
+        }
         this.setState('error');
         this.callbacks.onError?.('音频播放失败');
         doResolve(); // 错误时也resolve，避免卡住
@@ -1097,6 +1156,11 @@ class StreamingAudioPlayer {
         message: errMsg,
         src: url.slice(0, 80),
       });
+      if (!isOnline() && (this.state === 'playing' || this.state === 'buffering')) {
+        // E5: 断网导致的媒体错误按断网暂停处理，恢复网络后自动续播
+        this.handleNetworkLost();
+        return;
+      }
       this.setState('error');
       this.callbacks.onError?.('音频播放失败');
     });
@@ -1210,6 +1274,12 @@ class StreamingAudioPlayer {
       },
 
       onError: (error) => {
+        // E5: 播放中断网导致的下载失败按断网暂停处理，恢复网络后自动续播；
+        // 初始加载阶段断网无进度可续，仍走错误态
+        if (!isOnline() && (this.state === 'playing' || this.state === 'buffering')) {
+          this.handleNetworkLost();
+          return;
+        }
         this.setState('error');
         this.callbacks.onError?.(error.message);
       },
