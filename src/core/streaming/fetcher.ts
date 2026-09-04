@@ -57,6 +57,11 @@ export class StreamFetcher {
   private overallReceived = 0;
   private callbacks: FetcherCallbacks = {};
 
+  // v29-A1: 会话代际 —— 每次 start()/reset() 递增。在途的 HEAD 预检完成后
+  // 只有代际仍等于当前值才允许写 totalSize，防止上一首歌的陈旧 HEAD
+  // 覆盖新会话刚学到的 totalSize（跨歌残留的另一个来源）
+  private session = 0;
+
   // v25: 并行 HEAD 预检 —— start() 不再串行等待，downloadLoop 在需要 totalSize
   // （首块之后的边界钳制）时才 await 该 Promise
   private headPromise: Promise<void> | null = null;
@@ -95,8 +100,18 @@ export class StreamFetcher {
       await this.stop();
     }
 
+    // v29-A1: 会话代际 + totalSize 生命周期 —— 同一 fetcher 实例（单例播放器内复用）
+    // 跨歌残留旧 totalSize 时，新歌的块范围会被旧 totalSize 错误钳制；
+    // 且 skipHead 判定可能因残留 totalSize 误跳 HEAD。现在：
+    //   - skipHead 且确有 totalSize（同歌 seek 重启）→ 保留 totalSize、不发 HEAD；
+    //   - 其余情况（新歌/无 totalSize）→ totalSize 归零、重发 HEAD。
+    // 每次 start() 递增 session，作废在途旧 HEAD 的写入资格。
+    const session = ++this.session;
+    const keepTotalSize = options.skipHead && this.totalSize > 0 ? this.totalSize : 0;
+
     this.url = url;
     this.headers = headers;
+    this.totalSize = keepTotalSize;
     this.currentByteOffset = startByte;
     this.currentChunkIndex = 0;
     this.overallReceived = 0;
@@ -109,9 +124,9 @@ export class StreamFetcher {
     //      并由 downloadChunk 从响应学习 totalSize 兜底。
     this.headPromise = null;
     this.headPending = false;
-    if (!(options.skipHead && this.totalSize > 0)) {
+    if (!keepTotalSize) {
       this.headPending = true;
-      this.headPromise = this.probeHead();
+      this.headPromise = this.probeHead(session);
     }
 
     this.state = 'fetching';
@@ -127,13 +142,16 @@ export class StreamFetcher {
   }
 
   /** v25: HEAD 预检（并行执行，失败静默——由响应学习 totalSize 兜底） */
-  private async probeHead(): Promise<void> {
+  private async probeHead(session: number): Promise<void> {
     try {
       const headResp = await platformFetch(this.url, {
         method: 'HEAD',
         headers: this.headers,
         signal: AbortSignal.timeout(6000),
       });
+      // v29-A1: HEAD 是上一轮 start() 发出的；若期间已 reset()/新一轮 start()，
+      // 陈旧 content-length 不得覆盖新会话的 totalSize（否则新歌块范围被旧值钳制）
+      if (session !== this.session) return;
       const contentLength = headResp.headers.get('content-length');
       if (contentLength) {
         this.totalSize = parseInt(contentLength, 10);
@@ -151,7 +169,8 @@ export class StreamFetcher {
         error: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      this.headPending = false;
+      // v29-A1: 只清理属于当前会话的 headPending 标记，避免旧 HEAD 吞掉新一轮的标记
+      if (session === this.session) this.headPending = false;
     }
   }
 
@@ -209,6 +228,28 @@ export class StreamFetcher {
     this.abortController?.abort();
     // 等待一小段时间让 abort 生效
     await new Promise((r) => setTimeout(r, 50));
+  }
+
+  /**
+   * v29-A1: 彻底重置 —— 切歌/停止播放时调用。区别于 stop()（仅停下载循环、
+   * 保留 url/headers/totalSize 供 seek 复用）：本方法清空全部会话状态并递增
+   * 会话代际（作废在途 HEAD 的写入资格），确保上一首歌的元数据
+   * （尤其 totalSize 与陈旧 HEAD）不会泄漏到下一首歌。
+   */
+  reset(): void {
+    this.session++;
+    this.state = 'idle';
+    this.abortController?.abort();
+    this.abortController = null;
+    this.url = '';
+    this.headers = {};
+    this.totalSize = 0;
+    this.currentByteOffset = 0;
+    this.currentChunkIndex = 0;
+    this.overallReceived = 0;
+    this.seekTargetByte = -1;
+    this.headPromise = null;
+    this.headPending = false;
   }
 
   // === 内部分块下载循环 ===

@@ -367,7 +367,16 @@ class StreamingAudioPlayer {
           cacheKey: options.cacheKey,
           resumeOffset,
         });
+        // v29-A1: MSE 前缀读失败降级 Blob —— 前缀未入 SourceBuffer 也未记账
+        // （loadResumePrefixIntoMSE 仅成功路径补记），此处统一补记
+        this.totalDownloaded += resumeOffset;
       }
+    } else if (resumeOffset > 0) {
+      // v29-A1: Blob 路径前缀补记 —— fetcher 从 resumeOffset 续传，后续回调只累加
+      // 新下载字节；缓存文件里已有的前缀不记入 totalDownloaded 时，
+      // ended 守卫（totalDownloaded < totalSize）永远成立 → 播完触底被判为
+      // buffering、卡死不切歌。MSE 成功路径由 loadResumePrefixIntoMSE 自行补记
+      this.totalDownloaded += resumeOffset;
     }
     this.setState('loading');
     if (!options.url) {
@@ -857,6 +866,10 @@ class StreamingAudioPlayer {
 
     // 停止 fetcher / 加密流
     await this.fetcher.stop();
+    // v29-A1: stop() 只停下载循环、保留 url/totalSize 供 seek 复用；切歌必须
+    // 再调 reset() 清空会话状态（totalSize/URL/在途 HEAD），否则上一首歌的
+    // totalSize 残留会钳制下一首歌的块范围
+    this.fetcher.reset();
     if (this.encryptedStreamAbortController) {
       this.encryptedStreamAbortController.abort();
       this.encryptedStreamAbortController = null;
@@ -1780,18 +1793,25 @@ class StreamingAudioPlayer {
   }
 
   /**
-   * 获取恢复下载的偏移量（从已下载的最远位置继续）
+   * 获取恢复下载的偏移量
+   * v29-A1: 连续前缀末尾 —— 旧实现取已下载区间的最大端（maxEnd+1），
+   * Range 请求失败/超时产生的中间空洞永远不会再被回填（fetcher 永远从
+   * 最远端续传），seek/续播时表现为「进度条可拖、拖到空洞区间无声」。
+   * 现改为从 0 开始扫描排序后的区间，取首个空洞前的连续前缀长度；
+   * 空洞之后的数据不浪费（仍在缓存元数据里），由后续按需请求覆盖。
    */
   private getResumeOffset(): number {
     const entry = streamCacheEngine.getEntry(this.cacheKey);
     if (!entry || entry.downloadedRanges.length === 0) return 0;
 
-    // 找到最远已下载位置
-    let maxEnd = 0;
-    for (const range of entry.downloadedRanges) {
-      if (range.end > maxEnd) maxEnd = range.end;
+    const sorted = [...entry.downloadedRanges].sort((a, b) => a.start - b.start);
+    // 已确认连续覆盖 [0..end]；初始无数据时 end = -1（前缀长度 0）
+    let end = -1;
+    for (const range of sorted) {
+      if (range.start > end + 1) break; // 出现空洞，连续前缀到此为止
+      if (range.end > end) end = range.end;
     }
-    return maxEnd + 1;
+    return end + 1;
   }
 
   /**
