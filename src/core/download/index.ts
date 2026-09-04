@@ -507,12 +507,19 @@ export class DownloadEngine {
     }
     task.totalSize = totalSize;
 
-    // 断点续传判定：.part 存在且 downloadedSize 与其一致（避免 DB 与文件错位）时从断点继续
+    // 断点续传判定：.part 存在且其磁盘大小与 downloadedSize 一致（避免 DB 与文件错位）时从断点继续。
+    // .part 以 base64 文本分块追加落盘（appendFile 写入 UTF8 字符串），每个 chunk 独立编码产生各自 padding，
+    // 磁盘大小 = Σ(每 chunk 的 base64 长度) = Σ(4*ceil(chunkLen/3))，并非整段一次编码的 4*ceil(n/3)。
+    // 下载仅在 chunk 边界处暂停/中断（abort 检查位于取块之前），故已落盘内容 = k 个完整 CHUNK（+可能的末块 r），
+    // 据此精确推算磁盘期望大小。旧实现直接比较原始字节数，base64 膨胀 4/3 后恒不相等 → 续传永不命中。
     let resumeOffset = 0;
     let partialExists = false;
     try {
       const stat = await Filesystem.stat({ path: partialPath, directory: Directory.Data });
-      partialExists = Number(stat.size || 0) === (task.downloadedSize ?? 0);
+      const n = task.downloadedSize ?? 0;
+      const b64Len = (len: number) => (len > 0 ? 4 * Math.ceil(len / 3) : 0);
+      const expectedDiskSize = Math.floor(n / CHUNK) * b64Len(CHUNK) + b64Len(n % CHUNK);
+      partialExists = Number(stat.size || 0) === expectedDiskSize;
     } catch {
       partialExists = false;
     }
