@@ -169,10 +169,19 @@ interface IsobmffBox {
 interface CencInfo {
   sampleSizes: number[];
   ivs: Uint8Array[];
+  /** 每帧的 subsample 明/密分区（null = 整帧加密） */
+  subsamples: (CencSubsample[] | null)[];
   mdatOffset: number;
   isFlac: boolean;
   dfLaData?: Uint8Array;
   headerData: Uint8Array;
+}
+
+interface CencSubsample {
+  /** 明文字节数（未被加密的区域） */
+  clear: number;
+  /** 密文字节数（AES-CTR 加密区域） */
+  encrypted: number;
 }
 
 /**
@@ -259,16 +268,49 @@ function extractCencInfo(headerData: Uint8Array): CencInfo | null {
   }
 
   // 解析 senc（每样本 IV）
-  // senc box: version(1) + flags(3) + sample_count(4) + [IVs...]
+  // senc box: version(1) + flags(3) + sample_count(4) + [IV(Per_Sample_IV_Size) + subsample 表...]
   const sencData = senc.data;
+  // senc 是 full box：data 前 8 字节为 size+type，version/flags 位于偏移 8，
+  // sample_count 位于偏移 12（此前误读偏移 0 的 size 字段导致 subsample 标志随机误判）
+  const sencFlags = readUint32(sencData, 8) & 0xffffff;
+  const hasSubsamples = (sencFlags & 0x02) !== 0;
   const ivCount = readUint32(sencData, 12);
+
+  // tenc（sinf→schi→tenc）提供 default_Per_Sample_IV_Size；缺失时按 8 字节兜底
+  const tenc = boxes.find((b) => b.type === 'tenc');
+  let ivSize = 8;
+  if (tenc && tenc.data.length >= 17) {
+    // tenc: size(4) type(4) version(1) flags(3) reserved(2) isProtected(1) ivSize(1) KID(16)
+    const tencIvSize = tenc.data[15];
+    if (tencIvSize > 0) ivSize = tencIvSize;
+  }
+
   const ivs: Uint8Array[] = [];
+  const subsamples: (CencSubsample[] | null)[] = [];
   let sencPos = 16;
 
   for (let i = 0; i < ivCount; i++) {
-    if (sencPos + 8 > sencData.length) break;
-    ivs.push(sencData.slice(sencPos, sencPos + 8));
-    sencPos += 8;
+    if (sencPos + ivSize > sencData.length) break;
+    ivs.push(sencData.slice(sencPos, sencPos + ivSize));
+    sencPos += ivSize;
+
+    if (hasSubsamples) {
+      if (sencPos + 2 > sencData.length) break;
+      const entryCount = (sencData[sencPos] << 8) | sencData[sencPos + 1];
+      sencPos += 2;
+      const entries: CencSubsample[] = [];
+      for (let e = 0; e < entryCount; e++) {
+        if (sencPos + 6 > sencData.length) break;
+        entries.push({
+          clear: (sencData[sencPos] << 8) | sencData[sencPos + 1],
+          encrypted: readUint32(sencData, sencPos + 2),
+        });
+        sencPos += 6;
+      }
+      subsamples.push(entries.length > 0 ? entries : null);
+    } else {
+      subsamples.push(null);
+    }
   }
 
   // FLAC 检测：stsd 中是否有 dfLa
@@ -280,10 +322,13 @@ function extractCencInfo(headerData: Uint8Array): CencInfo | null {
       const t = new TextDecoder().decode(stsdData.slice(i, i + 4));
       if (t === 'dfLa') {
         isFlac = true;
-        // 提取 dfLa box 内容（简化：取 dfLa 后8字节版本/flags之后的数据）
-        const dfLaStart = i + 4;
-        if (dfLaStart + 8 < stsdData.length) {
-          dfLaData = stsdData.slice(dfLaStart + 4); // 跳过 version/flags
+        // dfLa 是完整 box：size 字段位于 type 前面（i-4），载荷只取到 box 末尾，
+        // 不得延伸到 stsd 末尾（否则会把 dfLa 之后的 sinf 等字节误当成 FLAC 元数据）
+        const dfLaBoxSize = readUint32(stsdData, i - 4);
+        const dfLaStart = i + 8; // 跳过 4 字节 type + 4 字节 version/flags
+        const dfLaEnd = Math.min(i - 4 + dfLaBoxSize, stsdData.length);
+        if (dfLaStart < dfLaEnd) {
+          dfLaData = stsdData.slice(dfLaStart, dfLaEnd);
         }
         break;
       }
@@ -293,6 +338,7 @@ function extractCencInfo(headerData: Uint8Array): CencInfo | null {
   return {
     sampleSizes,
     ivs,
+    subsamples,
     mdatOffset: mdat.offset + 8, // 跳过 mdat header
     isFlac,
     dfLaData,
@@ -300,28 +346,91 @@ function extractCencInfo(headerData: Uint8Array): CencInfo | null {
   };
 }
 
-/**
- * 使用 Web Crypto API 解密单帧 AES-128-CTR
- * @param encrypted 加密数据
- * @param key 16字节 AES 密钥
- * @param iv8 8字节 IV（扩展为16字节 CTR counter）
- */
-async function decryptAesCtrFrame(
+// CryptoKey 缓存（B7：importKey 提出逐帧循环，每把密钥只导入一次）
+const cencKeyCache = new Map<string, CryptoKey>();
+
+async function getCencCryptoKey(keyHex: string): Promise<CryptoKey> {
+  const cached = cencKeyCache.get(keyHex);
+  if (cached) return cached;
+  const key = hexToBytes(keyHex);
+  if (key.length !== 16) {
+    throw new Error(`CENC 密钥长度必须是16字节，实际 ${key.length} 字节`);
+  }
+  const cryptoKey = await crypto.subtle.importKey('raw', key as unknown as BufferSource, { name: 'AES-CTR' }, false, ['decrypt']);
+  cencKeyCache.set(keyHex, cryptoKey);
+  return cryptoKey;
+}
+
+/** AES-CTR 整段解密（IV 前 ivSize 字节 + 后补 0 扩展为 16 字节 counter） */
+async function decryptAesCtr(
   encrypted: Uint8Array,
-  key: Uint8Array,
-  iv8: Uint8Array
+  cryptoKey: CryptoKey,
+  iv: Uint8Array
 ): Promise<Uint8Array> {
   const iv16 = new Uint8Array(16);
-  iv16.set(iv8, 0);
-  // 后8字节保持为0
-
-  const cryptoKey = await crypto.subtle.importKey('raw', key as unknown as BufferSource, { name: 'AES-CTR' }, false, ['decrypt']);
+  iv16.set(iv.subarray(0, Math.min(iv.length, 16)), 0);
+  const counter = iv16.slice().buffer as ArrayBuffer;
   const decrypted = await crypto.subtle.decrypt(
-    { name: 'AES-CTR', counter: iv16.buffer as ArrayBuffer, length: 128 },
+    { name: 'AES-CTR', counter, length: 128 },
     cryptoKey,
-    encrypted.buffer as ArrayBuffer,
+    encrypted.slice().buffer as ArrayBuffer,
   );
   return new Uint8Array(decrypted);
+}
+
+/**
+ * 解密单帧：整帧加密，或按 subsample 明/密分区解密。
+ * subsample 模式下所有加密区按 CENC 规范共享同一 keystream（从 IV 连续推进），
+ * 实现：把所有加密区拼接成一段做单次 AES-CTR，再按位置拼回。
+ */
+async function decryptFrame(
+  frameCipher: Uint8Array,
+  cryptoKey: CryptoKey,
+  iv: Uint8Array,
+  subsamples: CencSubsample[] | null
+): Promise<Uint8Array> {
+  if (!subsamples || subsamples.length === 0) {
+    return decryptAesCtr(frameCipher, cryptoKey, iv);
+  }
+
+  // 收集加密区
+  let totalEncrypted = 0;
+  for (const s of subsamples) totalEncrypted += s.encrypted;
+
+  const cipherCat = new Uint8Array(totalEncrypted);
+  let catPos = 0;
+  let framePos = 0;
+  for (const s of subsamples) {
+    framePos += s.clear;
+    if (s.encrypted > 0 && framePos + s.encrypted <= frameCipher.length) {
+      cipherCat.set(frameCipher.subarray(framePos, framePos + s.encrypted), catPos);
+      catPos += s.encrypted;
+    }
+    framePos += s.encrypted;
+  }
+
+  const plainCat = await decryptAesCtr(cipherCat, cryptoKey, iv);
+
+  // 拼回
+  const out = new Uint8Array(frameCipher.length);
+  let plainPos = 0;
+  framePos = 0;
+  for (const s of subsamples) {
+    if (framePos + s.clear <= frameCipher.length) {
+      out.set(frameCipher.subarray(framePos, framePos + s.clear), framePos);
+    }
+    framePos += s.clear;
+    if (s.encrypted > 0 && framePos + s.encrypted <= frameCipher.length) {
+      out.set(plainCat.subarray(plainPos, plainPos + s.encrypted), framePos);
+      plainPos += s.encrypted;
+    }
+    framePos += s.encrypted;
+  }
+  // 尾部未覆盖区域按明文处理
+  if (framePos < frameCipher.length) {
+    out.set(frameCipher.subarray(framePos), framePos);
+  }
+  return out;
 }
 
 export interface DecryptedAudio {
@@ -356,7 +465,7 @@ export async function decryptCencMp4(
     throw new Error('无法解析 CENC ISOBMFF 结构（缺少 mdat/stsz/senc）');
   }
 
-  const { sampleSizes, ivs, mdatOffset, isFlac, dfLaData } = info;
+  const { sampleSizes, ivs, subsamples, mdatOffset, isFlac, dfLaData } = info;
 
   // 预分配输出缓冲区
   const totalEncryptedSize = sampleSizes.reduce((a, b) => a + b, 0);
@@ -389,14 +498,15 @@ export async function decryptCencMp4(
     outputPos = modifiedHeader.length;
   }
 
-  // 逐帧解密
+  // 逐帧解密（CryptoKey 已缓存，不再逐帧 importKey）
+  const cryptoKey = await getCencCryptoKey(keyHex);
   let mdatPos = mdatOffset;
   const frameCount = Math.min(sampleSizes.length, ivs.length);
 
   for (let i = 0; i < frameCount; i++) {
     const frameSize = sampleSizes[i];
     const frameCipher = data.slice(mdatPos, mdatPos + frameSize);
-    const plain = await decryptAesCtrFrame(frameCipher, key, ivs[i]);
+    const plain = await decryptFrame(frameCipher, cryptoKey, ivs[i], subsamples[i] ?? null);
     output.set(plain, outputPos);
     outputPos += plain.length;
     mdatPos += frameSize;
@@ -453,10 +563,11 @@ export function createCencDecryptStream(
   keyHex: string,
   onProgress?: (processed: number, total: number) => void
 ): TransformStream<Uint8Array, Uint8Array> {
-  const key = hexToBytes(keyHex);
-  if (key.length !== 16) {
-    throw new Error(`CENC 密钥长度必须是16字节，实际 ${key.length} 字节`);
+  if (hexToBytes(keyHex).length !== 16) {
+    throw new Error(`CENC 密钥长度必须是16字节，实际 ${hexToBytes(keyHex).length} 字节`);
   }
+  // B7：CryptoKey 在流开始前一次性导入，逐帧解密不再重复 importKey
+  const cryptoKeyPromise = getCencCryptoKey(keyHex);
 
   let buffer = new Uint8Array(0);
   let headerParsed = false;
@@ -466,6 +577,7 @@ export function createCencDecryptStream(
   let headerOutput = false;
   let totalSize = 0;
   let processedSize = 0;
+  let cryptoKey: CryptoKey | null = null;
 
   return new TransformStream<Uint8Array, Uint8Array>({
     async transform(chunk, controller) {
@@ -528,8 +640,12 @@ export function createCencDecryptStream(
 
       if (!cencInfo) return;
 
+      if (!cryptoKey) {
+        cryptoKey = await cryptoKeyPromise;
+      }
+
       // 处理帧：逐帧从缓冲区读取、解密、输出
-      const { sampleSizes, ivs } = cencInfo;
+      const { sampleSizes, ivs, subsamples } = cencInfo;
 
       while (frameIndex < Math.min(sampleSizes.length, ivs.length)) {
         const frameSize = sampleSizes[frameIndex];
@@ -538,7 +654,7 @@ export function createCencDecryptStream(
         }
 
         const frameCipher = buffer.slice(mdatPos, mdatPos + frameSize);
-        const plain = await decryptAesCtrFrame(frameCipher, key, ivs[frameIndex]);
+        const plain = await decryptFrame(frameCipher, cryptoKey, ivs[frameIndex], subsamples[frameIndex] ?? null);
         controller.enqueue(plain);
 
         processedSize += plain.length;

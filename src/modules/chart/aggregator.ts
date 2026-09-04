@@ -23,10 +23,23 @@ export interface SourceChartResult {
 /**
  * 按融合分类聚合榜单
  * 各源并行拉取固定榜单ID，返回按源分组的结果（歌单聚合模式：分源依次展示）
+ *
+ * v22 D4: TTL 缓存——结果缓存 5 分钟，消除同分类短时间内的重复聚合请求
+ * （此前 ChartPage 先 aggregate 再 merge，merge 内部又 aggregate，双倍请求）；
+ * 空结果也写入短 TTL 的负缓存（2 分钟），防止源异常时每次进入页面都全量重打。
  */
+const AGGREGATE_CACHE_TTL = 5 * 60 * 1000;
+const AGGREGATE_EMPTY_CACHE_TTL = 2 * 60 * 1000;
+const aggregateCache = new Map<string, { result: SourceChartResult[]; expiresAt: number }>();
+
 export async function aggregateChartsByCategory(
   categoryId: string
 ): Promise<SourceChartResult[]> {
+  const cached = aggregateCache.get(categoryId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.result;
+  }
+
   const mappings = getActiveMappings(categoryId);
   if (mappings.length === 0) return [];
 
@@ -69,7 +82,16 @@ export async function aggregateChartsByCategory(
     }
   });
 
-  return Promise.all(promises);
+  const result = await Promise.all(promises);
+
+  // v22 D4: 写缓存（空结果用短 TTL 负缓存，防失败循环重试）
+  const hasData = result.some((r) => r.songs.length > 0);
+  aggregateCache.set(categoryId, {
+    result,
+    expiresAt: Date.now() + (hasData ? AGGREGATE_CACHE_TTL : AGGREGATE_EMPTY_CACHE_TTL),
+  });
+
+  return result;
 }
 
 /**

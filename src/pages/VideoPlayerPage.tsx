@@ -21,7 +21,10 @@ export default function VideoPlayerPage() {
   const [mvUrl, setMvUrl] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const progressRestoredRef = useRef(false);
+  // v22 D8: 换流进度恢复走 restoreTime prop（VideoPlayer 在 loadedmetadata 一次性 seek），
+  // 替代原 setTimeout + querySelector('video') 的竞态写法
+  const [restoreTime, setRestoreTime] = useState(0);
+  const initialRestoredRef = useRef(false);
 
   // === 加载MV信息并取链 ===
   const loadMv = useCallback(async () => {
@@ -141,61 +144,34 @@ export default function VideoPlayerPage() {
     };
   }, [currentMv, saveProgress]);
 
-  // === 画质切换 ===
-  const handleQualityChange = useCallback(async (quality: MvQuality) => {
+  // === 画质切换（由 VideoPlayer 的 onQualityChange 直调，不再监听 store 订阅） ===
+  // v22 D8: 原 store.subscribe 监听 currentQuality 形成反馈环——
+  // 切画质 → setCurrentQuality → 订阅触发 → 再取链再 setCurrentQuality，重复取链
+  const handleQualityChange = useCallback(async (quality: MvQuality, resumeAt: number) => {
     if (!mvId || !currentMv) return;
 
-    const video = document.querySelector('video');
-    const savedTime = video?.currentTime || 0;
-
     setState('loading');
+    setRestoreTime(resumeAt > 0 ? resumeAt : 0);
     try {
       await resolveAndPlay(mvId, sourceId, currentMv.availableQualities, quality);
-      // 恢复进度
-      progressRestoredRef.current = false;
-      setTimeout(() => {
-        const v = document.querySelector('video') as HTMLVideoElement | null;
-        if (v && savedTime > 0) {
-          v.currentTime = Math.min(savedTime, v.duration || savedTime);
-          progressRestoredRef.current = true;
-        }
-      }, 500);
     } catch (err) {
       const msg = toUserMessage(err, '切换失败');
       toast.error('画质切换失败', msg);
+      setRestoreTime(0);
       setState('error');
     }
   }, [mvId, currentMv, sourceId, resolveAndPlay, setState]);
 
-  // 监听画质变化（由 VideoPlayer 组件触发）
+  // === 恢复上次播放进度（初始一次） ===
   useEffect(() => {
-    if (!currentMv || !mvId) return;
-    // 如果画质从外部（如弹窗）改变了，重新取链
-    const unsub = useVideoPlayerStore.subscribe((state, prevState) => {
-      if (state.currentQuality !== prevState.currentQuality && state.currentMv?.id === currentMv.id) {
-        handleQualityChange(state.currentQuality);
-      }
-    });
-    return () => unsub();
-  }, [currentMv, mvId, handleQualityChange]);
-
-  // === 恢复上次播放进度 ===
-  useEffect(() => {
-    if (!currentMv || !mvUrl || progressRestoredRef.current) return;
+    if (!currentMv || !mvUrl || initialRestoredRef.current) return;
+    initialRestoredRef.current = true;
     const saved = getSavedProgress(currentMv.id);
     if (saved > 5) {
-      const timer = setTimeout(() => {
-        const video = document.querySelector('video') as HTMLVideoElement | null;
-        if (video) {
-          video.currentTime = saved;
-          setProgress(saved, video.duration || 0);
-          progressRestoredRef.current = true;
-          toast.info('已恢复上次播放进度', `跳转至 ${Math.floor(saved / 60)}:${String(Math.floor(saved % 60)).padStart(2, '0')}`);
-        }
-      }, 800);
-      return () => clearTimeout(timer);
+      setRestoreTime(saved);
+      toast.info('已恢复上次播放进度', `跳转至 ${Math.floor(saved / 60)}:${String(Math.floor(saved % 60)).padStart(2, '0')}`);
     }
-  }, [currentMv, mvUrl, getSavedProgress, setProgress]);
+  }, [currentMv, mvUrl, getSavedProgress]);
 
   if (isLoading && !mvUrl) {
     return (
@@ -225,6 +201,8 @@ export default function VideoPlayerPage() {
     <VideoPlayer
       src={mvUrl}
       poster={currentMv?.coverUrl}
+      restoreTime={restoreTime}
+      onQualityChange={handleQualityChange}
       onLoadStart={() => setState('loading')}
       onCanPlay={() => setState('playing')}
       onEnded={() => {

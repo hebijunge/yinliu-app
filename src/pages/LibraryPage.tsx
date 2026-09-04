@@ -89,17 +89,21 @@ export default function LibraryPage() {
   }, [activeTab, playlistsLoaded, playlistCat, loadPlaylists]);
 
   // ===== 分类切换时重载当前 Tab 数据 =====
+  // v22 D4: 从 deps 中移除 chartsLoaded/playlistsLoaded——
+  // 首次加载置 true 后会触发本 effect 再跑一次，形成双倍请求
   useEffect(() => {
     if (activeTab === 'charts' && chartsLoaded) {
       loadCharts(chartCat);
     }
-  }, [chartCat, activeTab, chartsLoaded, loadCharts]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartCat, activeTab, loadCharts]);
 
   useEffect(() => {
     if (activeTab === 'playlists' && playlistsLoaded) {
       loadPlaylists(playlistCat);
     }
-  }, [playlistCat, activeTab, playlistsLoaded, loadPlaylists]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playlistCat, activeTab, loadPlaylists]);
 
   const handlePlay = async (song: AggregatedChartSong) => {
     try {

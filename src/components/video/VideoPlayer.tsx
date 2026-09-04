@@ -28,6 +28,10 @@ interface Props {
   onError?: (msg: string) => void;
   onLoadStart?: () => void;
   onCanPlay?: () => void;
+  /** v22 D3: 画质切换回调（参数：目标画质、切换时的播放进度秒）——由父组件重载对应画质流 */
+  onQualityChange?: (quality: MvQuality, resumeAt: number) => void;
+  /** v22 D3: 换流后需恢复的播放进度（秒），loadedmetadata 时一次性 seek */
+  restoreTime?: number;
 }
 
 function formatTime(t: number): string {
@@ -37,13 +41,19 @@ function formatTime(t: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart, onCanPlay }: Props) {
+export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart, onCanPlay, onQualityChange, restoreTime }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const controlsTimerRef = useRef<number | null>(null);
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const gestureTypeRef = useRef<'none' | 'seek' | 'volume' | 'brightness'>('none');
   const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
+  // v22 D3: currentTime 的 ref 镜像——保存进度的 interval / 画质切换不再依赖高频变化的 store currentTime
+  const currentTimeRef = useRef(0);
+  // v22 D3: 手势 seek 的基准时间 ref（store currentTime 有滞后，逐帧用它累加会造成触摸 seek 回跳）
+  const gestureSeekTimeRef = useRef(0);
+  // v22 D3: 换流后待恢复的进度（restoreTime prop 变化时写入）
+  const restoreTimeRef = useRef(0);
 
   const navigate = useNavigate();
 
@@ -68,10 +78,16 @@ export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart
     const handlePause = () => setState('paused');
     const handleWaiting = () => setState('buffering');
     const handleCanPlay = () => {
-      setState('playing');
+      // v22 D3: 暂停状态下 seek 缓冲完成不应自动恢复播放；
+      // 仅在视频本身在播（等待缓冲）或处于初始加载态时才升格为 playing
+      const storeState = useVideoPlayerStore.getState().state;
+      if (!video.paused || storeState !== 'paused') {
+        setState('playing');
+      }
       onCanPlay?.();
     };
     const handleTimeUpdate = () => {
+      currentTimeRef.current = video.currentTime;
       setProgress(video.currentTime, video.duration || 0);
       // 缓冲进度
       if (video.buffered.length > 0) {
@@ -80,6 +96,13 @@ export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart
       }
     };
     const handleLoadedMetadata = () => {
+      // v22 D3: 换流（画质切换）后一次性恢复播放进度
+      if (restoreTimeRef.current > 0 && isFinite(video.duration) && video.duration > 0) {
+        video.currentTime = Math.min(restoreTimeRef.current, Math.max(0, video.duration - 1));
+        setProgress(video.currentTime, video.duration || 0);
+        currentTimeRef.current = video.currentTime;
+        restoreTimeRef.current = 0;
+      }
       setProgress(video.currentTime, video.duration || 0);
     };
     const handleEnded = () => {
@@ -139,6 +162,11 @@ export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart
       video.load();
     }
   }, [src]);
+
+  // === v22 D3: 换流进度恢复 —— restoreTime prop 变化时记入 ref，loadedmetadata 时一次性 seek ===
+  useEffect(() => {
+    restoreTimeRef.current = restoreTime && restoreTime > 0 ? restoreTime : 0;
+  }, [restoreTime]);
 
   // === 同步播放状态 ===
   useEffect(() => {
@@ -233,15 +261,18 @@ export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart
   }, [resetControlsTimer]);
 
   // === 保存播放进度 ===
+  // v22 D3: 改用 currentTimeRef——原实现把高频变化的 currentTime 放进 deps，
+  // interval 每 250ms 被重建、永远到不了 5s 触发点，进度记忆实际失效
   useEffect(() => {
-    if (!currentMv || currentTime <= 0) return;
+    if (!currentMv) return;
     const interval = setInterval(() => {
-      if (currentMv && currentTime > 5) {
-        saveProgress(currentMv.id, currentTime);
+      const t = currentTimeRef.current;
+      if (t > 5) {
+        saveProgress(currentMv.id, t);
       }
     }, 5000);
     return () => clearInterval(interval);
-  }, [currentMv, currentTime, saveProgress]);
+  }, [currentMv, saveProgress]);
 
   // === 进度条拖动 ===
   const handleSeek = useCallback((clientX: number, rect: DOMRect) => {
@@ -264,6 +295,8 @@ export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart
 
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
     if (isLocked || !touchStartRef.current || !lastTouchRef.current) return;
+    const video = videoRef.current;
+    if (!video) return;
     const touch = e.touches[0];
     const start = touchStartRef.current;
     const dx = touch.clientX - start.x;
@@ -275,6 +308,8 @@ export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart
       if (absDx > 10 || absDy > 10) {
         if (absDx > absDy) {
           gestureTypeRef.current = 'seek';
+          // v22 D3: 以视频实际 currentTime 为基准起算，避免 store 滞后导致的回跳
+          gestureSeekTimeRef.current = video.currentTime;
         } else {
           // 左侧亮度，右侧音量
           gestureTypeRef.current = start.x < window.innerWidth / 2 ? 'brightness' : 'volume';
@@ -283,13 +318,11 @@ export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart
       }
     }
 
-    const video = videoRef.current;
-    if (!video) return;
-
     if (gestureTypeRef.current === 'seek') {
       const deltaX = touch.clientX - lastTouchRef.current.x;
       const seekAmount = deltaX * 0.15;
-      const newTime = Math.max(0, Math.min(duration, currentTime + seekAmount));
+      const newTime = Math.max(0, Math.min(duration, gestureSeekTimeRef.current + seekAmount));
+      gestureSeekTimeRef.current = newTime;
       setGestureHint(`${seekAmount > 0 ? '快进' : '快退'} ${Math.abs(Math.round(seekAmount))}秒`);
       video.currentTime = newTime;
       setProgress(newTime, duration);
@@ -324,6 +357,8 @@ export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart
 
   // === 点击切换播放/暂停 ===
   const handleContainerClick = useCallback(() => {
+    // v22 D3: 锁定状态下点击视频区不响应（锁定只留顶部解锁按钮）
+    if (isLocked) return;
     if (isGesturing) return;
     resetControlsTimer();
     if (isControlsVisible) {
@@ -343,8 +378,8 @@ export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart
     videoRef.current?.pause();
     setState('idle');
     // 保存进度
-    if (currentMv && currentTime > 0) {
-      saveProgress(currentMv.id, currentTime);
+    if (currentMv && currentTimeRef.current > 0) {
+      saveProgress(currentMv.id, currentTimeRef.current);
     }
     // 恢复音乐播放（如果之前有在播放）
     navigate(-1);
@@ -435,8 +470,8 @@ export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart
         </button>
       </div>
 
-      {/* 中间大播放按钮（暂停时显示） */}
-      {!isPlaying && state !== 'loading' && state !== 'error' && isControlsVisible && (
+      {/* 中间大播放按钮（暂停时显示；锁定时不显示） */}
+      {!isPlaying && !isLocked && state !== 'loading' && state !== 'error' && isControlsVisible && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <button
             onClick={(e) => {
@@ -451,11 +486,11 @@ export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart
         </div>
       )}
 
-      {/* 底部控制栏 */}
+      {/* 底部控制栏（锁定时隐藏——锁定只保留顶部解锁入口） */}
       <div
         className={`absolute bottom-0 left-0 right-0 px-4 pb-6 pt-8 bg-gradient-to-t from-black/70 via-black/40 to-transparent transition-opacity duration-300 ${
-          isControlsVisible ? 'opacity-100' : 'opacity-0'
-        }`}
+          isControlsVisible && !isLocked ? 'opacity-100' : 'opacity-0'
+        } ${isLocked ? 'pointer-events-none' : ''}`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* 进度条 */}
@@ -586,7 +621,10 @@ export default function VideoPlayer({ src, poster, onEnded, onError, onLoadStart
                 onClick={() => {
                   useVideoPlayerStore.getState().setCurrentQuality(q);
                   setShowQualitySelector(false);
-                  // 触发外部画质切换
+                  // v22 D3: 画质切换不再只是改 store——通知父组件以目标画质重载流，并携带断点进度
+                  if (q !== currentQuality) {
+                    onQualityChange?.(q, currentTimeRef.current);
+                  }
                   toast.info('切换画质', `${MvQualityLabel[q]} (${MvQualityResolution[q]})`);
                 }}
                 className={`w-full flex items-center justify-between px-4 py-3 text-sm hover:bg-white/10 ${

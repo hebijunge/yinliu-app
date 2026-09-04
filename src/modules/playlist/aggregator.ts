@@ -31,10 +31,21 @@ export interface SourcePlaylistResult {
 /**
  * 按融合分类聚合歌单
  * 各源并行拉取固定榜单ID作为歌单，返回按源分组的结果
+ *
+ * v22 D4: TTL 缓存（同 chart/aggregator）——结果缓存 5 分钟；空结果负缓存 2 分钟防失败循环
  */
+const AGGREGATE_CACHE_TTL = 5 * 60 * 1000;
+const AGGREGATE_EMPTY_CACHE_TTL = 2 * 60 * 1000;
+const aggregateCache = new Map<string, { result: SourcePlaylistResult[]; expiresAt: number }>();
+
 export async function aggregatePlaylistsByCategory(
   categoryId: string
 ): Promise<SourcePlaylistResult[]> {
+  const cached = aggregateCache.get(categoryId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.result;
+  }
+
   const mappings = getActiveMappings(categoryId);
   if (mappings.length === 0) return [];
 
@@ -76,5 +87,14 @@ export async function aggregatePlaylistsByCategory(
     }
   });
 
-  return Promise.all(promises);
+  const result = await Promise.all(promises);
+
+  // v22 D4: 写缓存（空结果用短 TTL 负缓存，防失败循环重试）
+  const hasData = result.some((r) => r.playlists.length > 0);
+  aggregateCache.set(categoryId, {
+    result,
+    expiresAt: Date.now() + (hasData ? AGGREGATE_CACHE_TTL : AGGREGATE_EMPTY_CACHE_TTL),
+  });
+
+  return result;
 }

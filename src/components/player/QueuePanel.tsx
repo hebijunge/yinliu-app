@@ -8,7 +8,9 @@ interface Props {
 }
 
 export default function QueuePanel({ onClose }: Props) {
-  const { queue, currentIndex } = usePlayerStore();
+  // v22 D2: 拆分 selector 订阅——此前解构整个 store，任何播放器状态变化都触发整面板重渲染
+  const queue = usePlayerStore((s) => s.queue);
+  const currentIndex = usePlayerStore((s) => s.currentIndex);
   const scrollRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLDivElement | null)[]>([]);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -135,7 +137,7 @@ export default function QueuePanel({ onClose }: Props) {
                   onDragLeave={handleDragLeave}
                   onDrop={() => handleDrop(index)}
                   onDragEnd={handleDragEnd}
-                  className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${
+                  className={`group flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors ${
                     isCurrent
                       ? 'bg-[var(--accent-soft)]'
                       : dragOverIndex === index

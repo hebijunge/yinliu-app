@@ -1,6 +1,6 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { HardDrive, RefreshCw, Music, Play, FolderOpen } from 'lucide-react';
-import { scanLocalMusic } from '../modules/music/localScanner';
+import { scanLocalMusic, revokeScannedCoverUrls } from '../modules/music/localScanner';
 import type { ScannedSong } from '../modules/music/localScanner';
 import { playerEngine } from '../core/player';
 import { SkeletonList } from '../components/ui/Skeleton';
@@ -12,9 +12,16 @@ export default function LocalMusicPage() {
   const [isScanning, setIsScanning] = useState(false);
   const [scanPath, setScanPath] = useState('');
 
+  // C8：封面 Blob URL 生命周期管理 —— 卸载时统一 revoke，防内存泄漏
+  useEffect(() => {
+    return () => revokeScannedCoverUrls();
+  }, []);
+
   const handleScan = useCallback(async () => {
     setIsScanning(true);
     try {
+      // 重新扫描前撤销上一批封面 URL
+      revokeScannedCoverUrls();
       const dirs = scanPath ? [scanPath] : undefined;
       const scanned = await scanLocalMusic(dirs);
       setSongs(scanned);

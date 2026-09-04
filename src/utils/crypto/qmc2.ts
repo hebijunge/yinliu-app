@@ -148,6 +148,32 @@ export function qmc2Decrypt(data: Uint8Array, key: Uint8Array, offset = 0): void
 }
 
 /**
+ * 创建 QMC2 流式解密 TransformStream（B7：在线播放边下载边解密）
+ * cipher 在流开始时构建一次，逐块按绝对偏移解密（RC4 分段算法依赖绝对 offset）
+ */
+export function createQmc2DecryptStream(key: Uint8Array): TransformStream<Uint8Array, Uint8Array> {
+  if (key.length === 0) {
+    throw new Error('QMC2 密钥不能为空');
+  }
+  // RC4 cipher 预生成 keystream 只做一次；Map cipher 无状态
+  const rc4 = key.length > 300 ? new Rc4Cipher(key) : null;
+  let totalOffset = 0;
+
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      const plain = new Uint8Array(chunk);
+      if (rc4) {
+        rc4.decrypt(plain, totalOffset);
+      } else {
+        decryptMap(plain, key, totalOffset);
+      }
+      totalOffset += chunk.length;
+      controller.enqueue(plain);
+    },
+  });
+}
+
+/**
  * 解密整个文件（快捷入口）
  * @param data 加密数据
  * @param key  QMC 原始密钥

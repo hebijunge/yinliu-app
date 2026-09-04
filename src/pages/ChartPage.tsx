@@ -6,6 +6,7 @@ import { aggregateChartsByCategory, mergeChartSongsByCategory, type SourceChartR
 import type { AggregatedChartSong } from '@modules/chart/aggregator';
 import { playerEngine } from '@core/player';
 import { useSearchStore } from '@shared/store/searchStore';
+import { useLatestRequest } from '@shared/hooks/useLatestRequest';
 import { toast } from '@shared/components/Toast';
 import EmptyState from '../components/common/EmptyState';
 import { toUserMessage } from '../shared/utils/errorCopy';
@@ -20,13 +21,19 @@ export default function ChartPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const { selectedQuality } = useSearchStore();
 
+  // v22 D4: seq 守卫——分类快速切换时只接受最后一次请求的结果
+  const { beginRequest } = useLatestRequest();
   const loadCategory = useCallback(async (catId: string) => {
+    const { isLatest } = beginRequest();
     setLoading(true);
     setLoadError(null);
     try {
       const results = await aggregateChartsByCategory(catId);
+      if (!isLatest()) return;
       setSourceResults(results);
+      // v22 D4: merge 内部的 aggregate 现在命中 aggregator TTL 缓存，不再双倍请求
       const merged = await mergeChartSongsByCategory(catId, 20);
+      if (!isLatest()) return;
       setMergedSongs(merged);
     } catch (err) {
       console.error('榜单加载失败:', err);

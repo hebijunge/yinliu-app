@@ -18,8 +18,8 @@ import { StreamFetcher, type ChunkInfo, type FetcherCallbacks } from './fetcher'
 import { streamCacheEngine, type CacheEntry } from './cache';
 import { detectMSECapability, isMSEAvailable } from './mseDetector';
 import { debugLogger } from '@shared/utils/debugLogger';
-import { QishuiCencDecryptor } from '@providers/music/QishuiCencDecryptor';
-import { fetchZ3dKey, createZ3dDecryptStream } from '@shared/audio/crypto';
+import { fetchZ3dKey, createZ3dDecryptStream, createCencDecryptStream } from '@shared/audio/crypto';
+import { createQmc2DecryptStream } from '../../utils/crypto/qmc2';
 import { subscribeNetwork, isOnline } from '@shared/utils/networkMonitor';
 
 export type StreamingState =
@@ -57,6 +57,10 @@ interface StreamingOptions {
     z3dUrl: string;
     p3dUrl: string;
   };
+  /**
+   * B7: QMC2 解密密钥（deriveRawKey 派生后的原始密钥），提供时走流式解密播放
+   */
+  qmc2Key?: Uint8Array;
 }
 
 const PRELOAD_THRESHOLD = 0.5; // 播放进度超过 50% 时预取下一首
@@ -263,6 +267,31 @@ class StreamingAudioPlayer {
       return;
     }
 
+    // B7: QMC2（酷我 mflac/mgg）流式解密播放
+    if (options.qmc2Key) {
+      this.isEncryptedStream = true;
+      this.useMSE = false;
+      debugLogger.info('streaming', 'StreamingAudioPlayer.load (QMC2)', {
+        cacheKey: options.cacheKey,
+        mimeType: this.mimeType,
+      });
+
+      await streamCacheEngine.init();
+      this.cacheEntry = await streamCacheEngine.getOrCreateEntry(
+        options.cacheKey,
+        options.format || 'flac'
+      );
+
+      if (this.cacheEntry.totalSize > 0 && this.isCacheComplete()) {
+        debugLogger.info('streaming', 'Playing QMC2 stream from complete cache');
+        await this.playFromCache();
+        return;
+      }
+
+      await this.loadQmc2Stream(options);
+      return;
+    }
+
     // 检测 MSE 可用性
     const mseCap = detectMSECapability();
     this.useMSE = mseCap.isUsable && mseCap.preferredMimeType === this.mimeType;
@@ -379,8 +408,9 @@ class StreamingAudioPlayer {
       throw new Error('Encrypted stream response has no body');
     }
 
-    const decryptor = new QishuiCencDecryptor(options.decryptKey);
-    const decryptedStream = await decryptor.decryptStream(response.body);
+    // B7: 收敛为 crypto.ts 的统一 CENC 流式解密实现（逐帧 + FLAC 分支 + subsample + CryptoKey 缓存）
+    const decryptStream = createCencDecryptStream(options.decryptKey);
+    const decryptedStream = response.body.pipeThrough(decryptStream);
     const reader = decryptedStream.getReader();
 
     this.setState('loading');
@@ -410,6 +440,11 @@ class StreamingAudioPlayer {
             received: totalReceived,
           });
           await this.onFirstChunkReady();
+          // P2: CENC 大文件内存控制（与 Z3D 路径一致）——起播后清空内存 chunks，数据已落地缓存
+          this.chunks = [];
+          debugLogger.info('streaming', 'CENC: cleared in-memory chunks after first playback', {
+            cacheKey: this.cacheKey,
+          });
         }
 
         // 后续 chunks：定期刷新 blob URL
@@ -419,6 +454,12 @@ class StreamingAudioPlayer {
           if (shouldRefreshBySize) {
             await this.setupBlobPlayback();
             this.lastRefreshDownloaded = this.totalDownloaded;
+            // P2: CENC 大文件内存控制——刷新后清空内存 chunks，数据已落地缓存
+            this.chunks = [];
+            debugLogger.info('streaming', 'CENC: cleared in-memory chunks after blob refresh', {
+              cacheKey: this.cacheKey,
+              totalDownloaded: this.totalDownloaded,
+            });
           }
         }
 
@@ -429,10 +470,12 @@ class StreamingAudioPlayer {
       if (this.state === 'loading') {
         // 数据量不足 MIN_START_SIZE，但流已结束，直接播放
         await this.onFirstChunkReady();
+        this.chunks = []; // P2
       } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
         // 最终刷新 blob（P3：chunks 已清空时也要刷新，尾部数据在缓存中）
         debugLogger.info('streaming', 'Encrypted stream completed, final blob refresh');
         await this.setupBlobPlayback();
+        this.chunks = []; // P2
       }
 
       this.totalSize = totalReceived;
@@ -576,6 +619,118 @@ class StreamingAudioPlayer {
       }
       this.setState('error');
       this.callbacks.onError?.(err instanceof Error ? err.message : 'Z3D stream failed');
+      throw err;
+    } finally {
+      reader.releaseLock();
+      this.encryptedStreamAbortController = null;
+    }
+  }
+
+  /**
+   * B7: 加载 QMC2 加密流（fetch + qmc2 流式解密 + Blob 刷新）
+   * 与 Z3D 路径同构：起播后清空内存 chunks，大文件内存峰值受控
+   */
+  private async loadQmc2Stream(options: StreamingOptions): Promise<void> {
+    if (!options.qmc2Key) {
+      throw new Error('qmc2Key is required for QMC2 stream');
+    }
+
+    this.encryptedStreamAbortController = new AbortController();
+
+    const decryptStream = createQmc2DecryptStream(options.qmc2Key);
+    const response = await fetch(options.url!, {
+      method: 'GET',
+      headers: options.headers,
+      signal: this.encryptedStreamAbortController.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`QMC2 stream fetch failed: ${response.status} ${response.statusText}`);
+    }
+    if (!response.body) {
+      throw new Error('QMC2 stream response has no body');
+    }
+
+    const decryptedStream = response.body.pipeThrough(decryptStream);
+    const reader = decryptedStream.getReader();
+
+    this.setState('loading');
+
+    const MIN_START_SIZE = 256 * 1024;
+    let totalReceived = 0;
+    let chunkIndex = 0;
+    let magicValidated = false;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const start = totalReceived;
+        const end = start + value.length - 1;
+        this.chunks.push({ data: value, start, end });
+        totalReceived += value.length;
+        this.totalDownloaded = totalReceived;
+
+        // 首块魔数校验（fLaC / OggS），失败立即终止，避免整段错误数据入缓存
+        if (!magicValidated && value.length >= 4) {
+          const flac = value[0] === 0x66 && value[1] === 0x4c && value[2] === 0x61 && value[3] === 0x43;
+          const ogg = value[0] === 0x4f && value[1] === 0x67 && value[2] === 0x67 && value[3] === 0x53;
+          if (!flac && !ogg) {
+            throw new Error('QMC2 流式解密后魔数校验失败，数据可能未正确解密');
+          }
+          magicValidated = true;
+        }
+
+        // 写入缓存
+        await streamCacheEngine.appendData(this.cacheKey, value, start);
+
+        // 首次达到起播阈值时开始播放
+        if (this.state === 'loading' && totalReceived >= MIN_START_SIZE) {
+          debugLogger.info('streaming', 'QMC2 stream first chunk ready', {
+            cacheKey: this.cacheKey,
+            received: totalReceived,
+          });
+          await this.onFirstChunkReady();
+          // P2: 大文件内存控制——起播后清空内存 chunks，数据已落地缓存
+          this.chunks = [];
+        }
+
+        // 后续 chunks：定期刷新 blob URL
+        if (chunkIndex > 0 && !this.useMSE) {
+          const shouldRefreshBySize =
+            this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
+          if (shouldRefreshBySize) {
+            await this.setupBlobPlayback();
+            this.lastRefreshDownloaded = this.totalDownloaded;
+            // P2: 大文件内存控制——刷新后清空内存 chunks
+            this.chunks = [];
+          }
+        }
+
+        chunkIndex++;
+      }
+
+      // 流结束后的处理
+      if (this.state === 'loading') {
+        await this.onFirstChunkReady();
+        this.chunks = []; // P2
+      } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
+        debugLogger.info('streaming', 'QMC2 stream completed, final blob refresh');
+        await this.setupBlobPlayback();
+        this.chunks = []; // P2
+      }
+
+      this.totalSize = totalReceived;
+      if (this.cacheKey && this.totalSize > 0) {
+        await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
+      }
+    } catch (err) {
+      if (this.encryptedStreamAbortController?.signal.aborted) {
+        return;
+      }
+      this.setState('error');
+      this.callbacks.onError?.(err instanceof Error ? err.message : 'QMC2 stream failed');
       throw err;
     } finally {
       reader.releaseLock();

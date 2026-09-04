@@ -26,7 +26,6 @@ import { eqService } from './equalizer';
 import { decryptCencMp4 } from '@shared/audio/crypto';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { deriveRawKey } from '../../utils/crypto/kuwoEkey';
-import { qmc2DecryptBytes, isDecryptedMagic } from '../../utils/crypto/qmc2';
 
 export type PlayerState = 'idle' | 'loading' | 'playing' | 'paused' | 'error';
 
@@ -764,59 +763,43 @@ export class PlayerEngine {
     }
 
     // v21.1: QMC2 加密音频处理（酷我 mflac/mgg）
+    // B7: 改为流式解密播放（fetch → qmc2 流解密 → Blob 刷新），
+    // 不再全量下载整文件解密（50MB 至臻 flac 内存峰值过高）
     if (ekey) {
-      debugLogger.info('player', 'QMC2 加密音频，开始下载并解密', {
+      debugLogger.info('player', 'QMC2 加密音频，启动流式解密播放', {
         track: track.title,
         sourceId: actualSourceId || track.sourceId,
         format,
       });
+
+      const rawKey = deriveRawKey(ekey);
+      if (!rawKey) {
+        throw new Error('QMC2 ekey 派生密钥失败');
+      }
+
+      // mflac → flac, mgg → ogg（流式路径内首块魔数校验兜底）
+      const decryptedFormat = format === 'mgg' || url.endsWith('.mgg') ? 'ogg' : 'flac';
+
       try {
-        const resp = await platformFetch(url, { headers });
-        if (!resp.ok) {
-          throw new Error(`QMC2 音频下载失败: ${resp.status}`);
-        }
-        const encryptedData = new Uint8Array(await resp.arrayBuffer());
-        debugLogger.info('player', 'QMC2 音频下载完成，开始解密', {
-          track: track.title,
-          size: encryptedData.byteLength,
-        });
-
-        const rawKey = deriveRawKey(ekey);
-        if (!rawKey) {
-          throw new Error('QMC2 ekey 派生密钥失败');
-        }
-
-        const decrypted = qmc2DecryptBytes(encryptedData, rawKey);
-        debugLogger.info('player', 'QMC2 解密完成', {
-          track: track.title,
-          size: decrypted.length,
-        });
-
-        // 验证解密后魔数（必须为合法 flac/ogg）
-        if (!isDecryptedMagic(decrypted)) {
-          throw new Error('QMC2 解密后魔数校验失败，数据可能未正确解密');
-        }
-
-        // mflac → flac, mgg → ogg
-        const decryptedFormat = format === 'mgg' || url.endsWith('.mgg') ? 'ogg' : 'flac';
-
-        await streamingAudioPlayer.loadDecryptedData(decrypted, {
+        await streamingAudioPlayer.load({
+          url,
+          headers,
           cacheKey,
           format: decryptedFormat,
+          qmc2Key: rawKey,
         });
-
-        // 设置回调（loadDecryptedData 不经过流式下载，但仍需状态回调）
-        streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
-        return;
-      } catch (qmc2Err) {
-        debugLogger.error('player', 'QMC2 解密播放失败', {
+      } catch (err) {
+        debugLogger.error('player', 'QMC2 流式解密播放失败', {
           track: track.title,
-          error: qmc2Err instanceof Error ? qmc2Err.message : String(qmc2Err),
+          error: err instanceof Error ? err.message : String(err),
         });
         throw new Error(
-          `QMC2 解密播放失败: ${qmc2Err instanceof Error ? qmc2Err.message : String(qmc2Err)}`
+          `QMC2 流式解密播放失败: ${err instanceof Error ? err.message : String(err)}`
         );
       }
+
+      streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
+      return;
     }
 
     // 设置流式播放器回调

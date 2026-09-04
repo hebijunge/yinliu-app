@@ -26,9 +26,8 @@ export class KugouSource extends BaseHttpSource {
   private readonly LYRICS_DOWNLOAD = 'http://lyrics.kugou.com/download';
   private readonly M_REF = 'http://m.kugou.com/';
 
-  // hash缓存：自增id -> hash信息（含可选filesize，用于大小校验）
+  // v22 B5: 自增 id 已废弃，sourceSongId 直接用 hash（kg_<hash>）
   private hashCache = new Map<string, { hash: string; hash320: string; hashFlac: string; name: string; artist: string; duration: number; filesize?: number }>();
-  private nextId = 1;
 
   /**
    * accurate 竞速优先级判定：accurate !== false 视为可优先选用的结果。
@@ -80,7 +79,8 @@ export class KugouSource extends BaseHttpSource {
     let cover = (o.img || o.album_img || o.imgurl || '').toString();
     if (cover) cover = cover.replace('{size}', '400');
 
-    const id = `kg_${this.nextId++}`;
+    // v22 B5: sourceSongId 直接用 hash 作持久化主键（此前为会话自增 id，重启后取链失忆）
+    const id = `kg_${hash}`;
     const filesizeRaw = parseInt((o.filesize || '0').toString(), 10);
     const filesize = filesizeRaw > 0 ? filesizeRaw : undefined;
     this.hashCache.set(id, { hash, hash320, hashFlac, name, artist, duration: dur, filesize });
@@ -770,7 +770,8 @@ export class KugouSource extends BaseHttpSource {
     const hash320 = relateGoods.find((g: any) => g.bitrate === 320)?.hash || '';
     const hashFlac = relateGoods.find((g: any) => g.bitrate > 1000)?.hash || '';
 
-    const id = `kg_${this.nextId++}`;
+    // v22 B5: 同 parseSong，用 hash 作持久化主键
+    const id = `kg_${bestHash}`;
     const filesizeRaw = parseInt((o.filesize || best?.filesize || '0').toString(), 10);
     const filesize = filesizeRaw > 0 ? filesizeRaw : undefined;
     this.hashCache.set(id, { hash: bestHash, hash320, hashFlac, name, artist, duration: dur, filesize });

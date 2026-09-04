@@ -79,6 +79,16 @@ export abstract class BaseHttpSource implements MusicSource {
    */
   protected abstract buildEndpointCandidates(songId: string, quality: Quality): ResolvedCandidate[];
 
+  /**
+   * v22 B8: 取链前的上下文准备钩子（在缓存/去重检查之后、buildEndpointCandidates 之前调用）。
+   * 供需要在取链前先做一次接口调用的子类使用（如 BiliSource 解析分 P 的 cid），
+   * 使这类源不必覆写 getPlayUrl、从而保留基类的缓存 + 去重 + 成功通道记忆。
+   * 抛错则本次取链直接失败。
+   */
+  protected async prepareContext(_songId: string, _quality: Quality): Promise<void> {
+    /* 默认无操作 */
+  }
+
   /** 全局成功通道记忆：sourceId → 上次成功的 candidateKey */
   private static successMemory = new Map<string, SuccessMemoryEntry>();
   /** 全局去重锁：sourceId_songId_quality → 正在进行的 Promise */
@@ -117,6 +127,9 @@ export abstract class BaseHttpSource implements MusicSource {
     if (signal?.aborted) {
       throw new YinliuError(ErrorCode.LINK_RACE_FAILED, '取链已取消', 499);
     }
+
+    // v22 B8: 上下文准备钩子（去重检查之后、候选构建之前，并发同曲只会执行一次）
+    await this.prepareContext(songId, quality);
 
     const candidates = this.buildEndpointCandidates(songId, quality);
     if (candidates.length === 0) {

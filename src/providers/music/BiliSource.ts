@@ -127,6 +127,7 @@ export class BiliSource extends BaseHttpSource {
 
   async getSongDetail(songId: string): Promise<SongDetail> {
     const bvid = this.extractBvid(songId);
+    const page = this.extractPage(songId);
     const url = `${this.API_HOST}/x/web-interface/view?bvid=${bvid}`;
     const data = await this.httpGetJson(url, { Referer: this.REF });
 
@@ -135,13 +136,21 @@ export class BiliSource extends BaseHttpSource {
     }
 
     const d = data.data;
-    const title = this.stripHtml(d.title || '');
+    // v22 B8: 多分 P 视频返回对应分 P 的标题与时长
+    let title = this.stripHtml(d.title || '');
+    let durationSec: number | string = d.duration || 0;
+    if (page > 1) {
+      const target = (d.pages || [])[page - 1];
+      if (target) {
+        title = `${title} · P${page} ${this.stripHtml(target.part || '')}`;
+        durationSec = target.duration || durationSec;
+      }
+    }
     const owner = d.owner?.name || '';
     const pic = d.pic || '';
-    const durationSec = d.duration || 0;
 
     return {
-      id: `bl_${bvid}`,
+      id: `bl_${bvid}${page > 1 ? `_p${page}` : ''}`,
       title,
       artist: owner,
       album: '',
@@ -150,24 +159,29 @@ export class BiliSource extends BaseHttpSource {
     };
   }
 
-  async getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal): Promise<PlayUrlResult> {
+  // v22 B8: prepareContext 产出的 cid（songId → cid），buildEndpointCandidates 消费后删除
+  private cidContext = new Map<string, number>();
+
+  /**
+   * v22 B8: 不再覆写 getPlayUrl——cid 解析移入 prepareContext 钩子，
+   * 保留基类 PlayUrlCache 缓存 + pendingLocks 去重 + 成功通道记忆。
+   */
+  protected async prepareContext(songId: string, _quality: Quality): Promise<void> {
     const bvid = this.extractBvid(songId);
-    const info = await this.getVideoInfo(bvid);
+    const page = this.extractPage(songId);
+    const info = await this.getVideoInfo(bvid, page);
     const cid = info?.cid;
     if (!cid) {
-      throw new YinliuError(ErrorCode.SONG_NOT_FOUND, `无法获取 B站视频 CID: ${bvid}`);
+      throw new YinliuError(ErrorCode.SONG_NOT_FOUND, `无法获取 B站视频 CID: ${bvid} P${page}`);
     }
-
-    const candidates = this.buildEndpointCandidatesWithCid(songId, quality, cid);
-    if (candidates.length === 0) {
-      throw new YinliuError(ErrorCode.LINK_RACE_FAILED, `No endpoints for ${this.id}`, 503);
-    }
-
-    return this.linkRace(candidates, quality, songId, signal);
+    this.cidContext.set(songId, cid);
   }
 
   protected buildEndpointCandidates(songId: string, quality: Quality): ResolvedCandidate[] {
-    return this.buildEndpointCandidatesWithCid(songId, quality, 0);
+    // 消费 prepareContext 产出的 cid（正常链路必然已就绪；getFileSize 直连路径 cid=0 → 无候选 → 返回 null）
+    const cid = this.cidContext.get(songId) || 0;
+    this.cidContext.delete(songId);
+    return this.buildEndpointCandidatesWithCid(songId, quality, cid);
   }
 
   private buildEndpointCandidatesWithCid(
@@ -212,11 +226,16 @@ export class BiliSource extends BaseHttpSource {
   }
 
   private async resolvePlayurl(resp: Response, targetQuality: Quality): Promise<PlayUrlResult | null> {
+    // v22 B8: 免登录 playurl 不保证可用（-101 需登录、-404 下架、风控限流等），
+    // 一律返回 null 交给竞速链路的下一候选（GDAPI）兜底，不假设接口恒成功。
     const data = await resp.json().catch(() => null);
     if (data?.code !== 0) return null;
 
     const audioList = data?.data?.dash?.audio || [];
-    if (!audioList.length) return null;
+    if (!audioList.length) {
+      // 仅 durl（旧版音视频混合流）不可作纯音源（会造成音画双播），同样放弃走兜底
+      return null;
+    }
 
     const sorted = [...audioList].sort(
       (a: any, b: any) => (b.bandwidth || 0) - (a.bandwidth || 0)
@@ -250,7 +269,8 @@ export class BiliSource extends BaseHttpSource {
 
   async getQualityOptions(songId: string): Promise<QualityOption[]> {
     const bvid = this.extractBvid(songId);
-    const info = await this.getVideoInfo(bvid);
+    const page = this.extractPage(songId);
+    const info = await this.getVideoInfo(bvid, page);
     const cid = info?.cid;
     if (!cid) return [];
 
@@ -279,19 +299,33 @@ export class BiliSource extends BaseHttpSource {
     }
   }
 
-  private extractBvid(songId: string): string {
-    return songId.replace(/^bl_/, '');
+  /** v22 B8: 分 P 解析——songId 形如 bl_BVxx（P1）或 bl_BVxx_p3（第 3P） */
+  private extractPage(songId: string): number {
+    const m = songId.match(/_p(\d+)$/);
+    if (!m) return 1;
+    const p = parseInt(m[1], 10);
+    return Number.isFinite(p) && p >= 1 ? p : 1;
   }
 
-  private async getVideoInfo(bvid: string): Promise<{ cid: number; duration: number } | null> {
+  private extractBvid(songId: string): string {
+    // 剥 bl_ 前缀与 _pN 分 P 后缀
+    return songId.replace(/^bl_/, '').replace(/_p\d+$/, '');
+  }
+
+  /** v22 B8: page > 1 时从 pages 数组取对应分 P 的 cid 与时长（此前恒取 P1，多分 P 只能播第一集） */
+  private async getVideoInfo(bvid: string, page = 1): Promise<{ cid: number; duration: number; title?: string; pages?: number } | null> {
     try {
       const url = `${this.API_HOST}/x/web-interface/view?bvid=${bvid}`;
       const data = await this.httpGetJson(url, { Referer: this.REF });
       if (data?.code !== 0 || !data?.data) return null;
-      return {
-        cid: data.data.cid,
-        duration: data.data.duration,
-      };
+      const d = data.data;
+      if (page > 1) {
+        const pages: any[] = d.pages || [];
+        const target = pages[page - 1];
+        if (!target?.cid) return null;
+        return { cid: target.cid, duration: target.duration || 0, title: target.part, pages: pages.length };
+      }
+      return { cid: d.cid, duration: d.duration, pages: (d.pages || []).length || 1 };
     } catch {
       return null;
     }

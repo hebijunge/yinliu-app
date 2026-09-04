@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { ListMusic, Music, AlertCircle, ChevronRight, Heart, Play } from 'lucide-react';
 import { SOURCE_BADGE_COLORS } from '../shared/utils/sourceBadge';
 import { PLAYLIST_CATEGORIES, getCategoryPlaylists, type SourcePlaylistGroup } from '@core/playlistCategories';
@@ -63,6 +63,8 @@ export default function PlaylistAggregationPage() {
     }
   }, [addFavorite, removeFavorite, isFavorite]);
 
+  // v22 D4: 展开竞态守卫——await 期间用户可能展开另一歌单，仅最新请求可写入
+  const expandSeqRef = useRef(0);
   const handleExpand = useCallback(async (sourceId: string, playlistId: string) => {
     const key = `${sourceId}-${playlistId}`;
     if (expandedKey === key) {
@@ -70,20 +72,26 @@ export default function PlaylistAggregationPage() {
       setExpandedSongs([]);
       return;
     }
+    const seq = ++expandSeqRef.current;
     setExpandingKey(key);
     setExpandedKey(key);
     try {
       const provider = sourceRegistry.get(sourceId);
       if (provider && provider.getPlaylist) {
         const detail = await provider.getPlaylist(playlistId);
+        if (expandSeqRef.current !== seq) return; // 已有更新的展开请求
         setExpandedSongs(detail.songs || []);
       } else {
+        if (expandSeqRef.current !== seq) return;
         setExpandedSongs([]);
       }
     } catch {
+      if (expandSeqRef.current !== seq) return;
       setExpandedSongs([]);
     } finally {
-      setExpandingKey(null);
+      if (expandSeqRef.current === seq) {
+        setExpandingKey(null);
+      }
     }
   }, [expandedKey]);
 

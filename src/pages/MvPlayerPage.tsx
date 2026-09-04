@@ -3,6 +3,7 @@ import { X, Loader2, AlertCircle, MonitorPlay } from 'lucide-react';
 import { useMvPlayerStore } from '../shared/store/mvPlayerStore';
 import { MV_QUALITY_LABELS, MV_QUALITY_ORDER } from '../core/types';
 import type { MvQuality } from '../core/types';
+import { playerEngine } from '../core/player';
 // mvQualityRank available from '../core/types' if needed for quality sorting
 
 export default function MvPlayerPage() {
@@ -12,6 +13,22 @@ export default function MvPlayerPage() {
   } = useMvPlayerStore();
 
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  // v22 D8: 消除音画双播——MV 打开时暂停背景音乐（记住当时是否在播），关闭时恢复
+  const wasMusicPlayingRef = useRef(false);
+  useEffect(() => {
+    if (!isOpen) return;
+    wasMusicPlayingRef.current = playerEngine.getState() === 'playing';
+    if (wasMusicPlayingRef.current) {
+      playerEngine.pause();
+    }
+    return () => {
+      if (wasMusicPlayingRef.current) {
+        playerEngine.resume();
+        wasMusicPlayingRef.current = false;
+      }
+    };
+  }, [isOpen]);
 
   // 视频地址变化时自动播放
   useEffect(() => {
