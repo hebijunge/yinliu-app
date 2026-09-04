@@ -88,8 +88,12 @@ export default function Layout({ children }: LayoutProps) {
           </div>
         )}
 
-        {/* Main Content */}
-        <main ref={mainRef} className="flex-1 overflow-y-auto overflow-x-hidden page-enter">
+        {/* Main Content — 复核阻断项修复（高度链）：main 改 flex-col，内容包装层 flex-1 flex-col，
+            打通页面级 h-full 高度链（三页虚拟列表恢复生效）；非 h-full 页面内容
+            自然撑开、仍由 main 滚动，行为不变。
+            （SearchPage 分页阻断项已由 2dca5be 的 v18 哨兵+IntersectionObserver 方案换机制修复，
+             原基于 window 滚动监听的 mainScrollContext 方案不再需要。） */}
+        <main ref={mainRef} className="flex-1 flex flex-col overflow-y-auto overflow-x-hidden page-enter">
           {/* E1: 顶部离线横幅 —— 断网出现、恢复自动消失 */}
           <OfflineBanner />
 
@@ -126,9 +130,10 @@ export default function Layout({ children }: LayoutProps) {
             </div>
           )}
 
-          {/* 内容区 — 根据布局模式调整padding */}
+          {/* 内容区 — 根据布局模式调整padding；flex-1 + flex-col 打通 h-full 高度链，
+              内容超出时自然撑开仍由 main 滚动 */}
           <div
-            className={`p-5 ${
+            className={`flex-1 flex flex-col p-5 ${
               sidebarVisible ? 'lg:p-8' : ''
             } ${
               bottomNavVisible
