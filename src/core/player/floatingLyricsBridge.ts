@@ -26,6 +26,8 @@ class FloatingLyricsBridge {
   private enabled = false;
   private isShowing = false;
   private currentTrackId: string | null = null;
+  // v29-A5: 上一次跨桥发送的文本 —— 文本未变化不重复 update，消除 IPC 倾泻
+  private lastText = '';
 
   /** 启动桥接（App 启动时调用一次） */
   start(): void {
@@ -51,7 +53,9 @@ class FloatingLyricsBridge {
         this.currentTrackId = null;
         this.currentLyrics = null;
         this.lastLineIndex = -1;
+        this.lastText = '';
         if (this.enabled) {
+          // v29-A5: 停止播放时清屏 —— updateText 已支持空文本
           void this.updateText('');
         }
         return;
@@ -59,8 +63,13 @@ class FloatingLyricsBridge {
       if (track.id !== this.currentTrackId) {
         this.currentTrackId = track.id;
         this.lastLineIndex = -1;
+        this.lastText = '';
+        // v29-A5: 歌词竞态防护 —— 记录发起请求时的曲目 id，快速切歌后迟到的
+        // 旧歌词响应直接丢弃（否则悬浮窗显示上一首的词）
+        const reqTrackId = track.id;
         // 尝试加载歌词
         void lyricsManager.getLyrics(track.sourceSongId, track.sourceId).then((parsed) => {
+          if (reqTrackId !== this.currentTrackId) return;
           this.currentLyrics = parsed;
           if (this.enabled) {
             void this.tryShow();
@@ -76,19 +85,20 @@ class FloatingLyricsBridge {
       let text = '';
       if (this.currentLyrics) {
         const idx = lyricsManager.getCurrentLineIndex(this.currentLyrics, currentTime);
+        // v29-A5: 仅行变化时才产生文本 —— 旧实现行未变化也重发同一行文本，
+        // 每 progress tick 一次跨桥 IPC，造成 IPC 倾泻
         if (idx >= 0 && idx !== this.lastLineIndex) {
           this.lastLineIndex = idx;
           text = this.currentLyrics.lines[idx].text;
-        } else if (idx >= 0) {
-          text = this.currentLyrics.lines[idx].text;
         }
       } else {
-        // 无歌词时显示歌曲名
+        // 无歌词时显示歌曲名（lastText 去重保证只发送一次）
         const track = usePlayerStore.getState().currentTrack;
         text = track ? `${track.title} - ${track.artist || '未知歌手'}` : '音流';
       }
 
-      if (text) {
+      if (text !== this.lastText) {
+        this.lastText = text;
         void this.updateText(text);
       }
     });
@@ -128,6 +138,7 @@ class FloatingLyricsBridge {
         draggable: true,
       });
       this.isShowing = true;
+      this.lastText = text; // v29-A5: 与悬浮窗实际内容对齐，避免重复/漏发
       debugLogger.info('player', '[FloatingLyrics] Show', { title: track.title });
     } catch (err) {
       // 权限不足或原生层异常，静默降级
@@ -139,7 +150,8 @@ class FloatingLyricsBridge {
   }
 
   private async updateText(text: string): Promise<void> {
-    if (!text) return;
+    // v29-A5: 支持空文本清屏（停止播放时把悬浮窗文字清空）；原生侧
+    // FloatingLyricsPlugin.update 对空串照常处理
     try {
       await FloatingLyrics.update({ text });
     } catch (err) {
