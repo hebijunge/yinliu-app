@@ -25,6 +25,17 @@ import { sizeCache } from './sizeCache';
  *  - 20900kmflac：✅ 超无损母带，mflac（QMC2-RC4 加密，需 ekey 解密）
  *  - mflac 档返回 bitrate 为 level 值（20201/20501/20900），非真实码率
  */
+/**
+ * v28-P2：防盗校验按 URL 去重（single-flight + 短 TTL）。
+ * 背景：v26 错峰并行竞速下多个酷我通道常返回同一 CDN URL，各候选独立执行
+ * validateContent 会重复 3×HEAD + 3×Range GET（实测日志同一 URL 1 秒内校验 3 次），
+ * 拖慢起播。同一 URL 的并发校验复用同一个 in-flight Promise；
+ * 结果短 TTL 缓存覆盖竞速窗口内的重复候选（不同 URL 不受影响）。
+ */
+const kwValidationInflight = new Map<string, Promise<boolean>>();
+const kwValidationCache = new Map<string, { result: boolean; expiresAt: number }>();
+const KW_VALIDATION_TTL_MS = 30_000;
+
 export class KuwoSource extends BaseHttpSource {
   readonly id = 'kuwo';
   readonly name = '酷我音乐';
@@ -440,6 +451,52 @@ export class KuwoSource extends BaseHttpSource {
    * 命中后竞速自动继续其余通道（本候选返回 null），不静默。
    */
   protected override async validateContent(result: PlayUrlResult, songId: string): Promise<boolean> {
+    const url = result.url;
+    const now = Date.now();
+
+    // v28-P2：命中短 TTL 缓存（竞速窗口内同 URL 候选直接复用结果）
+    const cached = kwValidationCache.get(url);
+    if (cached && cached.expiresAt > now) {
+      debugLogger.info('network', '酷我防盗校验命中去重缓存，跳过重复校验', {
+        url: url.slice(0, 120),
+        cachedResult: cached.result,
+      });
+      return cached.result;
+    }
+
+    // v28-P2：同 URL 并发校验 single-flight（复用进行中的校验，不再重复 HEAD/Range）
+    const inflight = kwValidationInflight.get(url);
+    if (inflight) {
+      debugLogger.info('network', '酷我防盗校验并发去重：复用进行中的校验', {
+        url: url.slice(0, 120),
+      });
+      return inflight;
+    }
+
+    const promise = this.performContentLevelValidation(result, songId)
+      .then((r) => {
+        // 结果短 TTL 缓存；true/false 均缓存（竞速窗口内同 URL 判定一致）
+        if (kwValidationCache.size > 64) {
+          const now2 = Date.now();
+          for (const [k, v] of kwValidationCache) {
+            if (v.expiresAt <= now2) kwValidationCache.delete(k);
+          }
+        }
+        kwValidationCache.set(url, { result: r, expiresAt: Date.now() + KW_VALIDATION_TTL_MS });
+        return r;
+      })
+      .finally(() => {
+        kwValidationInflight.delete(url);
+      });
+    kwValidationInflight.set(url, promise);
+    return promise;
+  }
+
+  /**
+   * v28-P2：原 validateContent 主体，由上方去重包装器调用。
+   * 命名注意：基类已有私有 doValidateContent（校验编排层），此处避开同名。
+   */
+  private async performContentLevelValidation(result: PlayUrlResult, songId: string): Promise<boolean> {
     const rid = songId.replace(/^kw_/, '');
     const songDuration = this.durationCache.get(rid) || 0;
 

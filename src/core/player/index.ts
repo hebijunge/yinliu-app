@@ -82,6 +82,12 @@ export class PlayerEngine {
   private mediaSessionReady: boolean = false;
   /** v22：系统暂停标记 —— pauseBySystem 与流式回调之间传递 system 来源 */
   private systemPausePending = false;
+  /** v28：CAN_DUCK 压低音量比例（Android 常用 duck 比例，与 audioFocus 侧文档一致） */
+  private static readonly DUCK_VOLUME_RATIO = 0.3;
+  /** v28：用户设定音量（duck 语义的基准，与生效音量分离） */
+  private userVolume = 1;
+  /** v28：当前是否处于 CAN_DUCK 压低状态 */
+  private ducked = false;
 
   // Queue state (兼容 v10 调用方)
   queue: PlayerTrack[] = [];
@@ -1094,7 +1100,7 @@ export class PlayerEngine {
    * v20：系统原因导致的暂停（音频焦点丢失 / 耳机拔出）。
    * 与用户主动暂停的区别：不改写用户播放意图，焦点恢复后可自动续播。
    */
-  pauseBySystem(): void {
+  pauseBySystem(reason?: string): void {
     const wasPlaying = this.state === 'playing' || this.state === 'loading';
     if (this.isStreaming) {
       // 流式路径：streamingAudioPlayer.pause() 会同步触发 onStateChange 回调，
@@ -1117,9 +1123,44 @@ export class PlayerEngine {
     if (wasPlaying && this.state !== 'paused') {
       this.setState('paused', 'system');
     }
-    debugLogger.info('player', '系统原因暂停播放（焦点/耳机）', {
+    // v28：带 reason 归因（focusChange(-1/-2) / becomingNoisy），此前无法区分焦点/耳机
+    debugLogger.info('player', '系统原因暂停播放', {
+      reason: reason || 'unknown',
       track: this.currentTrack?.title,
     });
+  }
+
+  /**
+   * v28：CAN_DUCK 音频焦点压低音量（true 压低到用户音量 × DUCK_VOLUME_RATIO，false 还原）。
+   * 按 Android 规范，TRANSIENT_CAN_DUCK 应压低音量继续播放而非暂停。
+   * 记录用户设定音量（userVolume），还原与后续 setVolume 均基于它，duck 状态不污染音量语义。
+   */
+  duckVolume(ducked: boolean): void {
+    if (this.ducked === ducked) return;
+    this.ducked = ducked;
+    this.applyEffectiveVolume();
+    debugLogger.info('player', ducked ? 'CAN_DUCK：压低音量继续播放' : '音频焦点恢复：还原音量', {
+      ducked,
+      userVolume: this.userVolume,
+      effectiveVolume: this.getEffectiveVolume(),
+    });
+  }
+
+  /** v28：按 duck 状态把当前生效音量应用到两个播放路径 */
+  private applyEffectiveVolume(): void {
+    const v = this.getEffectiveVolume();
+    if (this.isStreaming) {
+      streamingAudioPlayer.setVolume(v);
+    }
+    if (this.audio) {
+      this.audio.volume = v;
+    }
+  }
+
+  /** v28：计算生效音量 = 用户音量 ×（duck 时压低比例） */
+  private getEffectiveVolume(): number {
+    const base = Math.max(0, Math.min(1, this.userVolume));
+    return this.ducked ? Math.round(base * PlayerEngine.DUCK_VOLUME_RATIO * 100) / 100 : base;
   }
 
   resume(): void {
@@ -1197,16 +1238,22 @@ export class PlayerEngine {
 
   setVolume(volume: number): void {
     const v = Math.max(0, Math.min(1, volume));
+    // v28：记录用户设定音量为 duck 基准；duck 生效期间实际应用压低值，
+    // 且用户显式改音量时立即按新基准重新计算
+    this.userVolume = v;
+    const effective = this.getEffectiveVolume();
     if (this.isStreaming) {
-      streamingAudioPlayer.setVolume(v);
+      streamingAudioPlayer.setVolume(effective);
     }
     if (this.audio) {
-      this.audio.volume = v;
+      this.audio.volume = effective;
     }
   }
 
   getVolume(): number {
-    return this.audio?.volume ?? 1;
+    // v28：返回用户设定音量（duck 基准）而非被压低后的生效值，
+    // 保证睡眠定时器等调用方以用户音量为基准
+    return this.userVolume;
   }
 
   getCurrentTime(): number {

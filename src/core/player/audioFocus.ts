@@ -13,10 +13,12 @@
  * 3. 焦点恢复检测：综合使用 `document.visibilitychange` + 定时器轮询 audio 的
  *    paused/currentTime 状态，避免在后台过度唤醒。
  *
- * 注意：此模块与 PlayerEngine 协同工作，使用 `import type` 避免运行时循环依赖。
+ * 注意：此模块与 PlayerEngine 协同工作，使用 `import type` 避免运行时循环依赖
+ * （debugLogger 位于 shared/utils，与 player 无依赖关系，可安全引入落盘日志）。
  */
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import type { PluginListenerHandle } from '@capacitor/core';
+import { debugLogger } from '@shared/utils/debugLogger';
 import type { PlayerEngine } from './index';
 
 /**
@@ -60,8 +62,13 @@ export interface AudioFocusOptions {
 export interface AudioFocusEngine {
   getState: () => string;
   resume: () => void;
-  /** v20：系统（焦点丢失/耳机拔出）导致的暂停，保留用户播放意图 */
-  pauseBySystem: () => void;
+  /** v20：系统（焦点丢失/耳机拔出）导致的暂停，保留用户播放意图；v28 带 reason 供归因日志 */
+  pauseBySystem: (reason?: string) => void;
+  /**
+   * v28：CAN_DUCK 压低音量（ducked=true 压低，false 还原）。
+   * 按 Android 音频焦点规范，TRANSIENT_CAN_DUCK 应压低音量继续播放而非暂停。
+   */
+  duckVolume: (ducked: boolean) => void;
 }
 
 let engineRef: AudioFocusEngine | null = null;
@@ -79,6 +86,10 @@ let resumeTimeoutId: number | null = null;
 let lastResumeTime = 0;
 // resume 冷却窗口（ms）
 const RESUME_COOLDOWN_MS = 500;
+// v28：CAN_DUCK 是否已压低音量（配合引擎 duckVolume 的还原调用）
+let duckedDueToCanDuck = false;
+// v28：CAN_DUCK 压低音量比例（Android 规范建议压低而非暂停，取常用 duck 比例）
+const DUCK_VOLUME_RATIO = 0.3;
 
 export function configureAudioFocus(engine: AudioFocusEngine, opts: AudioFocusOptions): void {
   engineRef = engine;
@@ -103,41 +114,64 @@ function attachNativeListeners(): void {
       'focusChange',
       (data: { change?: number }) => {
         const change = data?.change ?? 0;
-        debugLog(`focusChange: ${change}`);
+        debugLogger.info('player', `音频焦点变化 focusChange: ${change}`, {
+          change,
+          meaning:
+            change === 1
+              ? 'GAIN 焦点恢复'
+              : change === AUDIOFOCUS_LOSS
+                ? 'LOSS 永久丢失'
+                : change === AUDIOFOCUS_LOSS_TRANSIENT
+                  ? 'LOSS_TRANSIENT 暂时丢失（来电等）'
+                  : change === AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK
+                    ? 'LOSS_TRANSIENT_CAN_DUCK 可压低'
+                    : '未知',
+          playing: engineRef?.getState() === 'playing' || engineRef?.getState() === 'loading',
+        });
         if (change === 1) {
+          // v28：若此前 CAN_DUCK 压低了音量，先还原，再走统一的自动续播判定
+          if (duckedDueToCanDuck) {
+            duckedDueToCanDuck = false;
+            engineRef?.duckVolume(false);
+          }
           // 焦点恢复：走统一的自动续播判定（含设置开关 / 用户意图 / 冷却去重）
           maybeResumeAfterFocusGain(true);
         } else if (change === AUDIOFOCUS_LOSS) {
-          // 永久失去：暂停且清除续播意图
+          // 永久失去：暂停且清除续播意图；若此前压低了音量，先还原再暂停
+          if (duckedDueToCanDuck) {
+            duckedDueToCanDuck = false;
+            engineRef?.duckVolume(false);
+          }
           wasPlayingBeforeFocusLoss = false;
           userIntentPlay = false;
           void AudioFocusManager.abandonFocus().then(() => { nativeFocusHeld = false; }).catch(() => {});
-          engineRef?.pauseBySystem();
-        } else if (
-          change === AUDIOFOCUS_LOSS_TRANSIENT ||
-          change === AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK
-        ) {
+          engineRef?.pauseBySystem(`focusChange(LOSS=-1) 永久失去音频焦点`);
+        } else if (change === AUDIOFOCUS_LOSS_TRANSIENT) {
           // 暂时失去（来电/其他 App 抢焦点）：暂停但保留续播意图
-          engineRef?.pauseBySystem();
+          engineRef?.pauseBySystem(`focusChange(LOSS_TRANSIENT=-2) 暂时失去音频焦点（如来电/其他应用播放）`);
+        } else if (change === AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) {
+          // v28：可压低（通知音/短提示音等）→ 按 Android 规范压低音量继续播放，不暂停
+          duckedDueToCanDuck = true;
+          engineRef?.duckVolume(true);
+          debugLogger.info('player', '音频焦点 CAN_DUCK：压低音量继续播放', {
+            ratio: DUCK_VOLUME_RATIO,
+          });
         }
       }
     ).then((h) => { nativeListeners.push(h); }).catch(() => {});
 
     void AudioFocusManager.addListener('becomingNoisy', () => {
-      debugLog('becomingNoisy: 耳机/蓝牙拔出，立即暂停');
+      debugLogger.info('player', 'becomingNoisy：耳机/蓝牙拔出，暂停播放（不自动续播）');
       wasPlayingBeforeFocusLoss = false;
       userIntentPlay = false;
-      engineRef?.pauseBySystem();
+      engineRef?.pauseBySystem('becomingNoisy 耳机/蓝牙拔出');
     }).then((h) => { nativeListeners.push(h); }).catch(() => {});
   } catch (err) {
     console.warn('[audioFocus] native listener attach failed:', err);
   }
 }
 
-function debugLog(msg: string): void {
-  // 轻量日志：不依赖 debugLogger，避免循环依赖
-  if (typeof console !== 'undefined') console.log(`[audioFocus] ${msg}`);
-}
+// v28：debugLog 已由 debugLogger（'player' 类别，进导出日志）取代并移除
 
 export function updateAudioFocusOptions(opts: Partial<AudioFocusOptions>): void {
   options = { ...options, ...opts };
@@ -238,6 +272,13 @@ export function notifyPlaybackStateChange(state: 'playing' | 'paused' | 'idle' |
     } else if (source === 'user' && (state === 'paused' || state === 'idle') && nativeFocusHeld) {
       nativeFocusHeld = false;
       void AudioFocusManager.abandonFocus().catch(() => {});
+    }
+    // v28：用户主动起播时解除 CAN_DUCK 压低（兜底：若 GAIN 事件迟到/丢失，
+    // 避免用户手动恢复播放后音量停留在压低值）
+    if (state === 'playing' && source === 'user' && duckedDueToCanDuck) {
+      duckedDueToCanDuck = false;
+      engineRef?.duckVolume(false);
+      debugLogger.info('player', '用户主动起播，解除 CAN_DUCK 音量压低');
     }
   }
   if (source === 'user') {

@@ -824,9 +824,14 @@ export class StreamCacheEngine {
         this.entries.set(key, entry);
       }
     } catch (err) {
-      // 元数据文件可能不存在；其他异常记录便于排查
+      const msg = err instanceof Error ? err.message : String(err);
+      // v28-P4：首次启动 meta 文件不存在属预期路径，不再记 WARN 噪音；
+      // 其余真实异常保留 WARN 便于排查
+      if (/file does not exist/i.test(msg)) {
+        return;
+      }
       debugLogger.warn('streaming', 'loadMeta failed', {
-        error: err instanceof Error ? err.message : String(err),
+        error: msg,
       });
     }
   }
