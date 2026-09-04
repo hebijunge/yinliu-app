@@ -8,6 +8,7 @@ import { useSearchStore } from '@shared/store/searchStore';
 import { toast } from '@shared/components/Toast';
 import EmptyState from '../components/common/EmptyState';
 import { toUserMessage } from '../shared/utils/errorCopy';
+import SmartCover from '../components/ui/SmartCover';
 
 const SOURCE_BADGE_COLORS: Record<string, string> = {
   netease: 'bg-red-500',
@@ -235,7 +236,7 @@ export default function LibraryPage() {
                             </span>
                             <div className="w-8 h-8 rounded bg-[var(--bg-secondary)] overflow-hidden flex-shrink-0">
                               {song.coverUrl ? (
-                                <img src={song.coverUrl} alt={song.title} className="w-full h-full object-cover" loading="lazy" />
+                                <SmartCover src={song.coverUrl} alt={song.title} className="w-full h-full" />
                               ) : (
                                 <div className="w-full h-full flex items-center justify-center">
                                   <Music className="w-3 h-3 text-[var(--text-tertiary)]" />
@@ -353,7 +354,7 @@ export default function LibraryPage() {
                           >
                             <div className="aspect-square rounded-lg overflow-hidden bg-[var(--bg-secondary)] mb-1.5">
                               {playlist.coverUrl ? (
-                                <img src={playlist.coverUrl} alt={playlist.name} className="w-full h-full object-cover" loading="lazy" />
+                                <SmartCover src={playlist.coverUrl} alt={playlist.name} className="w-full h-full" />
                               ) : (
                                 <div className="w-full h-full flex items-center justify-center">
                                   <ListMusic className="w-8 h-8 text-[var(--text-tertiary)]" />

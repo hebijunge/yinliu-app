@@ -16,6 +16,7 @@ import FullScreenPlayer from './FullScreenPlayer';
 import QueuePanel from './QueuePanel';
 import type { ParsedLyrics } from '../../modules/music/lyrics';
 import type { RepeatMode } from '../../shared/store/playerStore';
+import SmartCover from '../../components/ui/SmartCover';
 
 interface PlayerBarProps {
   /** 是否为横屏模式（640-840px 设备） */
@@ -284,7 +285,7 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
               }`}
             >
               {currentTrack?.coverUrl ? (
-                <img src={currentTrack.coverUrl} alt="" className="w-full h-full object-cover" />
+                <SmartCover src={currentTrack.coverUrl} alt="" className="w-full h-full" eager />
               ) : (
                 <div className="w-full h-full flex items-center justify-center">
                   <ListMusic className={`text-[var(--text-tertiary)] ${isLandscape ? 'w-6 h-6' : 'w-5 h-5'}`} />

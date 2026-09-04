@@ -13,6 +13,7 @@ import { playerEngine } from '../core/player';
 import { useSearchStore } from '../shared/store/searchStore';
 import { toast } from '../shared/components/Toast';
 import { toUserMessage } from '../shared/utils/errorCopy';
+import SmartCover from '../components/ui/SmartCover';
 
 /**
  * 专区页（v20）：粤语专区 / DJ 专区
@@ -241,7 +242,7 @@ export default function ZonePage() {
                   >
                     <div className="aspect-square rounded-lg overflow-hidden bg-[var(--bg-secondary)] mb-1">
                       {pl.coverUrl ? (
-                        <img src={pl.coverUrl} alt={pl.title} className="w-full h-full object-cover" loading="lazy" />
+                        <SmartCover src={pl.coverUrl} alt={pl.title} className="w-full h-full" />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center text-[var(--text-tertiary)]">
                           <ListMusic className="w-6 h-6" />

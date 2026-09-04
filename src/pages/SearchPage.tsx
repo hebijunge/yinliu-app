@@ -19,7 +19,9 @@ import EmptyState from '../components/common/EmptyState';
 import { useNetworkStatus } from '../shared/hooks/useNetworkStatus';
 import OfflineEmptyState from '../shared/components/OfflineEmptyState';
 import { SkeletonSearchResult } from '../components/ui/Skeleton';
+import { useInfiniteList } from '../shared/hooks/useInfiniteList';
 import { toUserMessage } from '../shared/utils/errorCopy';
+import SmartCover from '../components/ui/SmartCover';
 
 function formatRelativeTime(ts: number): string {
   const now = Date.now();
@@ -57,10 +59,8 @@ export default function SearchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // v16: 搜索结果分页加载
+  // v16: 搜索结果分页加载（E2 批次：收编为公共 useInfiniteList，触底分帧挂载）
   const PAGE_SIZE = 15;
-  const [displayCount, setDisplayCount] = useState(PAGE_SIZE);
-  const loadMoreRef = useRef<HTMLDivElement>(null);
 
   // 搜索后自动滚动到结果
   const resultSectionRef = useRef<HTMLDivElement>(null);
@@ -72,25 +72,12 @@ export default function SearchPage() {
   // 搜索失败状态（错误提示 + 重试）
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  // v18: 搜索结果变化时重置分页
+  // v18: 搜索结果变化时重置分页（useInfiniteList 收编）
+  const inf = useInfiniteList({ total: results.length, pageSize: PAGE_SIZE, rootMargin: '400px' });
   useEffect(() => {
-    setDisplayCount(PAGE_SIZE);
+    inf.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyword, results.length, searchType]);
-
-  // v16: Intersection Observer 滚动加载更多
-  useEffect(() => {
-    if (!loadMoreRef.current) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting && displayCount < results.length) {
-          setDisplayCount((prev) => Math.min(prev + PAGE_SIZE, results.length));
-        }
-      },
-      { rootMargin: '200px' }
-    );
-    observer.observe(loadMoreRef.current);
-    return () => observer.disconnect();
-  }, [displayCount, results.length]);
 
   const handleSearch = useCallback(async (termOverride?: string) => {
     const term = (termOverride ?? inputValue).trim();
@@ -458,7 +445,7 @@ export default function SearchPage() {
           >
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-500/20 to-pink-500/20 flex items-center justify-center flex-shrink-0 border border-red-500/20 overflow-hidden">
               {favoritesPlaylist?.coverUrl ? (
-                <img src={favoritesPlaylist.coverUrl} alt="我喜欢的音乐" className="w-full h-full object-cover" loading="lazy" />
+                <SmartCover src={favoritesPlaylist.coverUrl} alt="我喜欢的音乐" className="w-full h-full" />
               ) : (
                 <Heart className="w-7 h-7 text-red-500 fill-current" />
               )}
@@ -505,7 +492,7 @@ export default function SearchPage() {
               >
                 <div className="aspect-square w-full rounded-xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden">
                   {pl.coverUrl ? (
-                    <img src={pl.coverUrl} alt={pl.name} className="w-full h-full object-cover" loading="lazy" />
+                    <SmartCover src={pl.coverUrl} alt={pl.name} className="w-full h-full" />
                   ) : (
                     <ListMusic className="w-8 h-8 text-[var(--text-tertiary)] group-hover:text-[var(--accent)] transition-colors" />
                   )}
@@ -604,14 +591,14 @@ export default function SearchPage() {
         </div>
       )}
 
-      {/* Search results — v16: 分页渲染 */}
-      <div ref={resultSectionRef} className="space-y-2">
+      {/* Search results — v16: 分页渲染；P12: 结果区最小高度占位，搜索全程无布局跳动 */}
+      <div ref={resultSectionRef} className={`space-y-2 ${keyword ? 'min-h-[420px]' : ''}`}>
         {results.length > 0 && (
           <h2 className="text-base font-semibold text-[var(--text-primary)] mb-3">
             搜索结果 ({results.length})
-            {displayCount < results.length && (
+            {inf.displayCount < results.length && (
               <span className="text-xs text-[var(--text-tertiary)] ml-2">
-                已加载 {displayCount} 首
+                已加载 {inf.displayCount} 首
               </span>
             )}
           </h2>
@@ -619,7 +606,7 @@ export default function SearchPage() {
         {/* 歌曲结果：列表 */}
         {searchType === 'song' && (
           <div className="space-y-2">
-            {results.slice(0, displayCount).map((result) => (
+            {results.slice(0, inf.displayCount).map((result) => (
               <SongRow
                 key={result.id}
                 song={result}
@@ -633,7 +620,7 @@ export default function SearchPage() {
         {/* 歌手结果：网格卡片 */}
         {searchType === 'artist' && (
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
-            {results.slice(0, displayCount).map((result) => (
+            {results.slice(0, inf.displayCount).map((result) => (
               <button
                 key={result.id}
                 onClick={() => handleArtistClick(result)}
@@ -641,7 +628,7 @@ export default function SearchPage() {
               >
                 <div className="aspect-square w-full rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors">
                   {result.coverUrl ? (
-                    <img src={result.coverUrl} alt={result.title} className="w-full h-full object-cover" loading="lazy" />
+                    <SmartCover src={result.coverUrl} alt={result.title} className="w-full h-full" />
                   ) : (
                     <User className="w-10 h-10 text-[var(--text-tertiary)]" />
                   )}
@@ -658,7 +645,7 @@ export default function SearchPage() {
         {/* 专辑结果：网格卡片 */}
         {searchType === 'album' && (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-            {results.slice(0, displayCount).map((result) => (
+            {results.slice(0, inf.displayCount).map((result) => (
               <button
                 key={result.id}
                 onClick={() => handleAlbumClick(result)}
@@ -666,7 +653,7 @@ export default function SearchPage() {
               >
                 <div className="aspect-square w-full rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors">
                   {result.coverUrl ? (
-                    <img src={result.coverUrl} alt={result.title} className="w-full h-full object-cover" loading="lazy" />
+                    <SmartCover src={result.coverUrl} alt={result.title} className="w-full h-full" />
                   ) : (
                     <Disc className="w-10 h-10 text-[var(--text-tertiary)]" />
                   )}
@@ -681,7 +668,7 @@ export default function SearchPage() {
         {/* MV结果：网格卡片 */}
         {searchType === 'mv' && (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-            {results.slice(0, displayCount).map((result) => (
+            {results.slice(0, inf.displayCount).map((result) => (
               <button
                 key={result.id}
                 onClick={() => handleMvClick(result)}
@@ -689,7 +676,7 @@ export default function SearchPage() {
               >
                 <div className="aspect-video w-full rounded-2xl bg-[var(--bg-tertiary)] flex items-center justify-center mb-2 overflow-hidden border border-[var(--border-subtle)] group-hover:border-[var(--accent)] transition-colors relative">
                   {result.coverUrl ? (
-                    <img src={result.coverUrl} alt={result.title} className="w-full h-full object-cover" loading="lazy" />
+                    <SmartCover src={result.coverUrl} alt={result.title} className="w-full h-full" />
                   ) : (
                     <Video className="w-10 h-10 text-[var(--text-tertiary)]" />
                   )}
@@ -716,8 +703,8 @@ export default function SearchPage() {
 
         {/* v16: 滚动加载更多触发器 */}
         {results.length > 0 && (
-          <div ref={loadMoreRef} className="py-4 text-center">
-            {displayCount < results.length ? (
+          <div ref={inf.loadMoreRef} className="py-4 text-center">
+            {inf.displayCount < results.length ? (
               <div className="flex items-center justify-center gap-2 text-xs text-[var(--text-tertiary)]">
                 <Loader2 className="w-4 h-4 animate-spin" />
                 滚动加载更多...
