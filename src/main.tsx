@@ -9,6 +9,7 @@ import { streamCacheEngine } from './core/streaming';
 import { initDatabase } from './shared/database';
 import { initializeProviders } from './providers/music/registry';
 import { prewarmHomeCache } from './core/homeCache';
+import { sourceHealthChecker } from './core/health/SourceHealthChecker';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -161,6 +162,11 @@ async function bootstrap() {
 
   // 启动预热：后台检查首页缓存是否过期，过期提前拉取（fire-and-forget，失败静默）
   prewarmHomeCache();
+
+  // W2: 源健康探活 —— provider 注册完成后拉起周期探活（fire-and-forget；unknown 状态不干预取链，失败静默）
+  void providerInit
+    .then(() => sourceHealthChecker.start())
+    .catch((err) => console.error('Source health checker failed to start:', err));
 }
 
 bootstrap();

@@ -7,6 +7,7 @@ import { useSearchStore } from '../shared/store/searchStore';
 import { usePlayerStore } from '../shared/store/playerStore';
 import { useSleepTimerStore, formatSleepTimerRemaining } from '../shared/store/sleepTimerStore';
 import { sourceRegistry } from '../providers/music/registry';
+import { sourceHealthChecker, type SourceHealthSnapshot } from '../core/health/SourceHealthChecker';
 import { Quality } from '../core/types';
 import {
   PLATFORM_PRIORITY,
@@ -120,6 +121,25 @@ export default function SettingsPage() {
   const [downloadDirDraft, setDownloadDirDraft] = useState(downloadDir);
 
   const sources = sourceRegistry.getAll();
+
+  // W2: 源健康徽标 —— 轻量轮询快照（5s），探活本体仍由 SourceHealthChecker 后台周期驱动
+  const [healthStatuses, setHealthStatuses] = useState<Record<string, SourceHealthSnapshot>>(
+    () => sourceHealthChecker.getAllStatuses()
+  );
+  useEffect(() => {
+    const t = setInterval(() => setHealthStatuses(sourceHealthChecker.getAllStatuses()), 5000);
+    return () => clearInterval(t);
+  }, []);
+  const healthBadge = (id: string): { text: string; cls: string } => {
+    const snap = healthStatuses[id];
+    if (!snap || snap.state === 'unknown') return { text: '⚪ 未知', cls: 'text-[var(--text-tertiary)]' };
+    if (snap.state === 'healthy') return { text: '🟢 健康', cls: 'text-green-600' };
+    if (snap.state === 'unhealthy') return { text: '🟠 不健康', cls: 'text-orange-500' };
+    const remainMin = snap.circuitOpenUntil
+      ? Math.max(0, Math.ceil((snap.circuitOpenUntil - Date.now()) / 60000))
+      : 0;
+    return { text: `🔴 熔断·剩 ${remainMin} 分`, cls: 'text-red-500' };
+  };
 
   const tabs = [
     { id: 'general' as const, label: '通用', icon: Settings },
@@ -254,6 +274,10 @@ export default function SettingsPage() {
                         <div className="font-medium text-[var(--text-primary)]">{source.name}</div>
                         <div className="text-xs text-[var(--text-tertiary)]">
                           最高音质: {source.maxQuality}
+                        </div>
+                        {/* W2: 源健康徽标（探活结果实时展示） */}
+                        <div className={`text-xs mt-0.5 ${healthBadge(source.id).cls}`}>
+                          {healthBadge(source.id).text}
                         </div>
                       </div>
                       <div className="flex items-center gap-3">

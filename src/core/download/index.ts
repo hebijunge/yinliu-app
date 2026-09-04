@@ -5,6 +5,7 @@ import { platformFetch } from '@shared/utils/platformFetch';
 import { getSqliteDb, flushDatabase } from '@shared/database';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { buildFallbackChain, PLATFORM_DISPLAY_NAMES } from '@core/platformPriority';
+import { sourceHealthChecker } from '@core/health/SourceHealthChecker';
 import { toast } from '@shared/components/Toast';
 import { deriveRawKey } from '../../utils/crypto/kuwoEkey';
 import { qmc2DecryptBytes } from '../../utils/crypto/qmc2';
@@ -305,7 +306,13 @@ export class DownloadEngine {
       // 兜底：主 songId 在主源下
       songIdMap.set(task.sourceId, task.songId);
 
-      const chain = buildFallbackChain(task.sourceId, availableIds);
+      const rawChain = buildFallbackChain(task.sourceId, availableIds);
+      // W2: 进链前过滤不健康/熔断中的源（跳过继续走链，不碰链序；过滤后为空回退原链防全员误判）
+      const chain = sourceHealthChecker.filterChain(rawChain);
+      const skippedByHealth = rawChain.filter((id) => !chain.includes(id));
+      if (skippedByHealth.length > 0) {
+        console.warn(`[DownloadEngine] Health filter skipped: ${skippedByHealth.join(',')}`);
+      }
 
       // 2. 确保下载目录存在
       const dir = this.downloadDir;
@@ -358,6 +365,8 @@ export class DownloadEngine {
           task.sourceId = trySourceId;
           task.songId = trySongId;
           task.url = playUrl.url;
+          // W2: 真实取链成功 → 立即清零探活计数并标 healthy（快速回归，防探活端点误判）
+          sourceHealthChecker.reportSuccess(trySourceId);
           this.emit('stateChange', { taskId, status: 'downloading', task });
 
           // 3a. 下载二进制（v16：Range 分块拉取，真实进度 + 可暂停；不支持 Range 回退整包）

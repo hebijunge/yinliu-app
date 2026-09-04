@@ -2,6 +2,7 @@ import type { PlayUrlResult } from '@core/types';
 import { Quality } from '@core/types';
 import { sourceRegistry } from '@providers/music/registry';
 import { downloadEngine } from '@core/download';
+import { sourceHealthChecker } from '@core/health/SourceHealthChecker';
 import { readLocalAudioAsUrl } from '@modules/music/localScanner';
 import {
   buildFallbackChain,
@@ -353,7 +354,16 @@ export class PlayerEngine {
     // 兜底：保证首选源也能找到自己的 songId
     sourceSongIdMap.set(track.sourceId, track.sourceSongId);
 
-    const chain = buildFallbackChain(track.sourceId, availableIds);
+    const rawChain = buildFallbackChain(track.sourceId, availableIds);
+    // W2: 进链前过滤不健康/熔断中的源（跳过继续走链，不碰链序；过滤后为空回退原链防全员误判）
+    const chain = sourceHealthChecker.filterChain(rawChain);
+    const skippedByHealth = rawChain.filter((id) => !chain.includes(id));
+    if (skippedByHealth.length > 0) {
+      debugLogger.warn('player', `健康过滤跳过源: ${skippedByHealth.join(',')}`, {
+        skipped: skippedByHealth,
+        track: track.title,
+      });
+    }
 
     if (chain.length === 0) {
       throw new Error(`Source ${track.sourceId} not found and no fallback available`);
@@ -400,6 +410,8 @@ export class PlayerEngine {
           quality,
           format: playUrl.format,
         });
+        // W2: 真实取链成功 → 立即清零探活计数并标 healthy（快速回归，防探活端点误判）
+        sourceHealthChecker.reportSuccess(trySourceId);
         return { url: playUrl.url, isLocal: false, result: playUrl, actualSourceId: trySourceId };
       } catch (err) {
         lastError = err;
