@@ -5,6 +5,7 @@ import Sidebar from './Sidebar';
 import PlayerBar from '../player/PlayerBar';
 import MobileNav from './MobileNav';
 import ToastContainer from '@shared/components/Toast';
+import OfflineBanner from '../common/OfflineBanner';
 import { useResponsiveLayout } from '@shared/hooks/useResponsiveLayout';
 import { useSettingsStore } from '@shared/store/settingsStore';
 import { useUiStore } from '@shared/store/uiStore';
@@ -53,6 +54,8 @@ export default function Layout({ children }: LayoutProps) {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-[var(--bg-primary)]">
+      {/* E1：全局离线横幅——断网时展示，恢复网络自动消失 */}
+      <OfflineBanner />
       {/* ===== 主内容区 ===== */}
       <div className="flex-1 flex overflow-hidden">
         {/* Sidebar — 平板/桌面常驻显示 */}

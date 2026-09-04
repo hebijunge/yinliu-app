@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search as SearchIcon, Loader2, Flame, ArrowDown } from 'lucide-react';
+import { Search as SearchIcon, Loader2, Flame, ArrowDown, WifiOff } from 'lucide-react';
 import { getAggregatedHotSongs } from '../core/charts';
 import type { AggregatedSearchResult } from '../core/search';
 import {
@@ -13,6 +13,9 @@ import QualitySizeSheet from '../components/song/QualitySizeSheet';
 import { playerEngine } from '../core/player';
 import { useSearchStore } from '../shared/store/searchStore';
 import { toast } from '../shared/components/Toast';
+import { useGuardedAction } from '../shared/hooks/useGuardedAction';
+import { useNetworkStatus } from '../shared/hooks/useNetworkStatus';
+import { allowPlayWhenOffline } from '../shared/utils/playGuard';
 import EmptyState from '../components/common/EmptyState';
 import { SkeletonSearchResult } from '../components/ui/Skeleton';
 
@@ -42,6 +45,7 @@ function formatCacheAge(ts: number): string {
 export default function HomePage() {
   const navigate = useNavigate();
   const { selectedQuality } = useSearchStore();
+  const { isOnline } = useNetworkStatus();
   const [kw, setKw] = useState('');
   const [songs, setSongs] = useState<AggregatedSearchResult[]>([]);
   const [loading, setLoading] = useState(true);
@@ -102,6 +106,10 @@ export default function HomePage() {
   /** 手动下拉刷新：强制绕过缓存，成功后更新缓存时间戳 */
   const triggerRefresh = useCallback(async () => {
     if (refreshingRef.current) return;
+    if (!isOnline) {
+      toast.error('当前无网络连接', '恢复网络后再刷新');
+      return;
+    }
     refreshingRef.current = true;
     setRefreshing(true);
     try {
@@ -114,7 +122,7 @@ export default function HomePage() {
       refreshingRef.current = false;
       setRefreshing(false);
     }
-  }, [fetchAndCache]);
+  }, [fetchAndCache, isOnline]);
 
   // 定位 Layout 的滚动容器（<main class="overflow-y-auto">），下拉刷新只在滚动到顶部时生效
   useEffect(() => {
@@ -168,7 +176,8 @@ export default function HomePage() {
     };
   }, [triggerRefresh]);
 
-  const handlePlay = async (result: AggregatedSearchResult, preferredSourceId?: string) => {
+  // E4：播放入口守卫（进行中禁用 + 300ms 防抖）——狂点不触发并发取链链路
+  const doPlay = async (result: AggregatedSearchResult, preferredSourceId?: string) => {
     if (!result.sources || result.sources.length === 0) {
       toast.error('暂无可用音源', '该歌曲在所有平台均无播放链接');
       return;
@@ -179,6 +188,8 @@ export default function HomePage() {
       : undefined;
     const sourceId = targetSource?.sourceId ?? result.sourceId;
     const sourceSongId = targetSource?.sourceSongId ?? result.sourceSongId;
+    // E1：断网时在线曲目直接拦截并提示（本地/已下载歌曲放行）
+    if (!allowPlayWhenOffline({ sourceId, sourceSongId })) return;
     try {
       await playerEngine.playTrack({
         id: result.id,
@@ -200,6 +211,7 @@ export default function HomePage() {
       toast.error('播放失败', msg);
     }
   };
+  const { run: handlePlay } = useGuardedAction(doPlay);
 
   const pullProgress = Math.min(1, pullDistance / PULL_THRESHOLD);
 
@@ -237,8 +249,13 @@ export default function HomePage() {
         <Flame className="w-5 h-5 text-red-500" />
         <h2 className="text-lg font-bold">热歌榜</h2>
         <span className="text-xs text-[var(--text-tertiary)]">多源聚合</span>
+        {!isOnline && songs.length > 0 && (
+          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 ml-auto">
+            离线内容
+          </span>
+        )}
         {cacheInfo && (
-          <span className="text-xs text-[var(--text-tertiary)] ml-auto">
+          <span className={`text-xs text-[var(--text-tertiary)] ${!isOnline && songs.length > 0 ? '' : 'ml-auto'}`}>
             缓存 · {cacheInfo}
           </span>
         )}
@@ -270,11 +287,20 @@ export default function HomePage() {
       {loading ? (
         <SkeletonSearchResult count={8} />
       ) : songs.length === 0 ? (
-        <EmptyState
-          title="热歌榜暂无数据"
-          description="可能是网络异常或各音源暂不可用，点击重试或下拉刷新"
-          onRetry={() => void triggerRefresh()}
-        />
+        !isOnline ? (
+          <EmptyState
+            icon={WifiOff}
+            title="当前无网络连接"
+            description="联网后将自动加载热歌榜；已缓存的离线内容会在有缓存时展示"
+            onRetry={() => void triggerRefresh()}
+          />
+        ) : (
+          <EmptyState
+            title="热歌榜暂无数据"
+            description="可能是网络异常或各音源暂不可用，点击重试或下拉刷新"
+            onRetry={() => void triggerRefresh()}
+          />
+        )
       ) : (
         songs.slice(0, 100).map((result) => (
           <SongRow

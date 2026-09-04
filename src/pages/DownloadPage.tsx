@@ -6,6 +6,9 @@ import { playerEngine } from '../core/player';
 import { usePlayerStore } from '../shared/store/playerStore';
 import type { PlayerTrack } from '../core/player';
 import type { DownloadTask } from '../core/types';
+import { useGuardedAction } from '../shared/hooks/useGuardedAction';
+import { useNetworkStatus } from '../shared/hooks/useNetworkStatus';
+import { WifiOff } from 'lucide-react';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -307,6 +310,8 @@ export default function DownloadPage() {
   const { tasks, queueTasks, completedTasks, completedBySource, clearCompleted } = useDownloadStore();
   const [activeTab, setActiveTab] = useState<'queue' | 'completed'>('queue');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const { isOnline } = useNetworkStatus();
+  const [offlineResumeTick, setOfflineResumeTick] = useState(0);
 
   useEffect(() => {
     // 同步引擎中的任务到 store
@@ -328,11 +333,13 @@ export default function DownloadPage() {
   }, [queueTasks]);
 
   // v23 修复走查 #3：清空已下载前二次确认
-  const handleClearCompleted = async () => {
+  // E4：清空入口守卫——进行中禁用 + 300ms 防抖，狂点不重复执行删除
+  const doClearCompleted = async () => {
     await downloadEngine.clearCompleted();
     clearCompleted();
     setShowClearConfirm(false);
   };
+  const { run: handleClearCompleted } = useGuardedAction(doClearCompleted);
 
   const sourceIds = Object.keys(completedBySource).sort();
 
@@ -369,6 +376,29 @@ export default function DownloadPage() {
           已下载 {completedTasks.length > 0 ? `(${completedTasks.length})` : ''}
         </button>
       </div>
+
+      {/* E1：断网提示 + 一键继续 */}
+      {!isOnline && (
+        <div className="flex items-center gap-3 mb-6 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
+          <WifiOff className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
+          <div className="flex-1 text-sm text-amber-700 dark:text-amber-300">
+            当前无网络连接，正在下载的任务已自动暂停
+          </div>
+          {downloadEngine.isOfflinePaused() &&
+            queueTasks.filter((t) => t.status === 'paused').length > 0 && (
+              <button
+                key={offlineResumeTick}
+                onClick={async () => {
+                  await downloadEngine.resumeAllForOffline();
+                  setOfflineResumeTick((n) => n + 1);
+                }}
+                className="shrink-0 text-xs px-3 py-1.5 rounded-lg bg-amber-500 text-white hover:bg-amber-600 transition-colors"
+              >
+                一键继续
+              </button>
+            )}
+        </div>
+      )}
 
       {/* ===== 下载队列 Tab ===== */}
       {activeTab === 'queue' && (

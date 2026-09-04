@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play, User, Disc, Video, X, SearchX } from 'lucide-react';
+import { Search, Loader2, Music, Filter, Heart, Clock, ListMusic, Plus, Compass, Play, User, Disc, Video, X, SearchX, WifiOff } from 'lucide-react';
 import { toast } from '../shared/components/Toast';
 import { useSearchStore } from '../shared/store/searchStore';
 import { searchEngine } from '../core/search';
@@ -16,6 +16,9 @@ import MvPlayerPage from './MvPlayerPage';
 import SongRow from '../components/song/SongRow';
 import QualitySizeSheet from '../components/song/QualitySizeSheet';
 import EmptyState from '../components/common/EmptyState';
+import { useGuardedAction } from '../shared/hooks/useGuardedAction';
+import { useNetworkStatus } from '../shared/hooks/useNetworkStatus';
+import { allowPlayWhenOffline } from '../shared/utils/playGuard';
 import { SkeletonSearchResult } from '../components/ui/Skeleton';
 
 function formatRelativeTime(ts: number): string {
@@ -36,6 +39,7 @@ export default function SearchPage() {
   } = useSearchStore();
 
   const { playlists, addPlaylist, isFavorite, favorites, refreshPlaylistCovers } = usePlaylistStore();
+  const { isOnline } = useNetworkStatus();
   const { records: historyRecords } = usePlayHistoryStore();
 
   const [inputValue, setInputValue] = useState(keyword);
@@ -94,7 +98,13 @@ export default function SearchPage() {
     const seq = ++searchSeqRef.current;
     const isLatest = () => searchSeqRef.current === seq;
     lastTermRef.current = term;
-    setSearchError(null);
+    // E1：断网时直接给明确空态，不发静默失败的请求
+    if (!isOnline) {
+      setSearchError('当前无网络连接，请检查网络后重试');
+      setKeyword(term);
+      setSearching(false);
+      return;
+    }
     setKeyword(term);
     setSearching(true);
     setResults([]);
@@ -146,7 +156,7 @@ export default function SearchPage() {
         setSearching(false);
       }
     }
-  }, [inputValue, selectedSources, searchType, setKeyword, setSearching, addToHistory, setResults, setSourceStats]);
+  }, [inputValue, selectedSources, searchType, setKeyword, setSearching, addToHistory, setResults, setSourceStats, isOnline]);
 
   // 支持从首页带词跳转（/search?q=xxx）：进入页面自动搜索一次
   const [searchParams] = useSearchParams();
@@ -184,11 +194,14 @@ export default function SearchPage() {
     useMvPlayerStore.getState().openMv(result);
   }, []);
 
-  const handlePlay = async (result: AggregatedSearchResult) => {
+  // E4：播放入口守卫（进行中禁用 + 300ms 防抖）
+  const doPlay = async (result: AggregatedSearchResult) => {
     if (!result.sources || result.sources.length === 0) {
       toast.error('暂无可用音源', '该歌曲在所有平台均无播放链接');
       return;
     }
+    // E1：断网时在线曲目直接拦截并提示（本地/已下载歌曲放行）
+    if (!allowPlayWhenOffline({ sourceId: result.sourceId, sourceSongId: result.sourceSongId })) return;
     try {
       await playerEngine.playTrack({
         id: result.id,
@@ -210,10 +223,17 @@ export default function SearchPage() {
       toast.error('播放失败', msg);
     }
   };
+  const { run: handlePlay } = useGuardedAction(doPlay);
 
-  const handleDownload = async (result: AggregatedSearchResult) => {
+  // E4：下载入口守卫 —— 狂点不重复建任务
+  const doDownload = async (result: AggregatedSearchResult) => {
     if (!result.sources || result.sources.length === 0) {
       toast.error('暂无可用音源', '该歌曲在所有平台均无下载链接');
+      return;
+    }
+    // E1：断网时不建下载任务（引擎侧也会拒绝调度）
+    if (!isOnline) {
+      toast.error('当前无网络连接', '恢复网络后再下载');
       return;
     }
     try {
@@ -236,6 +256,7 @@ export default function SearchPage() {
       toast.error('下载失败', msg);
     }
   };
+  const { run: handleDownload } = useGuardedAction(doDownload);
 
   const handlePlayHistory = useCallback(
     async (record: typeof historyRecords[number]) => {
@@ -732,8 +753,8 @@ export default function SearchPage() {
       {/* 搜索失败：错误提示 + 重试按钮 */}
       {searchError && !isSearching && (
         <EmptyState
-          icon={SearchX}
-          title="搜索失败"
+          icon={searchError.includes('无网络连接') ? WifiOff : SearchX}
+          title={searchError.includes('无网络连接') ? '当前无网络连接' : '搜索失败'}
           description={searchError}
           onRetry={() => handleSearch(lastTermRef.current || undefined)}
         />

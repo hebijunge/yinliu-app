@@ -86,6 +86,10 @@ export class DownloadEngine {
   private downloadDir = 'yinliu/downloads';
   /** 防止 scheduleNext 重入 */
   private scheduling = false;
+  /** E1 断网守护：断网自动暂停期间为 true，恢复网络且用户点击「一键继续」后复位 */
+  private offlinePaused = false;
+  /** E1 断网守护：online/offline 监听只安装一次 */
+  private networkGuardInstalled = false;
 
   private emit(event: string, data: unknown) {
     const callbacks = this.listeners[event] || [];
@@ -196,6 +200,8 @@ export class DownloadEngine {
 
   // === 调度队列中的下一个任务 ===
   private scheduleNext(): void {
+    // E1 断网守护：断网暂停期间不调度新任务，避免取链必然失败的任务被拉起
+    if (this.offlinePaused) return;
     if (this.scheduling) return;
     this.scheduling = true;
     try {
@@ -218,6 +224,11 @@ export class DownloadEngine {
     if (!task) throw new Error(`Task ${taskId} not found`);
     if (task.status === 'completed') return;
     if (task.status === 'downloading') return;
+    // E1 断网守护：断网暂停期间拒绝拉起任务（含重试/继续），恢复网络后由一键继续统一放行
+    if (this.offlinePaused) {
+      toast.error('当前无网络连接', '网络恢复后再继续下载任务');
+      return;
+    }
 
     // 队列调度：如果并发已满且不在队列中，加入队列等待
     if (this.getActiveCount() >= this.maxConcurrent && !this.pendingQueue.includes(taskId)) {
@@ -682,6 +693,61 @@ export class DownloadEngine {
     await this.startDownload(taskId);
   }
 
+  // === E1 断网守护：是否处于断网自动暂停期 ===
+  isOfflinePaused(): boolean {
+    return this.offlinePaused;
+  }
+
+  // === E1 断网守护：断网时自动暂停全部下载中任务，返回暂停数量 ===
+  async pauseAllForOffline(): Promise<number> {
+    this.offlinePaused = true;
+    const activeIds = Array.from(this.tasks.values())
+      .filter((t) => t.status === 'downloading')
+      .map((t) => t.id);
+    for (const id of activeIds) {
+      try {
+        await this.pauseDownload(id);
+      } catch (err) {
+        console.error('[DownloadEngine] pauseAllForOffline failed for task:', id, err);
+      }
+    }
+    return activeIds.length;
+  }
+
+  // === E1 断网守护：恢复网络后一键继续全部已暂停任务，返回恢复数量 ===
+  async resumeAllForOffline(): Promise<number> {
+    this.offlinePaused = false;
+    const pausedIds = Array.from(this.tasks.values())
+      .filter((t) => t.status === 'paused')
+      .map((t) => t.id);
+    for (const id of pausedIds) {
+      try {
+        await this.resumeDownload(id);
+      } catch (err) {
+        console.error('[DownloadEngine] resumeAllForOffline failed for task:', id, err);
+      }
+    }
+    return pausedIds.length;
+  }
+
+  // === E1 断网守护：监听 online/offline 事件（幂等，可重复调用） ===
+  setupNetworkGuard(): void {
+    if (this.networkGuardInstalled || typeof window === 'undefined') return;
+    this.networkGuardInstalled = true;
+    window.addEventListener('offline', () => {
+      void this.pauseAllForOffline().then((count) => {
+        console.log('[DownloadEngine] offline guard: paused tasks =', count);
+        if (count > 0) {
+          toast.error('网络已断开', '正在下载的任务已自动暂停，恢复网络后可一键继续');
+        }
+      });
+    });
+    window.addEventListener('online', () => {
+      if (!this.offlinePaused) return;
+      toast.info('网络已恢复', '点击「一键继续」可恢复下载任务');
+    });
+  }
+
   // === 取消/删除任务 ===
   async cancelDownload(taskId: string): Promise<void> {
     const task = this.tasks.get(taskId);
@@ -886,3 +952,6 @@ export class DownloadEngine {
 }
 
 export const downloadEngine = new DownloadEngine();
+// E1 断网守护：引擎单例创建即安装 online/offline 监听（断网自动暂停全部任务）
+downloadEngine.setupNetworkGuard();
+

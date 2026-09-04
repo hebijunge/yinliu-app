@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Trophy, ListMusic, Music, Loader2, AlertCircle, ChevronRight } from 'lucide-react';
+import { Trophy, ListMusic, Music, Loader2, AlertCircle, ChevronRight, WifiOff } from 'lucide-react';
 import { CHART_CATEGORIES } from '@modules/chart/chartMappings';
 import { aggregateChartsByCategory, type SourceChartResult, type AggregatedChartSong } from '@modules/chart/aggregator';
 import { aggregatePlaylistsByCategory, type SourcePlaylistResult } from '@modules/playlist/aggregator';
@@ -7,6 +7,8 @@ import { playerEngine } from '@core/player';
 import { useSearchStore } from '@shared/store/searchStore';
 import { toast } from '@shared/components/Toast';
 import EmptyState from '../components/common/EmptyState';
+import { useNetworkStatus } from '@shared/hooks/useNetworkStatus';
+import { allowPlayWhenOffline } from '@shared/utils/playGuard';
 
 const SOURCE_BADGE_COLORS: Record<string, string> = {
   netease: 'bg-red-500',
@@ -29,6 +31,7 @@ export default function LibraryPage() {
 
   // ===== 顶部 Tab 切换 =====
   const [activeTab, setActiveTab] = useState<TabKey>('charts');
+  const { isOnline } = useNetworkStatus();
 
   // ===== 聚合榜单数据 =====
   const [chartCat, setChartCat] = useState(CHART_CATEGORIES[0].id);
@@ -42,6 +45,13 @@ export default function LibraryPage() {
     setChartLoading(true);
     setExpandedChartSource(null);
     setChartError(null);
+    // E1：断网时直接给明确空态，不静默白板
+    if (!isOnline) {
+      setChartResults([]);
+      setChartError('当前无网络连接，请检查网络后重试');
+      setChartLoading(false);
+      return;
+    }
     try {
       const results = await aggregateChartsByCategory(catId);
       setChartResults(results);
@@ -52,7 +62,7 @@ export default function LibraryPage() {
     } finally {
       setChartLoading(false);
     }
-  }, []);
+  }, [isOnline]);
 
   // ===== 聚合歌单数据 =====
   const [playlistCat, setPlaylistCat] = useState(CHART_CATEGORIES[0].id);
@@ -66,6 +76,13 @@ export default function LibraryPage() {
     setPlaylistLoading(true);
     setExpandedPlaylist(null);
     setPlaylistError(null);
+    // E1：断网时直接给明确空态，不静默白板
+    if (!isOnline) {
+      setPlaylistResults([]);
+      setPlaylistError('当前无网络连接，请检查网络后重试');
+      setPlaylistLoading(false);
+      return;
+    }
     try {
       const results = await aggregatePlaylistsByCategory(catId);
       setPlaylistResults(results);
@@ -76,7 +93,7 @@ export default function LibraryPage() {
     } finally {
       setPlaylistLoading(false);
     }
-  }, []);
+  }, [isOnline]);
 
   // ===== 按需加载：切 Tab 时才加载对应数据 =====
   useEffect(() => {
@@ -107,6 +124,8 @@ export default function LibraryPage() {
   }, [playlistCat, activeTab, playlistsLoaded, loadPlaylists]);
 
   const handlePlay = async (song: AggregatedChartSong) => {
+    // E1：断网时在线曲目直接拦截并提示（本地/已下载歌曲放行）
+    if (!allowPlayWhenOffline({ sourceId: song.sourceId, sourceSongId: song.sourceSongId })) return;
     try {
       await playerEngine.playTrack({
         id: song.id,
@@ -183,8 +202,8 @@ export default function LibraryPage() {
             </div>
           ) : chartError ? (
             <EmptyState
-              icon={AlertCircle}
-              title="榜单加载失败"
+              icon={chartError.includes('无网络连接') ? WifiOff : AlertCircle}
+              title={chartError.includes('无网络连接') ? '当前无网络连接' : '榜单加载失败'}
               description={chartError}
               onRetry={() => void loadCharts(chartCat)}
             />
@@ -313,8 +332,8 @@ export default function LibraryPage() {
             </div>
           ) : playlistError ? (
             <EmptyState
-              icon={AlertCircle}
-              title="歌单加载失败"
+              icon={playlistError.includes('无网络连接') ? WifiOff : AlertCircle}
+              title={playlistError.includes('无网络连接') ? '当前无网络连接' : '歌单加载失败'}
               description={playlistError}
               onRetry={() => void loadPlaylists(playlistCat)}
             />
