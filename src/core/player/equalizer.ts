@@ -122,6 +122,17 @@ class EqualizerService {
   private filters: BiquadFilterNode[] = [];
   private sourceNode: MediaElementAudioSourceNode | null = null;
   private attachedEl: HTMLAudioElement | null = null;
+  /**
+   * v29-A3: 已挂接元素的源节点记账。createMediaElementSource 对同一元素二次调用
+   * 会抛 InvalidStateError，且部分 WebView 内核在失败后令该元素音频永久静音
+   * （EQ 开启 → 流式/本地歌曲来回切复用同一元素时触发）。按元素记账复用，
+   * 同一元素绝不二次 create。
+   */
+  private sourceNodes = new WeakMap<HTMLAudioElement, MediaElementAudioSourceNode>();
+  /** v29-A3: 挂接 in-flight 互斥 —— 防止同一元素并发挂接竞态 */
+  private attaching = false;
+  /** v29-A3: 互斥期间到达的最新挂接目标，由在途任务收尾时接力处理 */
+  private pendingAttach: HTMLAudioElement | null = null;
   /** 由 PlayerEngine 注入：返回当前活跃的 audio 元素（流式或普通） */
   private elementProvider: (() => HTMLAudioElement | null) | null = null;
 
@@ -209,6 +220,14 @@ class EqualizerService {
       return;
     }
 
+    // v29-A3: in-flight 互斥 —— 上一次挂接尚未完成时只记录最新目标，
+    // 由在途任务收尾后接力挂接，避免并发 createMediaElementSource 竞态
+    if (this.attaching) {
+      this.pendingAttach = el;
+      return;
+    }
+    this.attaching = true;
+
     try {
       // 释放旧元素上的源节点（旧元素即将废弃）
       if (this.sourceNode) {
@@ -219,13 +238,27 @@ class EqualizerService {
         }
         this.sourceNode = null;
       }
-      const src = ctx.createMediaElementSource(el);
-      src.connect(this.filters[0]);
+
+      // v29-A3: 记账复用 —— 该元素曾挂接过则复用既有源节点，重连到滤波链即可；
+      // 绝不二次 createMediaElementSource（二次调用抛 InvalidStateError 并可能
+      // 令元素永久静音）
+      const existing = this.sourceNodes.get(el);
+      let src: MediaElementAudioSourceNode;
+      if (existing) {
+        src = existing;
+        src.connect(this.filters[0]);
+      } else {
+        src = ctx.createMediaElementSource(el);
+        src.connect(this.filters[0]);
+        this.sourceNodes.set(el, src);
+      }
+
       this.sourceNode = src;
       this.attachedEl = el;
       this.applyGains(gains);
       debugLogger.info('player', 'EQ 已挂接到当前播放元素', {
         srcPrefix: (el.src || '').slice(0, 40),
+        reused: !!existing,
       });
     } catch (err) {
       // 挂接失败：保持直出，不影响播放
@@ -234,6 +267,14 @@ class EqualizerService {
       debugLogger.warn('player', 'EQ 挂接失败，音频保持直出', {
         error: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      this.attaching = false;
+      // v29-A3: 接力处理互斥期间到达的最新挂接请求
+      const pending = this.pendingAttach;
+      this.pendingAttach = null;
+      if (pending && pending !== this.attachedEl) {
+        void this.attachElement(pending);
+      }
     }
   }
 
