@@ -137,6 +137,12 @@ export class PlayerEngine {
   private setState(state: PlayerState, source: 'user' | 'system' | 'engine' = 'engine') {
     const prev = this.state;
     this.state = state;
+    // 复核修复：进度轮询生命周期收敛 —— 所有离开 playing 态的迁移在此统一停表，
+    // 不再依赖 ended/pause/pauseBySystem/stop 等散落调用点各自记得停表，
+    // 避免后续新增状态路径（错误/加载/空闲）遗漏导致进度轮询泄漏
+    if (state !== 'playing') {
+      this.stopProgressTracking();
+    }
     this.emit('stateChange', { state, track: this.currentTrack || undefined });
     // v18 EQ：播放中确保均衡器音频上下文处于运行态（未挂接时为 no-op）
     if (state === 'playing') {
@@ -596,7 +602,6 @@ export class PlayerEngine {
 
     this.audio.addEventListener('ended', () => {
       this.setState('idle', 'engine');
-      this.stopProgressTracking();
       this.emit('ended', undefined);
       debugLogger.info('player', `播放结束: ${track.title}`);
     });
@@ -988,7 +993,6 @@ export class PlayerEngine {
       },
       onEnded: () => {
         this.setState('idle', 'engine');
-        this.stopProgressTracking();
         this.emit('ended', undefined);
         debugLogger.info('player', `流式播放结束: ${track.title}`);
       },
@@ -1019,7 +1023,6 @@ export class PlayerEngine {
     }
     this.setState('paused', 'user');
     this.setBuffering(false);
-    this.stopProgressTracking();
     debugLogger.info('player', '用户暂停播放', {
       track: this.currentTrack?.title,
     });
@@ -1052,7 +1055,6 @@ export class PlayerEngine {
     if (wasPlaying && this.state !== 'paused') {
       this.setState('paused', 'system');
     }
-    this.stopProgressTracking();
     debugLogger.info('player', '系统原因暂停播放（焦点/耳机）', {
       track: this.currentTrack?.title,
     });
@@ -1095,7 +1097,6 @@ export class PlayerEngine {
     }
     this.setState('idle', 'user');
     this.setBuffering(false);
-    this.stopProgressTracking();
     void clearMediaSession();
     debugLogger.info('player', '用户停止播放', {
       track: this.currentTrack?.title,

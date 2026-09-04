@@ -360,6 +360,9 @@ class StreamingAudioPlayer {
     // v25: 先复位起播抑制再判空 —— resume() 可能发生在首块就绪前
     // （audio 尚未创建），此时也要取消抑制，让数据就绪后能正常自动起播
     this.startSuppressed = false;
+    // 复核修复：显式 play()（用户主动恢复）复位断网自动续播标记 ——
+    // 用户已手动接管播放意图，网络恢复时不再重复触发自动续播
+    this.networkPaused = false;
     if (!this.audio) return;
 
     try {
@@ -749,6 +752,10 @@ class StreamingAudioPlayer {
    */
   async reset(): Promise<void> {
     this.stopProgressTracking();
+    // 复核修复：切歌/停止时复位断网自动续播标记 —— 否则断网期间切换曲目后，
+    // 网络恢复会在新曲目上错误触发自动续播（E5 自动续播只应作用于被断网
+    // 暂停的那一次播放会话）
+    this.networkPaused = false;
 
     // 停止 fetcher / 加密流
     await this.fetcher.stop();
