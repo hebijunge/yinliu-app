@@ -737,6 +737,23 @@ class StreamingAudioPlayer {
     }
 
     // 未缓存，需要重新从目标位置下载
+    // v28-review-fix: MSE 会话尚未就绪（sourceopen 前，sourceBuffer 未挂载）时，
+    // 不得清空已暂存的前缀 chunks，也不得走 setupBlobPlayback 换 src（会撕毁 MSE 会话，
+    // 正是本 patch 自己警告的行为）。此窗口内交由浏览器直接 seek，sourceopen 后
+    // 数据继续 append 自然续上；窗口极窄，属防御性守卫
+    if (this.useMSE && !this.sourceBuffer) {
+      debugLogger.info('streaming', 'Seek while MSE session not ready, defer to browser', {
+        cacheKey: this.cacheKey,
+        time: clampedTime,
+        bytePosition,
+      });
+      try {
+        this.audio.currentTime = clampedTime;
+      } catch {
+        // ignore
+      }
+      return;
+    }
     // v23-fix: 先记录 seek 前的播放态，供数据到位后恢复
     const wasPlaying = this.state === 'playing';
     this.setState('seeking');
@@ -1279,7 +1296,8 @@ class StreamingAudioPlayer {
   /**
    * MSE 模式：设置 MediaSource
    */
-  private async setupMSE(): Promise<void> {    return new Promise((resolve, reject) => {
+  private async setupMSE(): Promise<void> {
+    return new Promise((resolve, reject) => {
       try {
         this.mediaSource = new MediaSource();
         const url = URL.createObjectURL(this.mediaSource);
@@ -1639,6 +1657,16 @@ class StreamingAudioPlayer {
         // MSE 模式：直接追加到 SourceBuffer
         if (this.useMSE && this.sourceBuffer) {
           this.appendToMSE(data);
+          // v28-review-fix: ended 守卫（下载未完成触达缓冲末尾）触发后 audio 已 paused，
+          // MSE 路径此前无任何 play() 恢复调用 → 播放停在 buffering 无声（新的「假断播」）。
+          // 与 Blob 刷新的 shouldResume 语义对齐：append 后 buffering 态补一次 play()。
+          // 用户主动 pause() 会显式置 state='paused'，不会与本恢复逻辑冲突；
+          // waiting 事件转入 buffering 时 audio 未暂停，paused 判定可避免冗余 play()
+          if (this.state === 'buffering' && this.audio?.paused) {
+            this.audio.play().catch(() => {
+              // 自动播放策略可能阻止
+            });
+          }
           return;
         }
 
@@ -1648,12 +1676,14 @@ class StreamingAudioPlayer {
         // 现在只在播放逼近已缓冲末尾（shouldRefreshBlob）时才换 src；
         // 下载余量充足时后台继续拉数据，不再打断播放
         if (!this.useMSE && chunk.index > 0) {
-          const shouldRefreshByProgress =
-            chunk.index % MIN_CHUNKS_BEFORE_REFRESH === 0 && this.shouldRefreshBlob();
+          // v28-review-fix: shouldRefreshBlob() 此前在 progress 臂与外层联判各调一次，
+          // 收拢为单次计算、两臂共用（语义等价：逼近已缓冲末尾 且 触发间隔/尺寸条件之一成立）
+          const nearBufferedEnd = this.shouldRefreshBlob();
+          const shouldRefreshByInterval = chunk.index % MIN_CHUNKS_BEFORE_REFRESH === 0;
           const shouldRefreshBySize =
             this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
 
-          if ((shouldRefreshByProgress || shouldRefreshBySize) && this.shouldRefreshBlob()) {
+          if (nearBufferedEnd && (shouldRefreshByInterval || shouldRefreshBySize)) {
             await this.setupBlobPlayback();
             this.lastRefreshDownloaded = this.totalDownloaded;
           }
