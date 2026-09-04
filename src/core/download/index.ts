@@ -436,6 +436,9 @@ export class DownloadEngine {
       this.emit('completed', { taskId, filePath });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // P2 修复：无论失败还是用户暂停，退出时都复位不确定态——
+      // 重试/恢复时由 startDownload 按实际已下载字节重新判定是否进入不确定态
+      task.indeterminate = false;
       // 用户主动暂停：保持 paused 状态，不算失败（paused 由 pauseDownload 异步写入，这里用 string 比较）
       if ((task.status as string) === 'paused') {
         await this.persistTask(task);
@@ -623,6 +626,9 @@ export class DownloadEngine {
         signal,
       });
       if (!resp.ok) {
+        // P2 修复：失败前复位不确定态并持久化，避免失败任务重启 App 后仍显示不确定进度
+        task.indeterminate = false;
+        await this.persistTask(task);
         throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
       }
       const buf = new Uint8Array(await resp.arrayBuffer());

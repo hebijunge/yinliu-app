@@ -16,6 +16,7 @@ import {
 import { debugLogger } from '@shared/utils/debugLogger';
 import { useEqStore } from '@core/player/equalizer';
 import SleepTimerPanel from '../components/player/SleepTimerPanel';
+import ConfirmDialog, { type ConfirmRequest } from '../components/common/ConfirmDialog';
 
 type TabId = 'general' | 'music' | 'about';
 
@@ -103,6 +104,8 @@ export default function SettingsPage() {
   const { mode, setMode } = useThemeStore();
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const [cleanDone, setCleanDone] = useState<string | null>(null);
+  // P2 修复：统一二次确认弹窗——用自绘 ConfirmDialog 取代原生 window.confirm
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [showSleepTimer, setShowSleepTimer] = useState(false);
   const { active: sleepTimerActive, remainingSeconds, mode: sleepTimerMode } = useSleepTimerStore();
   const { enabled: eqEnabled, setEnabled: setEqEnabled } = useEqStore();
@@ -143,11 +146,17 @@ export default function SettingsPage() {
 
   // v23 修复走查 #9：恢复默认设置前二次确认（不可逆，会重置音源开关/音质偏好/下载设置）
   const handleClearAll = () => {
-    if (!window.confirm('确定要恢复默认设置吗？音源开关、音质偏好、下载设置等都会被重置。')) return;
-    clearAllSettings();
-    useSearchStore.getState().clearHistory();
-    setCleanDone('all');
-    setTimeout(() => setCleanDone(null), 2000);
+    setConfirmRequest({
+      title: '恢复默认设置',
+      message: '确定要恢复默认设置吗？音源开关、音质偏好、下载设置等都会被重置。',
+      confirmText: '恢复默认',
+      onConfirm: () => {
+        clearAllSettings();
+        useSearchStore.getState().clearHistory();
+        setCleanDone('all');
+        setTimeout(() => setCleanDone(null), 2000);
+      },
+    });
   };
 
   const handleExportLogs = (format: 'txt' | 'md') => {
@@ -155,9 +164,14 @@ export default function SettingsPage() {
   };
 
   const handleClearLogs = () => {
-    if (window.confirm('确定要清空所有调试日志吗？此操作不可恢复。')) {
-      debugLogger.clear();
-    }
+    setConfirmRequest({
+      title: '清空调试日志',
+      message: '确定要清空所有调试日志吗？此操作不可恢复。',
+      confirmText: '清空',
+      onConfirm: () => {
+        debugLogger.clear();
+      },
+    });
   };
 
   const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => (
@@ -557,6 +571,19 @@ export default function SettingsPage() {
           </>
         )}
       </div>
+
+      {/* P2 修复：统一二次确认弹窗 */}
+      <ConfirmDialog
+        open={!!confirmRequest}
+        title={confirmRequest?.title || ''}
+        message={confirmRequest?.message || ''}
+        confirmText={confirmRequest?.confirmText}
+        onConfirm={() => {
+          confirmRequest?.onConfirm();
+          setConfirmRequest(null);
+        }}
+        onCancel={() => setConfirmRequest(null)}
+      />
     </div>
   );
 }

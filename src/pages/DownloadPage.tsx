@@ -4,6 +4,7 @@ import { downloadEngine } from '../core/download';
 import { PLATFORM_DISPLAY_NAMES } from '../core/platformPriority';
 import { playerEngine } from '../core/player';
 import { usePlayerStore } from '../shared/store/playerStore';
+import ConfirmDialog from '../components/common/ConfirmDialog';
 import type { PlayerTrack } from '../core/player';
 import type { DownloadTask } from '../core/types';
 
@@ -17,42 +18,6 @@ function formatBytes(bytes: number): string {
 
 function formatSpeed(bytesPerSec: number): string {
   return formatBytes(bytesPerSec) + '/s';
-}
-
-/* ========== 通用二次确认弹窗（v23 修复走查 #3：删除/清空无确认） ========== */
-function ConfirmDialog({
-  open,
-  title,
-  message,
-  confirmText = '确认',
-  onConfirm,
-  onCancel,
-}: {
-  open: boolean;
-  title: string;
-  message: string;
-  confirmText?: string;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-[300] flex items-center justify-center p-6" role="dialog" aria-modal="true">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onCancel} style={{ animation: 'fadeIn 0.15s ease-out' }} />
-      <div className="relative w-full max-w-xs rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border)] p-5 shadow-xl" style={{ animation: 'page-enter 0.2s ease-out both' }}>
-        <h3 className="font-semibold text-[var(--text-primary)] mb-1.5">{title}</h3>
-        <p className="text-sm text-[var(--text-secondary)] leading-relaxed mb-5">{message}</p>
-        <div className="flex gap-2 justify-end">
-          <button onClick={onCancel} className="px-4 py-2 rounded-xl text-sm bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)] transition-colors">
-            取消
-          </button>
-          <button onClick={onConfirm} className="px-4 py-2 rounded-xl text-sm bg-red-500 text-white hover:bg-red-600 transition-colors">
-            {confirmText}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function StatusBadge({ status }: { status: DownloadTask['status'] }) {
@@ -105,11 +70,11 @@ function QueueTaskCard({ task }: { task: DownloadTask }) {
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
             </button>
           )}
-          {(task.status === 'paused' || task.status === 'failed') && (
+          {(task.status === 'paused') && (
             <button
               onClick={() => handleResume(task.id)}
               className="p-1.5 rounded-lg hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
-              title={task.status === 'failed' ? '重试' : '继续'}
+              title="继续"
             >
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
             </button>

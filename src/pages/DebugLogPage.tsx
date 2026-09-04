@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Trash2, Download, RefreshCw, ChevronDown, Filter, FileText, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { debugLogger, type DebugLogEntry, type DebugLogCategory, type DebugLogLevel } from '@shared/utils/debugLogger';
+import ConfirmDialog, { type ConfirmRequest } from '../components/common/ConfirmDialog';
 
 const CATEGORY_LABELS: Record<DebugLogCategory, string> = {
   app: '应用',
@@ -42,6 +43,8 @@ export default function DebugLogPage() {
   const [showFilters, setShowFilters] = useState(false);
   const [exportFormat, setExportFormat] = useState<'txt' | 'md'>('txt');
   const [showDeleteMenu, setShowDeleteMenu] = useState(false);
+  // P2 修复：统一二次确认弹窗——用自绘 ConfirmDialog 取代原生 window.confirm
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const intervalRef = useRef<number | null>(null);
 
   const refresh = () => {
@@ -67,17 +70,27 @@ export default function DebugLogPage() {
   }, [autoRefresh]);
 
   const handleClear = () => {
-    if (window.confirm('确定要清空所有调试日志吗？此操作不可恢复。')) {
-      debugLogger.clear();
-      refresh();
-    }
+    setConfirmRequest({
+      title: '清空调试日志',
+      message: '确定要清空所有调试日志吗？此操作不可恢复。',
+      confirmText: '清空',
+      onConfirm: () => {
+        debugLogger.clear();
+        refresh();
+      },
+    });
   };
 
   const handleDeleteEntry = (id: string) => {
-    if (window.confirm('确定删除这条日志吗？')) {
-      debugLogger.deleteEntry(id);
-      refresh();
-    }
+    setConfirmRequest({
+      title: '删除日志',
+      message: '确定删除这条日志吗？',
+      confirmText: '删除',
+      onConfirm: () => {
+        debugLogger.deleteEntry(id);
+        refresh();
+      },
+    });
   };
 
   const handleDeleteByCategory = (category: DebugLogCategory) => {
@@ -86,15 +99,16 @@ export default function DebugLogPage() {
       alert('该类别暂无日志');
       return;
     }
-    if (
-      window.confirm(
-        `确定删除「${CATEGORY_LABELS[category]}」类别的 ${count} 条日志吗？此操作不可恢复。`
-      )
-    ) {
-      const deleted = debugLogger.deleteByCategory(category);
-      refresh();
-      alert(`已删除 ${deleted} 条日志`);
-    }
+    setConfirmRequest({
+      title: `删除「${CATEGORY_LABELS[category]}」日志`,
+      message: `确定删除「${CATEGORY_LABELS[category]}」类别的 ${count} 条日志吗？此操作不可恢复。`,
+      confirmText: '删除',
+      onConfirm: () => {
+        const deleted = debugLogger.deleteByCategory(category);
+        refresh();
+        alert(`已删除 ${deleted} 条日志`);
+      },
+    });
   };
 
   const handleExport = () => {
@@ -324,6 +338,19 @@ export default function DebugLogPage() {
           ))}
         </div>
       )}
+
+      {/* P2 修复：统一二次确认弹窗 */}
+      <ConfirmDialog
+        open={!!confirmRequest}
+        title={confirmRequest?.title || ''}
+        message={confirmRequest?.message || ''}
+        confirmText={confirmRequest?.confirmText}
+        onConfirm={() => {
+          confirmRequest?.onConfirm();
+          setConfirmRequest(null);
+        }}
+        onCancel={() => setConfirmRequest(null)}
+      />
     </div>
   );
 }

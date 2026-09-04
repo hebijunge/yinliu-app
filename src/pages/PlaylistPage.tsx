@@ -7,6 +7,7 @@ import { useSearchParams, Link } from 'react-router-dom';
 import { SkeletonPlaylistGrid } from '../components/ui/Skeleton';
 import EmptyState from '../components/common/EmptyState';
 import { toast } from '../shared/components/Toast';
+import ConfirmDialog, { type ConfirmRequest } from '../components/common/ConfirmDialog';
 import { playlistImporter } from '../modules/music/playlistImporter';
 import type { ImportReport } from '../modules/music/playlistImporter';
 
@@ -18,6 +19,8 @@ export default function PlaylistPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [isLoading] = useState(false);
+  // P2 修复：统一二次确认弹窗——用自绘 ConfirmDialog 取代原生 window.confirm
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
 
   // v14 歌单导入 UI 状态
   const [showImport, setShowImport] = useState(false);
@@ -279,11 +282,16 @@ export default function PlaylistPage() {
                   </button>
                   <button
                     onClick={() => {
-                      if (window.confirm(`确定删除歌单「${pl.name}」吗？删除后无法恢复。`)) {
-                        removePlaylist(pl.id).catch((err) => {
-                          toast.error('删除歌单失败', err instanceof Error ? err.message : '未知错误');
-                        });
-                      }
+                      setConfirmRequest({
+                        title: '删除歌单',
+                        message: `确定删除歌单「${pl.name}」吗？删除后无法恢复。`,
+                        confirmText: '删除',
+                        onConfirm: () => {
+                          removePlaylist(pl.id).catch((err) => {
+                            toast.error('删除歌单失败', err instanceof Error ? err.message : '未知错误');
+                          });
+                        },
+                      });
                     }}
                     className="p-1.5 rounded-xl bg-black/40 text-white hover:bg-red-500/70 backdrop-blur-sm transition-colors focus-ring"
                   >
@@ -307,6 +315,19 @@ export default function PlaylistPage() {
           ))}
         </div>
       )}
+
+      {/* P2 修复：统一二次确认弹窗 */}
+      <ConfirmDialog
+        open={!!confirmRequest}
+        title={confirmRequest?.title || ''}
+        message={confirmRequest?.message || ''}
+        confirmText={confirmRequest?.confirmText}
+        onConfirm={() => {
+          confirmRequest?.onConfirm();
+          setConfirmRequest(null);
+        }}
+        onCancel={() => setConfirmRequest(null)}
+      />
     </div>
   );
 }
@@ -380,6 +401,8 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
   const { currentQuality } = usePlayerStore();
   const [filter, setFilter] = useState<'all' | 'playable' | 'failed'>('all');
   const [loadError, setLoadError] = useState<string | null>(null);
+  // P2 修复：统一二次确认弹窗——用自绘 ConfirmDialog 取代原生 window.confirm
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
 
   // 加载歌单歌曲（副作用移入 effect；失败给错误态 + 重试，避免整块白板）
   useEffect(() => {
@@ -523,11 +546,16 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
                 )}
                 <button
                   onClick={() => {
-                    if (window.confirm(`确定从歌单中移除「${s.title}」吗？`)) {
-                      removeSongFromPlaylist(playlistId, s.songId).catch((err) => {
-                        toast.error('移除歌曲失败', err instanceof Error ? err.message : '未知错误');
-                      });
-                    }
+                    setConfirmRequest({
+                      title: '移除歌曲',
+                      message: `确定从歌单中移除「${s.title}」吗？`,
+                      confirmText: '移除',
+                      onConfirm: () => {
+                        removeSongFromPlaylist(playlistId, s.songId).catch((err) => {
+                          toast.error('移除歌曲失败', err instanceof Error ? err.message : '未知错误');
+                        });
+                      },
+                    });
                   }}
                   className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-red-500 transition-all"
                   aria-label="移除"
@@ -539,6 +567,19 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
           })}
         </div>
       )}
+
+      {/* P2 修复：统一二次确认弹窗 */}
+      <ConfirmDialog
+        open={!!confirmRequest}
+        title={confirmRequest?.title || ''}
+        message={confirmRequest?.message || ''}
+        confirmText={confirmRequest?.confirmText}
+        onConfirm={() => {
+          confirmRequest?.onConfirm();
+          setConfirmRequest(null);
+        }}
+        onCancel={() => setConfirmRequest(null)}
+      />
     </div>
   );
 }
