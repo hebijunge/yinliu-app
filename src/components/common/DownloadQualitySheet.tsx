@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
-import { X, Check, Play } from 'lucide-react';
+import { X, Check, Play, Loader2 } from 'lucide-react';
 import { PLATFORM_ABBREVS } from '@core/platformPriority';
+import { useGuardedAction } from '@shared/hooks/useGuardedAction';
 
 export interface QualityOption {
   sourceId: string;
@@ -67,10 +68,12 @@ export default function DownloadQualitySheet({
     }
   };
 
-  const handleDownload = () => {
+  // E4: 下载守卫（进行中禁用 + 300ms 防抖，防狂点重复下发任务）
+  const { run: guardedDownload, busy: downloadBusy } = useGuardedAction(async () => {
     const sel = options.filter((o) => selected.has(`${o.sourceId}-${o.quality}`));
-    onDownload(sel);
-  };
+    if (sel.length === 0) return;
+    await onDownload(sel);
+  });
 
   return (
     <div className="fixed inset-0 z-[60] flex flex-col justify-end" onClick={onClose}>
@@ -193,11 +196,12 @@ export default function DownloadQualitySheet({
             全选
           </button>
           <button
-            onClick={handleDownload}
-            disabled={selected.size === 0}
-            className="yinliu-btn px-6 py-2.5 text-sm disabled:opacity-40"
+            onClick={guardedDownload}
+            disabled={selected.size === 0 || downloadBusy}
+            className="yinliu-btn px-6 py-2.5 text-sm disabled:opacity-40 inline-flex items-center gap-1.5"
           >
-            下载选中 ({selected.size})
+            {downloadBusy && <Loader2 className="w-4 h-4 animate-spin" />}
+            {downloadBusy ? '下发中…' : `下载选中 (${selected.size})`}
           </button>
         </div>
       </div>

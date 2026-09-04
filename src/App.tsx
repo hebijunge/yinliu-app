@@ -4,6 +4,8 @@ import { Capacitor, type PluginListenerHandle } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 import Layout from './components/layout/Layout';
 import SearchPage from './pages/SearchPage';
+import { Skeleton, SkeletonText } from './components/ui/Skeleton';
+import { scheduleIdle } from './shared/utils/idle';
 
 // v16: 非核心页面懒加载，减少首屏 bundle
 const PlaylistPage = lazy(() => import('./pages/PlaylistPage'));
@@ -24,6 +26,15 @@ const PlaylistAggregationPage = lazy(() => import('./pages/PlaylistAggregationPa
 const VideoPlayerPage = lazy(() => import('./pages/VideoPlayerPage'));
 // 歌单收藏页
 const FavoritePlaylistsPage = lazy(() => import('./pages/FavoritePlaylistsPage'));
+
+// P11 Tab 白闪治理：四个高频 Tab 的路由 chunk 在首挂载后 idle 预取，
+// 切 Tab 时 chunk 已在缓存，白闪源（chunk 网络加载）消失。
+const HIGH_FREQ_ROUTE_PREFETCH: Array<() => Promise<unknown>> = [
+  () => import('./pages/HomePage'),
+  () => import('./pages/LibraryPage'),
+  () => import('./pages/ZonePage'),
+  () => import('./pages/MinePage'),
+];
 import { playerEngine } from './core/player';
 import { downloadEngine } from './core/download';
 import { useUiStore } from './shared/store/uiStore';
@@ -72,8 +83,54 @@ function BootOverlay({ visible }: { visible: boolean }) {
   );
 }
 
+/**
+ * P11 Tab 白闪治理：路由懒加载期间的骨架屏 fallback。
+ * 替换原空白转圈 —— 固定结构占位避免布局塌陷，视觉上与页面骨架连续，
+ * 消除切 Tab 时的白闪/白屏观感。
+ */
+function RouteFallback() {
+  return (
+    <div className="p-5 space-y-5" aria-busy="true" aria-label="页面加载中">
+      <div className="space-y-2">
+        <Skeleton className="h-7 w-36" />
+        <SkeletonText lines={1} className="w-24" />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="space-y-2">
+            <Skeleton className="w-full aspect-square rounded-2xl" />
+            <SkeletonText lines={1} className="w-3/4" />
+          </div>
+        ))}
+      </div>
+      <div className="space-y-3">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="flex items-center gap-3">
+            <Skeleton className="w-12 h-12 rounded-lg flex-shrink-0" />
+            <div className="flex-1 space-y-1.5">
+              <SkeletonText lines={1} className="w-2/3" />
+              <SkeletonText lines={1} className="w-1/3" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [booting, setBooting] = useState(true);
+
+  // P11: 首挂载后 idle 预取四个高频 Tab 的路由 chunk（已加载的 import() 直接返回缓存）
+  useEffect(() => {
+    scheduleIdle(() => {
+      HIGH_FREQ_ROUTE_PREFETCH.forEach((prefetch) => {
+        void prefetch().catch(() => {
+          /* 预取失败静默：用户切到该 Tab 时仍走正常懒加载 */
+        });
+      });
+    });
+  }, []);
 
   // 启动时同步车机模式到 body class
   useEffect(() => {
@@ -121,28 +178,45 @@ function App() {
   }, []);
 
   useEffect(() => {
-    // 初始化数据库（支持从 IndexedDB 恢复）；无论成败，完成后立即淡出启动遮罩
-    initDatabase().then(async () => {
+    // P1 冷启动：initDatabase 完成即刻淡出启动遮罩（首帧不等非关键数据），
+    // 下载任务/歌单/历史/收藏的恢复全部延后到 idle（首帧之后）异步进行。
+    initDatabase().then(() => {
       console.log('[App] Database initialized');
+      setBooting(false);
 
-      // 恢复下载任务列表
-      await downloadEngine.restoreTasks();
-      const tasks = downloadEngine.getTasks();
-      useDownloadStore.getState().setTasks(tasks);
+      // 非关键数据恢复：idle 回调中并行 fire-and-forget，各自独立兜错，
+      // 任一失败不阻塞其他恢复，也不影响首页可交互
+      scheduleIdle(() => {
+        // 恢复下载任务列表
+        downloadEngine.restoreTasks()
+          .then(() => {
+            const tasks = downloadEngine.getTasks();
+            useDownloadStore.getState().setTasks(tasks);
+          })
+          .catch((err) => console.error('[App] restore download tasks failed:', err));
 
-      // 从数据库加载歌单
-      await usePlaylistStore.getState().loadPlaylists();
-      await usePlaylistStore.getState().loadFavorites();
+        // 从数据库加载歌单与收藏
+        usePlaylistStore.getState().loadPlaylists().catch((err) => console.error('[App] load playlists failed:', err));
+        usePlaylistStore.getState().loadFavorites().catch((err) => console.error('[App] load favorites failed:', err));
 
-      // 加载播放历史
-      await usePlayHistoryStore.getState().loadRecords();
+        // 加载播放历史
+        usePlayHistoryStore.getState().loadRecords().catch((err) => console.error('[App] load play history failed:', err));
 
-      // 加载收藏歌单
-      await useFavoritePlaylistStore.getState().loadItems();
+        // 加载收藏歌单
+        useFavoritePlaylistStore.getState().loadItems().catch((err) => console.error('[App] load favorite playlists failed:', err));
+      });
     }).catch((err) => {
       console.error('[App] Database initialization failed, falling back to memory mode:', err);
-    }).finally(() => {
       setBooting(false);
+    });
+
+    // E1: 下载引擎断网兜底 —— 断网自动暂停全部任务（引擎内监听），此处接入提示、store 标志与恢复入口
+    const unsubOffline = downloadEngine.on('offline', ({ pausedCount }) => {
+      useDownloadStore.getState().setOfflinePaused(true);
+      toast.info('网络已断开', `${pausedCount} 个下载任务已自动暂停，恢复网络后可一键继续`);
+    });
+    const unsubOfflineRecovered = downloadEngine.on('offlineRecovered', () => {
+      toast.info('网络已恢复', '下载任务可一键继续');
     });
 
     // 初始化媒体会话（通知栏 / 锁屏 / 硬件按键控制）
@@ -236,6 +310,8 @@ function App() {
       unsub5();
       unsub6();
       unsub7();
+      unsubOffline();
+      unsubOfflineRecovered();
       unsubSettings();
       floatingLyricsBridge.stop();
     };
@@ -244,7 +320,7 @@ function App() {
   return (
     <Layout>
       <BootOverlay visible={booting} />
-      <Suspense fallback={<div className="flex-1 flex items-center justify-center min-h-[50vh]"><div className="w-8 h-8 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" /></div>}>
+      <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/library" element={<LibraryPage />} />

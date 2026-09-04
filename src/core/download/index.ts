@@ -87,6 +87,58 @@ export class DownloadEngine {
   /** 防止 scheduleNext 重入 */
   private scheduling = false;
 
+  // === E1 断网兜底 ===
+  /** 是否因断网自动暂停过（恢复网络后供「一键继续」判定与清理） */
+  private offlinePaused = false;
+  /** 网络事件解绑句柄（构造时绑定，进程生命周期内常驻） */
+  private readonly unbindNetwork: () => void;
+
+  constructor() {
+    if (typeof window !== 'undefined') {
+      const onOffline = () => void this.pauseAllForOffline();
+      const onOnline = () => {
+        if (!this.offlinePaused) return;
+        this.offlinePaused = false;
+        this.emit('offlineRecovered', {});
+      };
+      window.addEventListener('offline', onOffline);
+      window.addEventListener('online', onOnline);
+      this.unbindNetwork = () => {
+        window.removeEventListener('offline', onOffline);
+        window.removeEventListener('online', onOnline);
+      };
+    } else {
+      this.unbindNetwork = () => {};
+    }
+  }
+
+  /**
+   * E1: 断网自动暂停全部进行中任务并广播 offline 事件（UI 提示 + 展示一键继续）。
+   */
+  async pauseAllForOffline(): Promise<void> {
+    const downloading = [...this.tasks.values()].filter((t) => t.status === 'downloading');
+    if (downloading.length === 0) return;
+    this.offlinePaused = true;
+    for (const t of downloading) {
+      await this.pauseDownload(t.id);
+    }
+    this.emit('offline', { pausedCount: downloading.length });
+    console.log(`[DownloadEngine] offline: paused ${downloading.length} task(s)`);
+  }
+
+  /**
+   * E1: 恢复网络后一键继续 —— 恢复全部因断网暂停的任务。
+   * 返回实际恢复的任务数。
+   */
+  async resumeAllFromOffline(): Promise<number> {
+    const paused = [...this.tasks.values()].filter((t) => t.status === 'paused');
+    for (const t of paused) {
+      void this.resumeDownload(t.id);
+    }
+    console.log(`[DownloadEngine] back online: resuming ${paused.length} task(s)`);
+    return paused.length;
+  }
+
   private emit(event: string, data: unknown) {
     const callbacks = this.listeners[event] || [];
     callbacks.forEach((cb) => cb(data));

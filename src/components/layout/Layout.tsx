@@ -5,6 +5,7 @@ import Sidebar from './Sidebar';
 import PlayerBar from '../player/PlayerBar';
 import MobileNav from './MobileNav';
 import ToastContainer from '@shared/components/Toast';
+import OfflineBanner from '@shared/components/OfflineBanner';
 import { useResponsiveLayout } from '@shared/hooks/useResponsiveLayout';
 import { useSettingsStore } from '@shared/store/settingsStore';
 import { useUiStore } from '@shared/store/uiStore';
@@ -89,6 +90,9 @@ export default function Layout({ children }: LayoutProps) {
 
         {/* Main Content */}
         <main ref={mainRef} className="flex-1 overflow-y-auto overflow-x-hidden page-enter">
+          {/* E1: 顶部离线横幅 —— 断网出现、恢复自动消失 */}
+          <OfflineBanner />
+
           {/* 移动端顶部标题栏（无sidebar时显示） */}
           {mobileHeaderVisible && (
             <div

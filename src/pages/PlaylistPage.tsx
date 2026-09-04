@@ -13,6 +13,7 @@ import type { ImportReport } from '../modules/music/playlistImporter';
 import { toUserMessage } from '../shared/utils/errorCopy';
 import { useVirtualList } from '../shared/hooks/useVirtualList';
 import SmartCover from '../components/ui/SmartCover';
+import { useGuardedAction } from '../shared/hooks/useGuardedAction';
 
 export default function PlaylistPage() {
   const { playlists, addPlaylist, removePlaylist, renamePlaylist, isImporting, lastImportReport, importPlaylistFromUrl, clearLastImportReport, currentPlaylistSongs, loadPlaylistSongs, refreshPlaylistCovers } = usePlaylistStore();
@@ -72,6 +73,9 @@ export default function PlaylistPage() {
       toast.error('导入失败', msg);
     }
   };
+
+  // E4: 导入守卫（isImporting 翻转前的双击窗口 + 300ms 防抖）
+  const { run: guardedImport } = useGuardedAction(handleImport);
 
   const handlePlayPlaylist = async (playlistId: string) => {
     try {
@@ -182,11 +186,11 @@ export default function PlaylistPage() {
                   disabled={isImporting}
                   autoFocus
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !isImporting) handleImport();
+                    if (e.key === 'Enter' && !isImporting) guardedImport();
                   }}
                 />
                 <button
-                  onClick={handleImport}
+                  onClick={guardedImport}
                   disabled={isImporting || !importUrl.trim()}
                   className="yinliu-btn flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >

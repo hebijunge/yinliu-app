@@ -16,6 +16,8 @@ import MvPlayerPage from './MvPlayerPage';
 import SongRow from '../components/song/SongRow';
 import QualitySizeSheet from '../components/song/QualitySizeSheet';
 import EmptyState from '../components/common/EmptyState';
+import { useNetworkStatus } from '../shared/hooks/useNetworkStatus';
+import OfflineEmptyState from '../shared/components/OfflineEmptyState';
 import { SkeletonSearchResult } from '../components/ui/Skeleton';
 import { toUserMessage } from '../shared/utils/errorCopy';
 import { useInfiniteList } from '../shared/hooks/useInfiniteList';
@@ -42,6 +44,8 @@ export default function SearchPage() {
   const { records: historyRecords } = usePlayHistoryStore();
 
   const [inputValue, setInputValue] = useState(keyword);
+  // E1: 网络状态（断网展示统一离线空态）
+  const online = useNetworkStatus();
   const [showFilters, setShowFilters] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
@@ -721,8 +725,16 @@ export default function SearchPage() {
         />
       )}
 
+      {/* E1: 断网空态 —— 有结果仍展示结果（本地已到数据），无结果给统一离线出口 */}
+      {!isSearching && !searchError && results.length === 0 && keyword && !online && (
+        <OfflineEmptyState
+          description="当前无网络连接，无法搜索。恢复网络后点击重新搜索"
+          onRetry={() => handleSearch(keyword)}
+        />
+      )}
+
       {/* Empty state：图标 + 文案 + 重试按钮 */}
-      {!isSearching && !searchError && results.length === 0 && keyword && (
+      {!isSearching && !searchError && results.length === 0 && keyword && online && (
         <EmptyState
           icon={SearchX}
           title="未找到相关结果"

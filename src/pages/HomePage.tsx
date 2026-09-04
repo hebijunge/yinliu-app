@@ -16,6 +16,8 @@ import { toast } from '../shared/components/Toast';
 import EmptyState from '../components/common/EmptyState';
 import { SkeletonSearchResult } from '../components/ui/Skeleton';
 import { toUserMessage } from '../shared/utils/errorCopy';
+import { useNetworkStatus } from '../shared/hooks/useNetworkStatus';
+import OfflineEmptyState from '../shared/components/OfflineEmptyState';
 
 /** 下拉刷新触发阈值（px） */
 const PULL_THRESHOLD = 72;
@@ -47,6 +49,8 @@ export default function HomePage() {
   const [songs, setSongs] = useState<AggregatedSearchResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [cacheInfo, setCacheInfo] = useState<string>('');
+  // E1: 网络状态（断网展示离线横幅/空态/缓存标注）
+  const online = useNetworkStatus();
   const [qualitySheetSong, setQualitySheetSong] = useState<AggregatedSearchResult | null>(null);
 
   // —— 下拉刷新状态 ——
@@ -271,20 +275,32 @@ export default function HomePage() {
       {loading ? (
         <SkeletonSearchResult count={8} />
       ) : songs.length === 0 ? (
-        <EmptyState
-          title="热歌榜暂无数据"
-          description="可能是网络异常或各音源暂不可用，点击重试或下拉刷新"
-          onRetry={() => void triggerRefresh()}
-        />
-      ) : (
-        songs.slice(0, 100).map((result) => (
-          <SongRow
-            key={result.id}
-            song={result}
-            onPlay={() => handlePlay(result)}
-            onMore={() => setQualitySheetSong(result)}
+        !online ? (
+          // E1: 断网且无缓存 —— 统一离线空态，附重新加载出口
+          <OfflineEmptyState
+            description="当前无网络连接，且暂无离线缓存。恢复网络后点击重新加载获取热歌榜"
+            onRetry={() => void triggerRefresh()}
           />
-        ))
+        ) : (
+          <EmptyState
+            title="热歌榜暂无数据"
+            description="可能是网络异常或各音源暂不可用，点击重试或下拉刷新"
+            onRetry={() => void triggerRefresh()}
+          />
+        )
+      ) : (
+        <>
+          {/* E1: 断网但有缓存 —— 先展示缓存并标注「离线内容」 */}
+          {!online && <OfflineEmptyState hasCachedContent />}
+          {songs.slice(0, 100).map((result) => (
+            <SongRow
+              key={result.id}
+              song={result}
+              onPlay={() => handlePlay(result)}
+              onMore={() => setQualitySheetSong(result)}
+            />
+          ))}
+        </>
       )}
 
       {qualitySheetSong && (

@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, memo } from 'react';
+import { WifiOff } from 'lucide-react';
 import { useDownloadStore } from '../shared/store/downloadStore';
 import { downloadEngine } from '../core/download';
 import { PLATFORM_DISPLAY_NAMES } from '../core/platformPriority';
@@ -7,6 +8,9 @@ import { usePlayerStore } from '../shared/store/playerStore';
 import ConfirmDialog from '../components/common/ConfirmDialog';
 import type { PlayerTrack } from '../core/player';
 import type { DownloadTask } from '../core/types';
+import { useNetworkStatus } from '../shared/hooks/useNetworkStatus';
+import { useGuardedAction } from '../shared/hooks/useGuardedAction';
+import OfflineEmptyState from '../shared/components/OfflineEmptyState';
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -269,9 +273,27 @@ function CompletedSourceSection({
 
 /* ========== 主页面 ========== */
 export default function DownloadPage() {
-  const { tasks, queueTasks, completedTasks, completedBySource, clearCompleted } = useDownloadStore();
+  const { tasks, queueTasks, completedTasks, completedBySource, clearCompleted, offlinePaused, setOfflinePaused } = useDownloadStore();
   const [activeTab, setActiveTab] = useState<'queue' | 'completed'>('queue');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  // E1: 网络状态（断网提示 + 恢复后一键继续）
+  const online = useNetworkStatus();
+
+  // v23 修复走查 #3：清空已下载前二次确认
+  const handleClearCompleted = async () => {
+    await downloadEngine.clearCompleted();
+    clearCompleted();
+    setShowClearConfirm(false);
+  };
+
+  // E4: 清空已下载守卫（进行中禁用 + 300ms 防抖）
+  const { run: guardedClearCompleted, busy: clearingBusy } = useGuardedAction(handleClearCompleted);
+
+  // E1: 恢复网络后一键继续全部因断网暂停的任务
+  const handleResumeAfterOffline = async () => {
+    await downloadEngine.resumeAllFromOffline();
+    setOfflinePaused(false);
+  };
 
   useEffect(() => {
     // 同步引擎中的任务到 store
@@ -292,13 +314,6 @@ export default function DownloadPage() {
     return groups;
   }, [queueTasks]);
 
-  // v23 修复走查 #3：清空已下载前二次确认
-  const handleClearCompleted = async () => {
-    await downloadEngine.clearCompleted();
-    clearCompleted();
-    setShowClearConfirm(false);
-  };
-
   const sourceIds = Object.keys(completedBySource).sort();
 
   return (
@@ -310,6 +325,37 @@ export default function DownloadPage() {
           {completedTasks.length} / {tasks.length} 已完成
         </span>
       </div>
+
+      {/* E1: 断网自动暂停提示 + 恢复后一键继续 */}
+      {!online && offlinePaused && (
+        <div className="flex items-center gap-3 mb-4 px-4 py-3 rounded-xl bg-yellow-500/10 border border-yellow-500/30">
+          <WifiOff size={18} className="text-yellow-600 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-yellow-600">网络已断开，下载已自动暂停</p>
+            <p className="text-xs text-[var(--text-secondary)] mt-0.5">恢复网络后可一键继续全部任务</p>
+          </div>
+        </div>
+      )}
+      {online && offlinePaused && (
+        <div className="flex items-center gap-3 mb-4 px-4 py-3 rounded-xl bg-blue-500/10 border border-blue-500/30">
+          <WifiOff size={18} className="text-blue-500 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-[var(--text-primary)]">网络已恢复</p>
+            <p className="text-xs text-[var(--text-secondary)] mt-0.5">有因断网暂停的下载任务待继续</p>
+          </div>
+          <button
+            onClick={() => void handleResumeAfterOffline()}
+            className="text-xs px-3 py-1.5 rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors shrink-0"
+          >
+            一键继续
+          </button>
+        </div>
+      )}
+      {!online && !offlinePaused && (
+        <OfflineEmptyState
+          description="当前无网络连接，新增下载任务需要网络支持；本地已下载文件不受影响"
+        />
+      )}
 
       {/* Tab 切换 */}
       <div className="flex items-center gap-1 mb-6 p-1 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border)]">
@@ -399,8 +445,8 @@ export default function DownloadPage() {
             open={showClearConfirm}
             title="清空已下载"
             message={`确定要清空全部 ${completedTasks.length} 首已下载歌曲吗？所有本地文件将被移除，此操作不可恢复。`}
-            confirmText="全部删除"
-            onConfirm={handleClearCompleted}
+            confirmText={clearingBusy ? '删除中…' : '全部删除'}
+            onConfirm={guardedClearCompleted}
             onCancel={() => setShowClearConfirm(false)}
           />
         </>
