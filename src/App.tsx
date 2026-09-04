@@ -1,5 +1,5 @@
-import { Routes, Route } from 'react-router-dom';
-import { useEffect, useState, lazy, Suspense } from 'react';
+import { Routes, Route, useLocation } from 'react-router-dom';
+import { useEffect, useState, useRef, lazy, Suspense } from 'react';
 import { Capacitor, type PluginListenerHandle } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 import Layout from './components/layout/Layout';
@@ -38,6 +38,14 @@ import { configureAudioFocus, updateAudioFocusOptions } from './core/player/audi
 import { floatingLyricsBridge } from './core/player/floatingLyricsBridge';
 import { initDatabase } from './shared/database';
 import { toast } from './shared/components/Toast';
+import { scheduleIdle } from './shared/utils/idleSchedule';
+import PageSkeleton from './components/ui/PageSkeleton';
+
+/** P1：启动遮罩最低品牌展示时长（ms），防止数据库就绪过快导致闪屏 */
+const BOOT_MIN_BRAND_MS = 600;
+
+/** P11：宫格型路由集合 —— 这些页面的 Suspense 骨架按宫格渲染，与目标页结构一致 */
+const GRID_ROUTES = new Set(['/library', '/zone', '/mine', '/charts', '/songlists', '/favorite-playlists']);
 
 /**
  * v23 修复走查 #7：启动遮罩。
@@ -46,18 +54,32 @@ import { toast } from './shared/components/Toast';
  */
 function BootOverlay({ visible }: { visible: boolean }) {
   const [render, setRender] = useState(visible);
+  /** P1：进入淡出阶段标记（保留最低品牌展示时长后置 true） */
+  const [fade, setFade] = useState(false);
+  /** P1：遮罩首次出现时刻，用于计算剩余品牌展示时长 */
+  const shownAtRef = useRef(0);
   useEffect(() => {
-    if (!visible) {
-      const tm = window.setTimeout(() => setRender(false), 500);
-      return () => window.clearTimeout(tm);
+    if (visible) {
+      if (!shownAtRef.current) shownAtRef.current = Date.now();
+      setRender(true);
+      setFade(false);
+      return;
     }
-    setRender(true);
+    // 就绪即退：数据库就绪立即开始收尾，但保证最低 600ms 品牌展示防闪屏
+    const elapsed = shownAtRef.current ? Date.now() - shownAtRef.current : BOOT_MIN_BRAND_MS;
+    const wait = Math.max(0, BOOT_MIN_BRAND_MS - elapsed);
+    const t1 = window.setTimeout(() => setFade(true), wait);
+    const t2 = window.setTimeout(() => setRender(false), wait + 500);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
   }, [visible]);
   if (!render) return null;
   return (
     <div
       className={`fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[var(--bg-primary)] transition-opacity duration-500 ${
-        visible ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        fade ? 'opacity-0 pointer-events-none' : 'opacity-100'
       }`}
     >
       <svg className="w-14 h-14 mb-8 text-[var(--accent)]" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -74,6 +96,7 @@ function BootOverlay({ visible }: { visible: boolean }) {
 
 function App() {
   const [booting, setBooting] = useState(true);
+  const location = useLocation();
 
   // 启动时同步车机模式到 body class
   useEffect(() => {
@@ -121,28 +144,47 @@ function App() {
   }, []);
 
   useEffect(() => {
-    // 初始化数据库（支持从 IndexedDB 恢复）；无论成败，完成后立即淡出启动遮罩
-    initDatabase().then(async () => {
+    // P1：数据库就绪（成败均算）立即退启动遮罩；不再等待任何数据恢复
+    initDatabase().then(() => {
       console.log('[App] Database initialized');
-
-      // 恢复下载任务列表
-      await downloadEngine.restoreTasks();
-      const tasks = downloadEngine.getTasks();
-      useDownloadStore.getState().setTasks(tasks);
-
-      // 从数据库加载歌单
-      await usePlaylistStore.getState().loadPlaylists();
-      await usePlaylistStore.getState().loadFavorites();
-
-      // 加载播放历史
-      await usePlayHistoryStore.getState().loadRecords();
-
-      // 加载收藏歌单
-      await useFavoritePlaylistStore.getState().loadItems();
     }).catch((err) => {
       console.error('[App] Database initialization failed, falling back to memory mode:', err);
     }).finally(() => {
       setBooting(false);
+    });
+
+    // P1：非关键数据恢复（下载任务/歌单/播放历史/收藏歌单）延后到首帧之后的空闲期，
+    // 不再串行阻塞在数据库就绪回调里拖慢首页可交互
+    scheduleIdle(() => {
+      void (async () => {
+        try {
+          // 恢复下载任务列表
+          await downloadEngine.restoreTasks();
+          const tasks = downloadEngine.getTasks();
+          useDownloadStore.getState().setTasks(tasks);
+
+          // 从数据库加载歌单
+          await usePlaylistStore.getState().loadPlaylists();
+          await usePlaylistStore.getState().loadFavorites();
+
+          // 加载播放历史
+          await usePlayHistoryStore.getState().loadRecords();
+
+          // 加载收藏歌单
+          await useFavoritePlaylistStore.getState().loadItems();
+        } catch (err) {
+          console.error('[App] Non-critical data restore failed:', err);
+        }
+      })();
+    });
+
+    // P11：四个高频 Tab（首页/曲库/专区/我的）chunk 在首帧后空闲预取，
+    // 消除首次切换 Tab 时「旧页卸载 + chunk 加载」造成的白闪源
+    scheduleIdle(() => {
+      void import('./pages/HomePage');
+      void import('./pages/LibraryPage');
+      void import('./pages/ZonePage');
+      void import('./pages/MinePage');
     });
 
     // 初始化媒体会话（通知栏 / 锁屏 / 硬件按键控制）
@@ -244,7 +286,7 @@ function App() {
   return (
     <Layout>
       <BootOverlay visible={booting} />
-      <Suspense fallback={<div className="flex-1 flex items-center justify-center min-h-[50vh]"><div className="w-8 h-8 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" /></div>}>
+      <Suspense fallback={<PageSkeleton variant={GRID_ROUTES.has(location.pathname) ? 'grid' : 'list'} />}>
         <Routes>
           <Route path="/" element={<HomePage />} />
           <Route path="/library" element={<LibraryPage />} />

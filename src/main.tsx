@@ -7,6 +7,7 @@ import App from './App';
 import './index.css';
 import { initializeProviders } from './providers/music/registry';
 import { prewarmHomeCache } from './core/homeCache';
+import { scheduleIdle } from './shared/utils/idleSchedule';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -83,8 +84,8 @@ async function bootstrap() {
     </React.StrictMode>
   );
 
-  // 启动预热：后台检查首页缓存是否过期，过期提前拉取（fire-and-forget，失败静默）
-  prewarmHomeCache();
+  // 启动预热：推迟到首帧之后的空闲期执行（fire-and-forget，失败静默）——P1 非关键路径不与首屏争抢主线程
+  scheduleIdle(() => prewarmHomeCache());
 }
 
 bootstrap();
