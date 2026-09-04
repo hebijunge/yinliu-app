@@ -5,7 +5,6 @@
 
 export { detectMSECapability, isMSEAvailable, getPreferredMimeType } from './mseDetector';
 export { streamCacheEngine, type CacheEntry } from './cache';
-export { streamFetcher, type ChunkInfo, type FetchProgress, type FetcherState } from './fetcher';
 export {
   streamingAudioPlayer,
   type StreamingState,

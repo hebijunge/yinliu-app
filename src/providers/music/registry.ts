@@ -60,5 +60,4 @@ export function initializeProviders(): void {
 
   // 未来扩展：
   // P1: 千千音乐(QianqianSource)
-  // P0 DJ源：DJ串烧集、火龙DJ、Y2002、55音乐、82DJ等
 }

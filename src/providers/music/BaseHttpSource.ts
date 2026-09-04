@@ -489,57 +489,6 @@ export abstract class BaseHttpSource implements MusicSource {
     return true;
   }
 
-  /**
-   * 解析播放URL响应，子类可覆写以处理平台特定的响应格式
-   */
-  protected async parsePlayUrlResponse(
-    response: Response,
-    candidate: EndpointCandidate,
-    targetQuality: Quality
-  ): Promise<PlayUrlResult | null> {
-    const contentType = response.headers.get('content-type') || '';
-    const contentLength = response.headers.get('content-length');
-
-    // 如果是直接返回音频流（302重定向后的响应）
-    if (contentType.includes('audio/') || contentType.includes('application/octet-stream')) {
-      return {
-        url: candidate.url,
-        quality: targetQuality,
-        bitrate: this.estimateBitrate(contentLength, targetQuality),
-        format: this.detectFormat(contentType, candidate.url),
-        headers: candidate.headers,
-      };
-    }
-
-    // 默认尝试JSON解析
-    try {
-      const data = await response.json();
-      const url = data?.url || data?.data?.url || data?.data;
-      if (url && typeof url === 'string') {
-        return {
-          url,
-          quality: targetQuality,
-          bitrate: this.estimateBitrate(contentLength, targetQuality),
-          format: this.detectFormat(contentType, candidate.url),
-          headers: candidate.headers,
-        };
-      }
-    } catch {
-      // 非JSON响应，尝试文本解析
-      const text = await response.text();
-      if (text.startsWith('http')) {
-        return {
-          url: text.trim(),
-          quality: targetQuality,
-          bitrate: this.estimateBitrate(contentLength, targetQuality),
-          format: this.detectFormat(contentType, candidate.url),
-          headers: candidate.headers,
-        };
-      }
-    }
-
-    return null;
-  }
 
   protected validateQuality(result: PlayUrlResult, target: Quality): boolean {
     if (!result.url) return false;

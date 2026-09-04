@@ -3,7 +3,6 @@ import { Quality, YinliuError, ErrorCode } from '@core/types';
 import type { SearchParams, SearchResult, SearchType, SongDetail, HealthStatus, PlayUrlResult, TierSizes, PlaylistSummary, QualityOption, MvQuality, MvUrlResult } from '@core/types';
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
-import { sizeCache } from './sizeCache';
 
 /**
  * 网易云音乐音源Provider
@@ -327,50 +326,6 @@ export class NeteaseSource extends BaseHttpSource {
    * v20.1-fix: 覆写期望大小获取。
    * 调用网易云歌曲详情接口，从 hMusic/mMusic/lMusic/sqMusic/hrMusic 中提取各音质文件大小。
    */
-  protected async getExpectedSize(songId: string, quality: Quality): Promise<number | null> {
-    // 1. 检查共享缓存
-    const cached = sizeCache.get(this.id, songId, quality);
-    if (cached) return cached.size;
-
-    // 2. 调用详情接口获取各音质大小
-    const id = songId.replace(/^ne_/, '');
-    try {
-      const url = `${this.HOST}/api/song/detail?ids=[${id}]`;
-      const data = await this.httpGetJson(url);
-      const s = data?.songs?.[0];
-      if (!s) return null;
-
-      const sizeMap: Partial<Record<Quality, number>> = {};
-      if (s.hrMusic?.size && s.hrMusic.size > 0) {
-        sizeMap[Quality.HIRES] = parseInt(s.hrMusic.size, 10);
-        sizeMap[Quality.HIFI] = parseInt(s.hrMusic.size, 10); // 网易云 HIFI 与 HIRES 共用同一文件
-      }
-      if (s.sqMusic?.size && s.sqMusic.size > 0) {
-        sizeMap[Quality.LOSSLESS] = parseInt(s.sqMusic.size, 10);
-      }
-      if (s.hMusic?.size && s.hMusic.size > 0) {
-        sizeMap[Quality.HIGH] = parseInt(s.hMusic.size, 10);
-        sizeMap[Quality.HIGHER] = parseInt(s.hMusic.size, 10);
-      }
-      if (s.mMusic?.size && s.mMusic.size > 0) {
-        sizeMap[Quality.STANDARD] = parseInt(s.mMusic.size, 10);
-      }
-      if (s.lMusic?.size && s.lMusic.size > 0) {
-        sizeMap[Quality.LOW] = parseInt(s.lMusic.size, 10);
-      }
-
-      // 缓存所有已知大小
-      for (const [q, sz] of Object.entries(sizeMap)) {
-        if (sz && sz > 0) {
-          sizeCache.set(this.id, songId, q, { size: sz });
-        }
-      }
-
-      return sizeMap[quality] ?? null;
-    } catch {
-      return null;
-    }
-  }
 
   // ===================== 取链（核心）=====================
 
@@ -532,16 +487,6 @@ export class NeteaseSource extends BaseHttpSource {
 
   private brToBitrate(br: number): number {
     return Math.round(br / 1000);
-  }
-
-  private levelToBitrate(level: string): number {
-    switch (level) {
-      case 'standard': return 128;
-      case 'exhigh': return 320;
-      case 'lossless': return 1000;
-      case 'hires': return 2000;
-      default: return 128;
-    }
   }
 
   // ===================== 榜单（v18） =====================

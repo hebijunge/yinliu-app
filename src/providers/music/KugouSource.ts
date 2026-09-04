@@ -4,7 +4,6 @@ import type { SearchParams, SearchResult, SongDetail, HealthStatus, PlayUrlResul
 import type { ResolvedCandidate } from './BaseHttpSource';
 import { platformFetch } from '@shared/utils/platformFetch';
 import { debugLogger } from '@shared/utils/debugLogger';
-import { sizeCache } from './sizeCache';
 
 /**
  * 酷狗音乐音源Provider
@@ -196,54 +195,6 @@ export class KugouSource extends BaseHttpSource {
     throw new Error(`酷狗歌曲详情获取失败：hash=${hash} 无返回数据`);
   }
 
-  /**
-   * v20.1-fix: 覆写期望大小获取。
-   * 优先从 sizeCache 读取；其次调用 getSongInfo.php 获取精确大小；
-   * 最后以 hashCache 中的时长按码率估算。
-   */
-  protected async getExpectedSize(songId: string, quality: Quality): Promise<number | null> {
-    const cached = sizeCache.get(this.id, songId, quality);
-    if (cached) return cached.size;
-
-    const hash = this.getHashForQuality(songId, quality);
-    if (!hash) return null;
-
-    try {
-      const url = `${this.GET_SONG_INFO}?cmd=playInfo&hash=${hash}`;
-      const data = await this.httpGetJson(url, { Referer: this.M_REF });
-      if (data) {
-        const fileSize = parseInt(data.fileSize || data.filesize || data.size || '0', 10);
-        if (fileSize > 0) {
-          sizeCache.set(this.id, songId, quality, { size: fileSize });
-          return fileSize;
-        }
-        const duration = parseInt(data.timeLength || '0', 10);
-        const bitrate = parseInt(data.bitRate || data.bitrate || '0', 10);
-        if (duration > 0 && bitrate > 0) {
-          const estimated = Math.round((duration * bitrate * 1000) / 8);
-          if (estimated > 0) {
-            sizeCache.set(this.id, songId, quality, { size: estimated });
-            return estimated;
-          }
-        }
-      }
-    } catch {
-      // ignore
-    }
-
-    // Fallback: hashCache duration + expected bitrate
-    const cachedHash = this.hashCache.get(songId);
-    if (cachedHash?.duration) {
-      const expectedBitrate = this.qualityToExpectedBitrate(quality);
-      const estimated = Math.round((cachedHash.duration * expectedBitrate * 1000) / 8);
-      if (estimated > 0) {
-        sizeCache.set(this.id, songId, quality, { size: estimated });
-        return estimated;
-      }
-    }
-
-    return null;
-  }
 
   /** 按音质选取对应 hash */
   private getHashForQuality(songId: string, quality: Quality): string | null {

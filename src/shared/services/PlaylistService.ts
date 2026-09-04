@@ -1,4 +1,4 @@
-import { getDb, getSqliteDb, flushDatabase } from '@shared/database';
+import { getSqliteDb, flushDatabase } from '@shared/database';
 import { normalizeTitle, normalizeArtist } from '@core/search';
 
 export interface PlaylistSong {

@@ -304,4 +304,3 @@ export class StreamFetcher {
   }
 }
 
-export const streamFetcher = new StreamFetcher();

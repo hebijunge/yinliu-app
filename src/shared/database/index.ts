@@ -1,10 +1,5 @@
-import { drizzle } from 'drizzle-orm/sql-js';
 import initSqlJs from 'sql.js';
-import * as schema from './schema';
 
-const makeDrizzleDb = (sqlite: any) => drizzle(sqlite, { schema });
-type AppDb = ReturnType<typeof makeDrizzleDb>;
-let db: AppDb | null = null;
 let sqliteDb: any | null = null;
 let sqlJsModule: Awaited<ReturnType<typeof initSqlJs>> | null = null;
 
@@ -75,10 +70,9 @@ export async function flushDatabase(): Promise<void> {
 // === 初始化数据库（支持从 IndexedDB 恢复）===
 // P1 冷启动：并发去重 —— bootstrap（main.tsx）与 App 挂载可能同时调用，
 // 复用同一 init promise，避免 sql.js WASM 重复加载与建库竞态。
-let dbInitPromise: Promise<AppDb> | null = null;
+let dbInitPromise: Promise<void> | null = null;
 
-export function initDatabase(): Promise<AppDb> {
-  if (db) return Promise.resolve(db);
+export function initDatabase(): Promise<void> {
   const existing = dbInitPromise;
   if (existing !== null) return existing;
   const p = initDatabaseOnce().catch((err) => {
@@ -90,8 +84,8 @@ export function initDatabase(): Promise<AppDb> {
   return p;
 }
 
-async function initDatabaseOnce(): Promise<AppDb> {
-  if (db) return db;
+async function initDatabaseOnce(): Promise<void> {
+  if (sqliteDb) return;
 
   const SQL = await initSqlJs({
     locateFile: (file) => `/${file}`,
@@ -112,8 +106,6 @@ async function initDatabaseOnce(): Promise<AppDb> {
     sqliteDb = new SQL.Database();
     console.log('[DB Persist] No saved DB found, creating new database');
   }
-
-  db = drizzle(sqliteDb, { schema });
 
   // === 建表（IF NOT EXISTS，兼容已有数据）===
   sqliteDb.run(`
@@ -308,17 +300,9 @@ async function initDatabaseOnce(): Promise<AppDb> {
   // 首次初始化后立刻 flush
   await flushDatabase();
 
-  return db;
-}
-
-export function getDb() {
-  if (!db) throw new Error('Database not initialized');
-  return db;
 }
 
 export function getSqliteDb() {
   if (!sqliteDb) throw new Error('Database not initialized');
   return sqliteDb;
 }
-
-export { schema };
