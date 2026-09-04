@@ -1,0 +1,272 @@
+import { Routes, Route } from 'react-router-dom';
+import { useEffect, useState, lazy, Suspense } from 'react';
+import { Capacitor, type PluginListenerHandle } from '@capacitor/core';
+import { App as CapApp } from '@capacitor/app';
+import Layout from './components/layout/Layout';
+import SearchPage from './pages/SearchPage';
+
+// v16: 非核心页面懒加载，减少首屏 bundle
+const PlaylistPage = lazy(() => import('./pages/PlaylistPage'));
+const HomePage = lazy(() => import('./pages/HomePage'));
+const ZonePage = lazy(() => import('./pages/ZonePage'));
+const LibraryPage = lazy(() => import('./pages/LibraryPage'));
+const MinePage = lazy(() => import('./pages/MinePage'));
+const LocalMusicPage = lazy(() => import('./pages/LocalMusicPage'));
+const DownloadPage = lazy(() => import('./pages/DownloadPage'));
+const ReadingPage = lazy(() => import('./pages/ReadingPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const EqPage = lazy(() => import('./pages/EqPage'));
+const HistoryPage = lazy(() => import('./pages/HistoryPage'));
+const DebugLogPage = lazy(() => import('./pages/DebugLogPage'));
+// v21.0 整合：榜单聚合 / 歌单聚合（固定分类口径） / 独立视频播放页
+const ChartPage = lazy(() => import('./pages/ChartPage'));
+const PlaylistAggregationPage = lazy(() => import('./pages/PlaylistAggregationPage'));
+const VideoPlayerPage = lazy(() => import('./pages/VideoPlayerPage'));
+// 歌单收藏页
+const FavoritePlaylistsPage = lazy(() => import('./pages/FavoritePlaylistsPage'));
+import { playerEngine } from './core/player';
+import { downloadEngine } from './core/download';
+import { useUiStore } from './shared/store/uiStore';
+import { notifyDownloadDone, notifyDownloadFailed } from './shared/utils/notify';
+import { usePlayerStore } from './shared/store/playerStore';
+import { useDownloadStore } from './shared/store/downloadStore';
+import { usePlaylistStore } from './shared/store/playlistStore';
+import { usePlayHistoryStore } from './shared/store/playHistoryStore';
+import { useFavoritePlaylistStore } from './shared/store/favoritePlaylistStore';
+import { useSettingsStore } from './shared/store/settingsStore';
+import { configureAudioFocus, updateAudioFocusOptions } from './core/player/audioFocus';
+import { floatingLyricsBridge } from './core/player/floatingLyricsBridge';
+import { initDatabase } from './shared/database';
+import { toast } from './shared/components/Toast';
+
+/**
+ * v23 修复走查 #7：启动遮罩。
+ * 旧实现（main.tsx LoadingScreen）固定 1400ms 才开始淡出 —— 冷启动人为等待约 2 秒。
+ * 现在遮罩跟随 App 内部数据库初始化：initDatabase 完成（成功或失败）后立即淡出 500ms。
+ */
+function BootOverlay({ visible }: { visible: boolean }) {
+  const [render, setRender] = useState(visible);
+  useEffect(() => {
+    if (!visible) {
+      const tm = window.setTimeout(() => setRender(false), 500);
+      return () => window.clearTimeout(tm);
+    }
+    setRender(true);
+  }, [visible]);
+  if (!render) return null;
+  return (
+    <div
+      className={`fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-[var(--bg-primary)] transition-opacity duration-500 ${
+        visible ? 'opacity-100' : 'opacity-0 pointer-events-none'
+      }`}
+    >
+      <svg className="w-14 h-14 mb-8 text-[var(--accent)]" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="6" y="6" width="52" height="52" rx="18" stroke="currentColor" strokeWidth="2" opacity="0.2" />
+        <path d="M24 46V22l20-4v20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+        <circle cx="20" cy="46" r="5" stroke="currentColor" strokeWidth="2" fill="none" />
+        <circle cx="40" cy="42" r="5" stroke="currentColor" strokeWidth="2" fill="none" />
+      </svg>
+      <h1 className="text-3xl font-light tracking-[0.2em] mb-3 text-[var(--text-primary)]">音流</h1>
+      <p className="text-sm text-[var(--text-tertiary)] tracking-widest font-light">多音源聚合音乐播放器</p>
+    </div>
+  );
+}
+
+function App() {
+  const [booting, setBooting] = useState(true);
+
+  // 启动时同步车机模式到 body class
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (useSettingsStore.getState().carMode) {
+      document.body.classList.add('car-mode');
+    } else {
+      document.body.classList.remove('car-mode');
+    }
+  }, []);
+
+  // Android 物理返回键：优先收起全屏播放页，其次路由回退，主界面无历史时保持系统默认（退出应用）
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    let handle: PluginListenerHandle | null = null;
+    let disposed = false;
+    CapApp.addListener('backButton', (event) => {
+      // 1) 侧边抽屉打开时：先关闭抽屉（v23 修复走查 #17）
+      if (useUiStore.getState().sidebarOpen) {
+        useUiStore.getState().setSidebarOpen(false);
+        return;
+      }
+      // 2) 全屏播放页打开时：收起播放页回到主界面（收起为迷你条），不退出应用
+      if (usePlayerStore.getState().fullscreenOpen) {
+        usePlayerStore.getState().setFullscreenOpen(false);
+        return;
+      }
+      // 3) 处于子页面且有路由历史：正常回退上一页
+      if (event.canGoBack) {
+        window.history.back();
+        return;
+      }
+      // 4) 已在主界面且无历史：遵循系统默认行为（退出应用）
+      void CapApp.exitApp();
+    })
+      .then((h) => {
+        if (disposed) void h.remove();
+        else handle = h;
+      })
+      .catch((err) => console.error('[App] backButton listener failed:', err));
+    return () => {
+      disposed = true;
+      void handle?.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    // 初始化数据库（支持从 IndexedDB 恢复）；无论成败，完成后立即淡出启动遮罩
+    initDatabase().then(async () => {
+      console.log('[App] Database initialized');
+
+      // 恢复下载任务列表
+      await downloadEngine.restoreTasks();
+      const tasks = downloadEngine.getTasks();
+      useDownloadStore.getState().setTasks(tasks);
+
+      // 从数据库加载歌单
+      await usePlaylistStore.getState().loadPlaylists();
+      await usePlaylistStore.getState().loadFavorites();
+
+      // 加载播放历史
+      await usePlayHistoryStore.getState().loadRecords();
+
+      // 加载收藏歌单
+      await useFavoritePlaylistStore.getState().loadItems();
+    }).catch((err) => {
+      console.error('[App] Database initialization failed, falling back to memory mode:', err);
+    }).finally(() => {
+      setBooting(false);
+    });
+
+    // 初始化媒体会话（通知栏 / 锁屏 / 硬件按键控制）
+    void playerEngine.initMediaSessionBridge();
+
+    // 初始化音频焦点管理（让设置项即时生效）
+    const s = useSettingsStore.getState();
+    configureAudioFocus(playerEngine, { autoResumeOnFocusGain: s.autoResumeOnAudioFocus });
+    const unsubSettings = useSettingsStore.subscribe((state) => {
+      updateAudioFocusOptions({ autoResumeOnFocusGain: state.autoResumeOnAudioFocus });
+    });
+
+    // 初始化桌面悬浮歌词桥接（Android 真机生效，Web 端为 no-op）
+    floatingLyricsBridge.start();
+
+    // 绑定播放器事件到 Store
+    const unsub1 = playerEngine.on('stateChange', ({ state, track }) => {
+      usePlayerStore.getState().setState(state);
+      if (track) {
+        usePlayerStore.getState().setTrack(track);
+      }
+    });
+    const unsub2 = playerEngine.on('progress', ({ currentTime, duration }) => {
+      usePlayerStore.getState().setProgress(currentTime, duration);
+    });
+    const unsub3 = playerEngine.on('ended', () => {
+      // 自动播放下一首（按当前播放模式）
+      void playerEngine.playNext();
+    });
+    const unsub3b = playerEngine.on('trackLoaded', ({ track, result, actualSourceId }) => {
+      usePlayerStore.getState().setTrack(track || null);
+      usePlayerStore.getState().setActualSourceId(actualSourceId || null);
+      usePlayerStore.getState().setActualQuality(result.quality);
+      usePlayerStore.getState().setPreview(result.isPreview ?? false);
+    });
+    const unsub3c = playerEngine.on('mediaAction', ({ action }) => {
+      console.log('[App] media action from system control:', action);
+    });
+    // v23: 播放失败统一 toast 提示（含播放中途失败）—— 此前 error 事件无人订阅，失败零提示
+    const unsub3d = playerEngine.on('error', ({ message }) => {
+      toast.error('播放失败', message || '播放中途出现错误，可点击重试');
+    });
+    // v23: 缓冲状态 → store（UI 显示缓冲指示器）
+    const unsub3e = playerEngine.on('bufferingChange', ({ buffering }) => {
+      usePlayerStore.getState().setBuffering(buffering);
+    });
+
+    // 绑定下载事件到 Store
+    const unsub4 = downloadEngine.on('stateChange', ({ task }) => {
+      // engine 的 task 不带 speed（speed 只在 progress 事件里），如果直接 upsertTask(task)
+      // 会把 store 里前一次 progress 写入的 speed 抹成 undefined。保留 speed 让 UI 还能显示。
+      const prev = useDownloadStore.getState().tasks.find((t) => t.id === task.id);
+      useDownloadStore.getState().upsertTask({
+        ...task,
+        ...(prev?.speed !== undefined ? { speed: prev.speed } : {}),
+      });
+    });
+    const unsub5 = downloadEngine.on('progress', ({ taskId, progress, downloadedSize, totalSize, speed }) => {
+      useDownloadStore.getState().updateTaskStatus(taskId, 'downloading', {
+        progress,
+        totalSize,
+        speed,
+        downloadedSize,
+      });
+    });
+    const unsub6 = downloadEngine.on('completed', ({ taskId }) => {
+      // 显式把 progress 置 1，兜底某些时序下 stateChange 的 progress 还没刷到 store
+      useDownloadStore.getState().updateTaskStatus(taskId, 'completed', { progress: 1 });
+      // v23 修复走查 #5：下载完成发系统通知（Web/Android 自适应，见 shared/utils/notify）
+      const doneTask = useDownloadStore.getState().tasks.find((t) => t.id === taskId);
+      void notifyDownloadDone(doneTask?.title || '新歌曲', doneTask?.artist);
+    });
+    const unsub7 = downloadEngine.on('failed', ({ taskId, error }) => {
+      useDownloadStore.getState().updateTaskStatus(taskId, 'failed', {
+        errorMessage: error,
+      });
+      // v23 修复走查 #5：下载失败发系统通知
+      const failTask = useDownloadStore.getState().tasks.find((t) => t.id === taskId);
+      void notifyDownloadFailed(failTask?.title || '歌曲', error);
+    });
+
+    return () => {
+      unsub1();
+      unsub2();
+      unsub3();
+      unsub3b();
+      unsub3c();
+      unsub3d();
+      unsub3e();
+      unsub4();
+      unsub5();
+      unsub6();
+      unsub7();
+      unsubSettings();
+      floatingLyricsBridge.stop();
+    };
+  }, []);
+
+  return (
+    <Layout>
+      <BootOverlay visible={booting} />
+      <Suspense fallback={<div className="flex-1 flex items-center justify-center min-h-[50vh]"><div className="w-8 h-8 border-2 border-[var(--accent)] border-t-transparent rounded-full animate-spin" /></div>}>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/library" element={<LibraryPage />} />
+          <Route path="/zone" element={<ZonePage />} />
+          <Route path="/mine" element={<MinePage />} />
+          <Route path="/local" element={<LocalMusicPage />} />
+          <Route path="/search" element={<SearchPage />} />
+          <Route path="/history" element={<HistoryPage />} />
+          <Route path="/playlists" element={<PlaylistPage />} />
+            <Route path="/charts" element={<ChartPage />} />
+            <Route path="/songlists" element={<PlaylistAggregationPage />} />
+            <Route path="/favorite-playlists" element={<FavoritePlaylistsPage />} />
+            <Route path="/video" element={<VideoPlayerPage />} />
+          <Route path="/downloads" element={<DownloadPage />} />
+          <Route path="/reading" element={<ReadingPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/eq" element={<EqPage />} />
+          <Route path="/debug" element={<DebugLogPage />} />
+        </Routes>
+      </Suspense>
+    </Layout>
+  );
+}
+
+export default App;

@@ -1,0 +1,68 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "音流",
+  "version": "0.1.0",
+  "identifier": "com.yinliu.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "音流 - 多音源聚合音乐播放器",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "decorations": true,
+        "transparent": false,
+        "fullscreen": false,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self' 'wasm-unsafe-eval'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: https: blob:",
+        "media-src": "'self' https:",
+        "connect-src": "'self' https://music.163.com https://*.qq.com https://*.kuwo.cn http://*.kuwo.cn https://*.kugou.com https://*.migu.cn https://*.qishui.com https://*.qianqian.com https://musicserver.haitangw.cc",
+        "font-src": "'self'",
+        "object-src": "'none'",
+        "frame-ancestors": "'none'",
+        "base-uri": "'self'"
+      },
+      "capabilities": [
+        {
+          "identifier": "default",
+          "description": "Default capabilities",
+          "windows": ["main"],
+          "permissions": [
+            "core:default",
+            "fs:allow-read",
+            "fs:allow-write",
+            "fs:allow-read-dir",
+            "notification:default",
+            "http:default"
+          ]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "msi", "dmg", "appimage"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

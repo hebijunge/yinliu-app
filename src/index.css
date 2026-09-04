@@ -1,0 +1,510 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===== CSS Variables — v16 Design Token System ===== */
+:root {
+  /* Light theme — C Style: 留白极简 */
+
+  /* Backgrounds */
+  --bg-primary: #f5f5f7;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f0f0f2;
+  --bg-elevated: #ffffff;
+
+  /* Text */
+  --text-primary: #1a1a1a;
+  --text-secondary: #6b7280;
+  --text-tertiary: #9ca3af;
+
+  /* Accent */
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: rgba(37, 99, 235, 0.08);
+
+  /* Border */
+  --border: #e5e7eb;
+  --border-subtle: rgba(229, 231, 235, 0.6);
+
+  /* Shadows */
+  --shadow-sm: none;
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.06);
+  --shadow-glow: none;
+
+  /* Layout */
+  --sidebar-width: 220px;
+  --player-height: 72px;
+
+  /* Radius */
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
+
+  /* Typography — v16 */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+
+  /* Spacing — v16 */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+
+  /* Transition — v16 */
+  --transition-fast: 120ms ease-out;
+  --transition-base: 200ms ease-out;
+  --transition-slow: 350ms ease-out;
+}
+
+html.dark {
+  /* Dark theme — muted, minimal */
+  --bg-primary: #121212;
+  --bg-secondary: #1e1e1e;
+  --bg-tertiary: #2a2a2a;
+  --bg-elevated: #1e1e1e;
+  --text-primary: #f5f5f7;
+  --text-secondary: #a1a1aa;
+  --text-tertiary: #71717a;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --accent-soft: rgba(59, 130, 246, 0.12);
+  --border: #27272a;
+  --border-subtle: rgba(39, 39, 42, 0.8);
+  --shadow-sm: none;
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.15);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.2);
+  --shadow-glow: none;
+}
+
+/* ===== Yinliu Component Utilities ===== */
+@layer components {
+  .yinliu-input {
+    @apply px-4 py-3 rounded-2xl border bg-[var(--bg-secondary)] text-[var(--text-primary)] outline-none transition-all;
+    border-color: var(--border);
+  }
+  .yinliu-input::placeholder {
+    color: var(--text-tertiary);
+  }
+  .yinliu-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+
+  .yinliu-btn {
+    @apply px-5 py-3 rounded-2xl text-white font-medium transition-all disabled:opacity-50;
+    background-color: var(--accent);
+  }
+  .yinliu-btn:hover {
+    background-color: var(--accent-hover);
+  }
+  .yinliu-btn:active {
+    transform: scale(0.97);
+  }
+
+  .yinliu-btn-secondary {
+    @apply px-5 py-3 rounded-2xl transition-all font-medium;
+    background-color: var(--bg-tertiary);
+    color: var(--text-secondary);
+  }
+  .yinliu-btn-secondary:hover {
+    background-color: var(--border);
+    color: var(--text-primary);
+  }
+  .yinliu-btn-secondary:active {
+    transform: scale(0.97);
+  }
+
+  .yinliu-card {
+    @apply rounded-2xl p-5;
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-secondary);
+  }
+
+  .yinliu-card-hover {
+    @apply yinliu-card transition-all duration-200;
+  }
+  .yinliu-card-hover:hover {
+    border-color: var(--accent);
+  }
+}
+
+/* ===== Skeleton Shimmer ===== */
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--bg-tertiary) 25%,
+    var(--bg-secondary) 50%,
+    var(--bg-tertiary) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ===== Loading Bar Animation ===== */
+@keyframes loading-bar {
+  0% { width: 0%; margin-left: 0%; }
+  50% { width: 60%; margin-left: 20%; }
+  100% { width: 0%; margin-left: 100%; }
+}
+
+.animate-loading-bar {
+  animation: loading-bar 1.4s ease-in-out infinite;
+}
+
+/* ===== Custom Scrollbar ===== */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.2);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.35);
+}
+
+/* ===== Lyrics highlight animation ===== */
+.lyrics-line {
+  transition: all 0.3s ease;
+}
+
+.lyrics-line.active {
+  color: var(--accent);
+  font-weight: 600;
+  transform: scale(1.02);
+}
+
+/* ===== Safe area for mobile ===== */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* ===== Focus ring utilities ===== */
+.focus-ring {
+  outline: none;
+}
+.focus-ring:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* ===== Page transition — v16 enhanced ===== */
+.page-enter {
+  animation: page-enter 0.3s var(--transition-slow) both;
+}
+
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ===== v23: 不确定态进度条（音源不支持 Range 时） ===== */
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+.animate-indeterminate {
+  animation: indeterminate 1.4s ease-in-out infinite;
+}
+
+/* ===== v16: Play/Pause button transition ===== */
+.play-btn-transition {
+  transition: transform var(--transition-fast), background-color var(--transition-base);
+}
+.play-btn-transition:active {
+  transform: scale(0.92);
+}
+
+/* ===== v16: Track cover crossfade ===== */
+.cover-crossfade {
+  animation: cover-crossfade 0.4s var(--transition-slow) both;
+}
+
+@keyframes cover-crossfade {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ===== v16: List item stagger entrance ===== */
+.list-item-enter {
+  animation: list-item-enter 0.25s ease-out both;
+}
+
+@keyframes list-item-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ===== v16: Progress bar smooth transition ===== */
+.progress-bar-smooth {
+  transition: width 0.15s linear;
+}
+
+/* ===== v16: Panel slide-up ===== */
+.panel-slide-up {
+  animation: panel-slide-up 0.35s var(--transition-slow) both;
+}
+
+@keyframes panel-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ===== Scrollbar hide utility ===== */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* ===== Bounce animation for playing indicator ===== */
+@keyframes bounce {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+
+/* ===== Slide animations ===== */
+@keyframes slideInLeft {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ===== Car Mode: 车机模式全局样式 ===== */
+.car-mode {
+  --font-scale: 1.25;
+  --touch-min-size: 48px;
+}
+
+.car-mode,
+.car-mode * {
+  font-size: calc(1rem * var(--font-scale, 1));
+}
+
+.car-mode button,
+.car-mode [role="button"],
+.car-mode a,
+.car-mode .yinliu-btn,
+.car-mode .yinliu-btn-secondary,
+.car-mode select,
+.car-mode input,
+.car-mode .yinliu-input,
+.car-mode [class*="rounded"] {
+  min-height: var(--touch-min-size, 48px);
+  min-width: var(--touch-min-size, 48px);
+}
+
+.car-mode nav [class*="py-"] {
+  padding-top: 0.75rem !important;
+  padding-bottom: 0.75rem !important;
+}
+
+.car-mode .player-control-btn {
+  min-width: 56px;
+  min-height: 56px;
+}
+
+.car-mode .player-control-btn svg {
+  width: 28px;
+  height: 28px;
+}
+
+/* 车机模式下弱化搜索输入 */
+.car-mode .search-input-wrap {
+  opacity: 0.7;
+}
+.car-mode .search-input-wrap:focus-within {
+  opacity: 1;
+}
+
+/* ===== Landscape Player Bar: 横屏播放器控制区 ===== */
+@media (min-width: 640px) and (max-width: 839px) {
+  .landscape-player {
+    --player-height: 88px;
+  }
+  .landscape-player .player-main-controls {
+    gap: 1rem;
+  }
+  .landscape-player .player-main-controls button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .landscape-player .player-main-controls button svg {
+    width: 22px;
+    height: 22px;
+  }
+}
+
+/* ===== Tablet Sidebar: 平板双栏 ===== */
+@media (min-width: 840px) and (max-width: 1279px) {
+  .tablet-sidebar {
+    --sidebar-width: 200px;
+  }
+}
+
+/* ===== Desktop Wide: 大屏三栏/宽版 ===== */
+@media (min-width: 1280px) {
+  .desktop-wide {
+    --sidebar-width: 240px;
+  }
+}
+
+/* ===== Small Screen Adaptation (< 360 dp 或 < 640 px) ===== */
+@media (max-width: 639px) {
+  :root {
+    --text-xs: 0.75rem;   /* 12px */
+    --text-sm: 0.8125rem; /* 13px */
+    --text-base: 0.9375rem;
+    --text-lg: 1.0625rem;
+    --text-xl: 1.125rem;
+    --text-2xl: 1.25rem;
+  }
+
+  /* 全局最小字号兜底 */
+  body {
+    font-size: var(--text-base);
+  }
+
+  /* 按钮最小触控区 40×40 dp */
+  button,
+  [role="button"],
+  a,
+  .yinliu-btn,
+  .yinliu-btn-secondary,
+  select,
+  input,
+  .yinliu-input,
+  [class*="rounded"] {
+    min-height: 40px;
+    min-width: 40px;
+  }
+
+  /* 底部导航栏高度 56 dp，图标 24 dp */
+  .mobile-nav-item {
+    min-height: 56px;
+  }
+  .mobile-nav-item svg {
+    width: 24px;
+    height: 24px;
+  }
+}
+
+/* ===== Extra Small Screen (< 360 dp) ===== */
+@media (max-width: 359px) {
+  :root {
+    --text-xs: 0.75rem;  /* 12px 绝对底线 */
+    --text-sm: 0.75rem;
+    --text-base: 0.875rem;
+  }
+
+  /* 播放页封面高度限制为 40% 视口 */
+  .cover-crossfade {
+    max-height: 40vh !important;
+  }
+}
+
+/* ===== System Gesture Safe Area (边缘 20dp 保护区) ===== */
+.gesture-safe-area {
+  /* 水平方向：边缘 20px 内不响应应用内水平滑动手势 */
+  padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right));
+}
+
+/* 播放页等关键页面的手势保护 */
+.gesture-protected {
+  touch-action: pan-y;
+}
+
+/* 在边缘 20px 区域内禁用水平滑动手势 */
+@supports (padding: max(0px)) {
+  .edge-guard-left,
+  .edge-guard-right {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    width: 20px;
+    z-index: 9999;
+    pointer-events: auto;
+    touch-action: pan-y;
+  }
+  .edge-guard-left { left: 0; }
+  .edge-guard-right { right: 0; }
+}
+
+/* ===== Reduced motion ===== */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer,
+  .animate-loading-bar,
+  .animate-pulse-slow,
+  .animate-spin-slow,
+  .animate-indeterminate,
+  .page-enter {
+    animation: none !important;
+  }
+  .yinliu-card-hover:hover {
+    transform: none;
+  }
+}
+
+
+/* ===== v24: 下载弹窗遮罩淡入（配合 panel-slide-up 面板滑入） ===== */
+@keyframes sheet-backdrop-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.sheet-backdrop-fade {
+  animation: sheet-backdrop-fade 0.25s ease-out both;
+}
