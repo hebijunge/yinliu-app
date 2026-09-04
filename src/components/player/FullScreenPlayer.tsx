@@ -15,7 +15,6 @@ import QueuePanel from './QueuePanel';
 import QualitySelector, { qualityLabel } from './QualitySelector';
 import type { ParsedLyrics } from '../../modules/music/lyrics';
 import type { RepeatMode } from '../../shared/store/playerStore';
-import SmartCover from '../ui/SmartCover';
 
 const MODE_ICONS: Record<RepeatMode, typeof Repeat> = {
   sequence: ListMusic,
@@ -177,7 +176,7 @@ export default function FullScreenPlayer({ onClose }: Props) {
         style={!isLandscape ? { maxHeight: '50vh' } : undefined}
       >
         {currentTrack?.coverUrl ? (
-          <SmartCover src={currentTrack.coverUrl} alt="" className="w-full h-full" eager />
+          <img src={currentTrack.coverUrl} alt="" className="w-full h-full object-cover" />
         ) : (
           <div className="flex flex-col items-center">
             <svg className="w-16 h-16 text-[var(--text-tertiary)]" viewBox="0 0 64 64" fill="none">

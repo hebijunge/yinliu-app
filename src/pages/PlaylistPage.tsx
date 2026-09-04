@@ -11,8 +11,6 @@ import ConfirmDialog, { type ConfirmRequest } from '../components/common/Confirm
 import { playlistImporter } from '../modules/music/playlistImporter';
 import type { ImportReport } from '../modules/music/playlistImporter';
 import { toUserMessage } from '../shared/utils/errorCopy';
-import { useVirtualList } from '../shared/hooks/useVirtualList';
-import SmartCover from '../components/ui/SmartCover';
 import { useGuardedAction } from '../shared/hooks/useGuardedAction';
 
 export default function PlaylistPage() {
@@ -244,7 +242,7 @@ export default function PlaylistPage() {
               <Link to={`/playlists?id=${pl.id}`} className="block">
                 <div className="aspect-square bg-[var(--bg-tertiary)] flex items-center justify-center overflow-hidden">
                   {pl.coverUrl ? (
-                    <SmartCover src={pl.coverUrl} alt={pl.name} className="w-full h-full" />
+                    <img src={pl.coverUrl} alt={pl.name} className="w-full h-full object-cover" loading="lazy" />
                   ) : (
                     <ListMusic className="w-12 h-12 text-[var(--text-tertiary)]" />
                   )}
@@ -414,11 +412,7 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
   // 加载歌单歌曲（副作用移入 effect；失败给错误态 + 重试，避免整块白板）
   useEffect(() => {
     setLoadError(null);
-    // P6：上次同歌单加载失败（库已清空、无 loading）时强制重读，避免重进歌单白板
-    const st = usePlaylistStore.getState();
-    const needForce =
-      st.loadedPlaylistId === playlistId && st.currentPlaylistSongs.length === 0 && !st.isLoading;
-    loadPlaylistSongs(playlistId, { force: needForce }).catch((err) => {
+    loadPlaylistSongs(playlistId).catch((err) => {
       console.error('歌单加载失败:', err);
       setLoadError(toUserMessage(err, '歌单加载失败，请稍后重试'));
     });
@@ -434,12 +428,9 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
     ? songs.filter((s) => s.matchStatus === 'failed')
     : songs;
 
-  // P3：详情曲目列表虚拟化（固定行高 56px 内部滚动视口）
-  const { scrollRef, virtualItems, totalSize, rowStyle } = useVirtualList(visible, 56);
-
   return (
-    <div className="max-w-4xl mx-auto w-full h-full flex flex-col">
-      <div className="flex items-center gap-3 mb-6 flex-shrink-0">
+    <div className="max-w-4xl mx-auto">
+      <div className="flex items-center gap-3 mb-6">
         <button onClick={onBack} className="p-2 rounded-xl hover:bg-[var(--bg-tertiary)] transition-colors" aria-label="返回">
           <ArrowLeft className="w-4 h-4" />
         </button>
@@ -461,17 +452,7 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
       )}
 
       {songs.length === 0 && isLoading && (
-        <div className="space-y-1 flex-shrink-0" role="status" aria-label="加载中">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="flex items-center gap-3 px-3 rounded-xl" style={{ height: 56 }}>
-              <div className="w-8 h-8 rounded-lg bg-[var(--bg-tertiary)] animate-pulse flex-shrink-0" />
-              <div className="flex-1 space-y-1.5">
-                <div className="h-3.5 w-1/3 rounded bg-[var(--bg-tertiary)] animate-pulse" />
-                <div className="h-2.5 w-1/4 rounded bg-[var(--bg-tertiary)] animate-pulse" />
-              </div>
-            </div>
-          ))}
-        </div>
+        <div className="text-center py-12 text-[var(--text-tertiary)] text-sm">加载中…</div>
       )}
 
       {loadError && !isLoading && (
@@ -496,17 +477,14 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
       )}
 
       {songs.length > 0 && (
-        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto pr-1">
-          <div style={{ height: totalSize, position: 'relative' }}>
-            {virtualItems.map((vRow) => {
-            const s = visible[vRow.index];
+        <div className="space-y-1">
+          {visible.map((s, i) => {
             const isFailed = s.matchStatus === 'failed';
             const isFallback = s.matchStatus === 'fallback';
             return (
               <div
-                key={`${s.songId}_${vRow.index}`}
-                style={rowStyle(vRow)}
-                className={`flex items-center gap-3 px-3 rounded-xl group transition-colors ${
+                key={`${s.songId}_${i}`}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl group transition-colors ${
                   isFailed
                     ? 'bg-zinc-500/5 opacity-60'
                     : 'hover:bg-[var(--bg-tertiary)]'
@@ -591,8 +569,7 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
                 </button>
               </div>
             );
-            })}
-          </div>
+          })}
         </div>
       )}
 

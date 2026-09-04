@@ -1,8 +1,28 @@
-import { MoreVertical } from 'lucide-react';
+import { useState } from 'react';
+import { Music, MoreVertical } from 'lucide-react';
 import { SOURCE_COLORS } from './sourceColors';
 import { PLATFORM_SHORT_NAMES } from '../../core/platformPriority';
 import { usePlayerStore } from '@shared/store/playerStore';
-import SmartCover from '../ui/SmartCover';
+
+/** v16 封面加载失败兜底：死链/防盗链图片自动回退占位图标，避免空白块 */
+function CoverImg({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed || !src) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      className="w-full h-full object-cover"
+      onError={() => setFailed(true)}
+    />
+  );
+}
 
 export interface SongRowData {
   id: string;
@@ -58,7 +78,7 @@ export default function SongRow({ song, onPlay, onMore }: SongRowProps) {
       }`}
     >
       <div className="w-12 h-12 rounded-lg bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden">
-        <SmartCover src={song.coverUrl} className="w-full h-full" />
+        <CoverImg src={song.coverUrl || ''} />
       </div>
 
       <div className="flex-1 min-w-0">
