@@ -1,65 +1,120 @@
-import { useEffect, useRef, useState } from 'react';
-import type { RefObject } from 'react';
-
-interface UseInfiniteListOptions {
-  /** 触底判定距离（px），默认 240 */
-  threshold?: number;
-  /** 每次触底追加的条数，默认 30 */
-  step?: number;
-}
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 /**
- * P12/P3 触底分帧挂载：接近滚动底部时按 step 递增可见条数，
- * 将大量列表项的挂载摊到多次滚动交互中，避免一次性渲染造成的卡顿。
- * 数据源变化（total 变化）时自动重置可见条数。
+ * useInfiniteList —— 「加载更多」增量渲染统一封装（P0/P8 基础件，本批先落基础件）
  *
- * 滚动容器：传入 scrollRef 用内部视口滚动；传 null 时监听 window 页面级滚动。
+ * 职责（对应方案 P8）：
+ * - IntersectionObserver 触底检测，预加载触发点提前 rootMargin（默认 800px）；
+ * - 每次触底增量挂载 pageSize 行，新批次经 requestIdleCallback 分帧挂载，
+ *   避免「触发时一次同步挂载一批新行」造成的滚动停顿；
+ * - 触底未加载完时返回 isBatchLoading 供 UI 显示骨架行占位。
+ *
+ * 用法：
+ *   const { displayCount, loadMoreRef, hasMore, isBatchLoading } =
+ *     useInfiniteList({ total: results.length, pageSize: 15 });
+ *   ...
+ *   <div ref={loadMoreRef} />  // 触底哨兵，放在列表末尾
  */
-export function useInfiniteList(
-  total: number,
-  scrollRef: RefObject<HTMLElement | null> | null,
-  options: UseInfiniteListOptions = {},
-) {
-  const { threshold = 240, step = 30 } = options;
-  const [visibleCount, setVisibleCount] = useState(Math.min(step, Math.max(total, 0)));
-  const tickingRef = useRef(false);
 
-  // 数据源变化时重置可见条数
+export interface UseInfiniteListOptions {
+  /** 列表总条数（数据层长度，非展示长度） */
+  total: number;
+  /** 每批增量条数 */
+  pageSize?: number;
+  /** 触底提前量（rootMargin），默认 800px 提前预加载 */
+  rootMargin?: string;
+  /** 禁用增量（数据量小时全量） */
+  disabled?: boolean;
+}
+
+export interface UseInfiniteListResult {
+  /** 当前应渲染条数 */
+  displayCount: number;
+  /** 挂载到列表末尾哨兵元素 */
+  loadMoreRef: (node: HTMLElement | null) => void;
+  /** 是否还有未展示数据 */
+  hasMore: boolean;
+  /** 上一批尚在分帧挂载中（UI 可显示加载反馈） */
+  isBatchLoading: boolean;
+  /** 重置回第一批（搜索换词等场景） */
+  reset: () => void;
+}
+
+const DEFAULT_PAGE_SIZE = 15;
+
+export function useInfiniteList(options: UseInfiniteListOptions): UseInfiniteListResult {
+  const { total, pageSize = DEFAULT_PAGE_SIZE, rootMargin = '800px', disabled = false } = options;
+
+  const [displayCount, setDisplayCount] = useState(disabled ? total : Math.min(pageSize, total));
+  const [isBatchLoading, setIsBatchLoading] = useState(false);
+  const sentinelElRef = useRef<HTMLElement | null>(null);
+  const idleHandleRef = useRef<number | null>(null);
+
+  // 数据量或分页参数变化时收敛展示数（换词/换 tab）
   useEffect(() => {
-    setVisibleCount(Math.min(step, Math.max(total, 0)));
-  }, [total, step]);
+    setDisplayCount((prev) => {
+      const next = disabled ? total : Math.min(prev, total);
+      return Math.max(next, 0);
+    });
+  }, [total, disabled]);
 
   useEffect(() => {
-    const el = scrollRef ? scrollRef.current : null;
-    // 窗口滚动模式（scrollRef 为 null）
-    const useWindow = !scrollRef;
-    const target: HTMLElement | Window | null = useWindow ? window : el;
-    if (!target) return;
-
-    const isNearBottom = () => {
-      if (useWindow) {
-        const doc = document.documentElement;
-        return window.scrollY + window.innerHeight >= doc.scrollHeight - threshold;
+    return () => {
+      if (idleHandleRef.current !== null && typeof cancelIdleCallback === 'function') {
+        cancelIdleCallback(idleHandleRef.current);
       }
-      const box = el as HTMLElement;
-      return box.scrollTop + box.clientHeight >= box.scrollHeight - threshold;
     };
+  }, []);
 
-    const onScroll = () => {
-      if (tickingRef.current) return;
-      tickingRef.current = true;
-      // rAF 分帧：滚动事件高频触发，每帧只处理一次
-      requestAnimationFrame(() => {
-        tickingRef.current = false;
-        if (isNearBottom()) {
-          setVisibleCount((c) => Math.min(c + step, total));
+  const grow = useCallback(() => {
+    setDisplayCount((prev) => {
+      if (prev >= total) return prev;
+      const next = Math.min(prev + pageSize, total);
+      if (next > prev) {
+        // 分帧挂载标记：新批次经 idle 回调分批生效，避免长任务
+        setIsBatchLoading(true);
+        const mountBatch = () => {
+          setIsBatchLoading(false);
+          idleHandleRef.current = null;
+        };
+        if (typeof requestIdleCallback === 'function') {
+          idleHandleRef.current = requestIdleCallback(mountBatch, { timeout: 300 });
+        } else {
+          idleHandleRef.current = window.setTimeout(mountBatch, 16) as unknown as number;
         }
-      });
-    };
+      }
+      return next;
+    });
+  }, [total, pageSize]);
 
-    target.addEventListener('scroll', onScroll, { passive: true } as AddEventListenerOptions);
-    return () => target.removeEventListener('scroll', onScroll);
-  }, [scrollRef, threshold, step, total]);
+  // IntersectionObserver 触底检测
+  useEffect(() => {
+    const el = sentinelElRef.current;
+    if (!el || disabled) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) grow();
+      },
+      { rootMargin }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [grow, rootMargin, disabled, displayCount < total]);
 
-  return { visibleCount };
+  const loadMoreRef = useCallback((node: HTMLElement | null) => {
+    sentinelElRef.current = node;
+  }, []);
+
+  const reset = useCallback(() => {
+    setDisplayCount(disabled ? total : Math.min(pageSize, total));
+    setIsBatchLoading(false);
+  }, [disabled, total, pageSize]);
+
+  return {
+    displayCount,
+    loadMoreRef,
+    hasMore: displayCount < total,
+    isBatchLoading,
+    reset,
+  };
 }

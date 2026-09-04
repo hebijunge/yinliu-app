@@ -16,7 +16,7 @@ import FullScreenPlayer from './FullScreenPlayer';
 import QueuePanel from './QueuePanel';
 import type { ParsedLyrics } from '../../modules/music/lyrics';
 import type { RepeatMode } from '../../shared/store/playerStore';
-import SmartCover from '../ui/SmartCover';
+import SmartCover from '../../components/ui/SmartCover';
 
 interface PlayerBarProps {
   /** 是否为横屏模式（640-840px 设备） */

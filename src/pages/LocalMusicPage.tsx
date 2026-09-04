@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { HardDrive, RefreshCw, Music, Play, FolderOpen } from 'lucide-react';
+import { HardDrive, RefreshCw, Play, FolderOpen } from 'lucide-react';
 import { scanLocalMusic } from '../modules/music/localScanner';
 import type { ScannedSong } from '../modules/music/localScanner';
 import { playerEngine } from '../core/player';
@@ -7,10 +7,15 @@ import { SkeletonList } from '../components/ui/Skeleton';
 import { useVirtualList } from '../shared/hooks/useVirtualList';
 import SmartCover from '../components/ui/SmartCover';
 
+/** 本地音乐虚拟行固定行高（px）：卡片 88 + 间距 12 */
+const ROW_HEIGHT = 100;
+
 export default function LocalMusicPage() {
   const [songs, setSongs] = useState<ScannedSong[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [scanPath, setScanPath] = useState('');
+  // P3：本地音乐列表虚拟化
+  const vl = useVirtualList({ count: songs.length, estimateSize: ROW_HEIGHT });
 
   const handleScan = useCallback(async () => {
     setIsScanning(true);
@@ -46,12 +51,9 @@ export default function LocalMusicPage() {
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
-  // P3：本地音乐列表虚拟化（固定行高 100px）
-  const { scrollRef, virtualItems, totalSize, rowStyle } = useVirtualList(songs, 100);
-
   return (
-    <div className="max-w-4xl mx-auto w-full h-full flex flex-col">
-      <div className="flex items-center justify-between mb-8 flex-shrink-0">
+    <div className="max-w-4xl mx-auto h-full flex flex-col">
+      <div className="flex items-center justify-between mb-8">
         <h1 className="text-2xl font-light flex items-center gap-3 text-[var(--text-primary)]">
           <HardDrive className="w-6 h-6" />
           本地音乐
@@ -101,20 +103,22 @@ export default function LocalMusicPage() {
         <SkeletonList count={5} />
       )}
 
-      {/* Song List（P3 虚拟化：固定行高 100px 内部滚动视口） */}
-      {!isScanning && songs.length > 0 && (
-        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto pr-1">
-          <div style={{ height: totalSize, position: 'relative' }}>
-            {virtualItems.map((vRow) => {
-              const song = songs[vRow.index];
+      {/* Song List（P3 虚拟化） */}
+      {!isScanning && (
+        <div ref={vl.containerRef} className="flex-1 min-h-0 overflow-y-auto scrollbar-hide" data-testid="local-music-list">
+          <div style={{ height: vl.totalSize, position: 'relative' }}>
+            {vl.getVirtualItems().map((vi) => {
+              const song = songs[vi.index];
               return (
                 <div
                   key={song.id}
-                  style={rowStyle(vRow)}
-                  className="flex items-center gap-4 p-4 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-all duration-200 group"
+                  ref={vl.measureElement}
+                  data-index={vi.index}
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: ROW_HEIGHT, transform: `translateY(${vi.start}px)` }}
+                  className="flex items-center gap-4 p-4 mb-3 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:border-[var(--accent)]/30 transition-all duration-200 group"
                 >
-                  <div className="w-14 h-14 rounded-2xl bg-[var(--bg-tertiary)] flex-shrink-0 flex items-center justify-center overflow-hidden border border-[var(--border-subtle)]">
-                    <SmartCover src={song.coverUrl} alt="" className="w-full h-full" />
+                  <div className="w-14 h-14 flex-shrink-0">
+                    <SmartCover src={song.coverUrl} alt={song.title} className="w-14 h-14 rounded-2xl border border-[var(--border-subtle)]" />
                   </div>
 
                   <div className="flex-1 min-w-0">

@@ -8,15 +8,18 @@ function makeFavoriteKey(title: string, artist?: string): string {
   return `${normalizeTitle(title)}|${normalizeArtist(artist || '')}`;
 }
 
+/** P6：loadPlaylistSongs in-flight 记录（同 id 并发请求合并为一次 DB 读取） */
+let loadInflight: { id: string; promise: Promise<void> } | null = null;
+
 interface PlaylistStore {
   playlists: Playlist[];
   currentPlaylistId: string | null;
   currentPlaylistSongs: PlaylistSong[];
+  /** 已完整加载过歌曲的歌单 id（P6：同 id 重复加载直接命中缓存，StrictMode 双发去重） */
+  loadedPlaylistId: string | null;
   /** 收藏归一化键集合（跨源去重：同一首歌不同平台视为同一收藏） */
   favorites: Set<string>;
   isLoading: boolean;
-  /** P6: 已完整加载歌曲列表的歌单 id；用于 StrictMode 双发去重与「同歌单不重复读库」 */
-  loadedPlaylistId: string | null;
   /** v14: 歌单导入流程状态 */
   isImporting: boolean;
   lastImportReport: ImportReport | null;
@@ -61,9 +64,9 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   playlists: [],
   currentPlaylistId: null,
   currentPlaylistSongs: [],
+  loadedPlaylistId: null,
   favorites: new Set(),
   isLoading: false,
-  loadedPlaylistId: null,
   isImporting: false,
   lastImportReport: null,
 
@@ -78,28 +81,28 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   },
 
   loadPlaylistSongs: async (playlistId, opts) => {
-    const force = opts?.force ?? false;
-    const state = get();
-    // P6 ① in-flight 合并去重：同一歌单加载中，StrictMode 双发/重复触发直接跳过
-    if (!force && state.isLoading && state.loadedPlaylistId === playlistId) return;
-    // P6 ② 已加载过同一歌单且非强制：不重复读库（连续进出同一歌单只读一次）
-    if (!force && !state.isLoading && state.loadedPlaylistId === playlistId) return;
-    // P6 ③ 切歌单：先清空旧数据防串单，骨架屏立即可见
-    const switching = state.loadedPlaylistId !== playlistId;
-    set({
-      isLoading: true,
-      loadedPlaylistId: playlistId,
-      ...(switching ? { currentPlaylistSongs: [] } : {}),
-    });
-    try {
-      const songs = await playlistService.getPlaylistSongs(playlistId);
-      // 期间用户已切走：丢弃本次结果，避免写入别个歌单的视图
-      if (get().loadedPlaylistId !== playlistId) return;
-      set({ currentPlaylistSongs: songs, isLoading: false });
-    } catch (e) {
-      if (get().loadedPlaylistId === playlistId) set({ isLoading: false });
-      throw e;
+    // P6：同 id 已加载/加载中直接复用（StrictMode 双发、重复进入详情均命中），
+    // 变更类操作（增删歌/收藏刷新）用 { force: true } 强制重取
+    if (!opts?.force) {
+      if (get().loadedPlaylistId === playlistId) return;
+      if (loadInflight?.id === playlistId) return loadInflight.promise;
     }
+    // 切换到未加载的歌单时先清空旧数据：避免短暂展示上一歌单的曲目（数据错配）
+    if (get().loadedPlaylistId !== playlistId) {
+      set({ currentPlaylistSongs: [] });
+    }
+    const promise = (async () => {
+      set({ isLoading: true });
+      try {
+        const songs = await playlistService.getPlaylistSongs(playlistId);
+        set({ currentPlaylistSongs: songs, loadedPlaylistId: playlistId });
+      } finally {
+        set({ isLoading: false });
+        if (loadInflight?.id === playlistId) loadInflight = null;
+      }
+    })();
+    loadInflight = { id: playlistId, promise };
+    return promise;
   },
 
   loadFavorites: async () => {
@@ -118,7 +121,6 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
     set((s) => ({
       playlists: s.playlists.filter((p) => p.id !== id),
       currentPlaylistId: s.currentPlaylistId === id ? null : s.currentPlaylistId,
-      loadedPlaylistId: s.loadedPlaylistId === id ? null : s.loadedPlaylistId,
     }));
   },
 
@@ -179,7 +181,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
         // 封面写入失败不影响加歌主流程
       }
     }
-    await get().loadPlaylistSongs(playlistId, { force: true }); // 增歌后强制刷新当前视图
+    await get().loadPlaylistSongs(playlistId, { force: true });
     await get().loadPlaylists(); // 刷新 songCount
   },
 

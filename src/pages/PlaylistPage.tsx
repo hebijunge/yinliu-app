@@ -4,14 +4,14 @@ import { usePlaylistStore } from '../shared/store/playlistStore';
 import { usePlayerStore } from '../shared/store/playerStore';
 import { playerEngine } from '../core/player';
 import { useSearchParams, Link } from 'react-router-dom';
-import { SkeletonPlaylistGrid } from '../components/ui/Skeleton';
+import { SkeletonPlaylistGrid, Skeleton } from '../components/ui/Skeleton';
+import { useVirtualList } from '../shared/hooks/useVirtualList';
 import EmptyState from '../components/common/EmptyState';
 import { toast } from '../shared/components/Toast';
 import ConfirmDialog, { type ConfirmRequest } from '../components/common/ConfirmDialog';
 import { playlistImporter } from '../modules/music/playlistImporter';
 import type { ImportReport } from '../modules/music/playlistImporter';
 import { toUserMessage } from '../shared/utils/errorCopy';
-import { useVirtualList } from '../shared/hooks/useVirtualList';
 import SmartCover from '../components/ui/SmartCover';
 import { useGuardedAction } from '../shared/hooks/useGuardedAction';
 
@@ -402,6 +402,11 @@ function ImportReportView({ report, onClose }: { report: ImportReport; onClose: 
 
 /**
  * 歌单详情视图：展示曲目列表，failed 标灰 + 显示原因
+ *
+ * v24（P0/P3+P6）：
+ * - useVirtualList 虚拟化渲染：500+ 首歌单滚动稳定（固定行高 56px）；
+ * - 加载去重收敛在 store（loadedPlaylistId + in-flight 合并，StrictMode 双发只读一次库）；
+ * - 加载中渲染固定高度骨架行，骨架屏即现（300ms 内）。
  */
 function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: string; playlistName: string; onBack: () => void }) {
   const { currentPlaylistSongs, loadPlaylistSongs, removeSongFromPlaylist, addSongToPlaylist, isLoading } = usePlaylistStore();
@@ -411,14 +416,10 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
   // P2 修复：统一二次确认弹窗——用自绘 ConfirmDialog 取代原生 window.confirm
   const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
 
-  // 加载歌单歌曲（副作用移入 effect；失败给错误态 + 重试，避免整块白板）
+  // 加载歌单歌曲（去重逻辑在 store 内：同 id 已加载/加载中直接命中，不再重复读库）
   useEffect(() => {
     setLoadError(null);
-    // P6：上次同歌单加载失败（库已清空、无 loading）时强制重读，避免重进歌单白板
-    const st = usePlaylistStore.getState();
-    const needForce =
-      st.loadedPlaylistId === playlistId && st.currentPlaylistSongs.length === 0 && !st.isLoading;
-    loadPlaylistSongs(playlistId, { force: needForce }).catch((err) => {
+    loadPlaylistSongs(playlistId).catch((err) => {
       console.error('歌单加载失败:', err);
       setLoadError(toUserMessage(err, '歌单加载失败，请稍后重试'));
     });
@@ -434,12 +435,12 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
     ? songs.filter((s) => s.matchStatus === 'failed')
     : songs;
 
-  // P3：详情曲目列表虚拟化（固定行高 56px 内部滚动视口）
-  const { scrollRef, virtualItems, totalSize, rowStyle } = useVirtualList(visible, 56);
+  // P3：长列表虚拟化（固定行高 56px，见 ROW_HEIGHT）
+  const vl = useVirtualList({ count: visible.length, estimateSize: ROW_HEIGHT });
 
   return (
-    <div className="max-w-4xl mx-auto w-full h-full flex flex-col">
-      <div className="flex items-center gap-3 mb-6 flex-shrink-0">
+    <div className="max-w-4xl mx-auto h-full flex flex-col">
+      <div className="flex items-center gap-3 mb-4">
         <button onClick={onBack} className="p-2 rounded-xl hover:bg-[var(--bg-tertiary)] transition-colors" aria-label="返回">
           <ArrowLeft className="w-4 h-4" />
         </button>
@@ -461,17 +462,7 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
       )}
 
       {songs.length === 0 && isLoading && (
-        <div className="space-y-1 flex-shrink-0" role="status" aria-label="加载中">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="flex items-center gap-3 px-3 rounded-xl" style={{ height: 56 }}>
-              <div className="w-8 h-8 rounded-lg bg-[var(--bg-tertiary)] animate-pulse flex-shrink-0" />
-              <div className="flex-1 space-y-1.5">
-                <div className="h-3.5 w-1/3 rounded bg-[var(--bg-tertiary)] animate-pulse" />
-                <div className="h-2.5 w-1/4 rounded bg-[var(--bg-tertiary)] animate-pulse" />
-              </div>
-            </div>
-          ))}
-        </div>
+        <PlaylistDetailSkeleton count={8} />
       )}
 
       {loadError && !isLoading && (
@@ -481,14 +472,14 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
           description={loadError}
           onRetry={() => {
             setLoadError(null);
-            loadPlaylistSongs(playlistId).catch((err) => {
+            loadPlaylistSongs(playlistId, { force: true }).catch((err) => {
               setLoadError(toUserMessage(err, '歌单加载失败，请稍后重试'));
             });
           }}
         />
       )}
 
-      {songs.length === 0 && !isLoading && (
+      {songs.length === 0 && !isLoading && !loadError && (
         <div className="text-center py-16 text-[var(--text-tertiary)]">
           <ListMusic className="w-12 h-12 mx-auto mb-2 opacity-40" />
           <p className="text-sm">歌单暂无曲目</p>
@@ -496,101 +487,103 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
       )}
 
       {songs.length > 0 && (
-        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto pr-1">
-          <div style={{ height: totalSize, position: 'relative' }}>
-            {virtualItems.map((vRow) => {
-            const s = visible[vRow.index];
-            const isFailed = s.matchStatus === 'failed';
-            const isFallback = s.matchStatus === 'fallback';
-            return (
-              <div
-                key={`${s.songId}_${vRow.index}`}
-                style={rowStyle(vRow)}
-                className={`flex items-center gap-3 px-3 rounded-xl group transition-colors ${
-                  isFailed
-                    ? 'bg-zinc-500/5 opacity-60'
-                    : 'hover:bg-[var(--bg-tertiary)]'
-                }`}
-                title={isFailed ? s.failureReason : undefined}
-              >
-                <div className="w-8 h-8 rounded-lg bg-[var(--bg-tertiary)] flex items-center justify-center flex-shrink-0">
-                  {isFailed ? (
-                    <AlertCircle className="w-4 h-4 text-zinc-500" />
-                  ) : isFallback ? (
-                    <CloudDownload className="w-4 h-4 text-[var(--accent)]" />
-                  ) : (
-                    <Music2 className="w-4 h-4 text-[var(--text-tertiary)]" />
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className={`text-sm truncate ${isFailed ? 'text-zinc-500 line-through' : 'text-[var(--text-primary)]'}`}>
-                    {s.title}
-                  </div>
-                  <div className="text-xs text-[var(--text-tertiary)] truncate flex items-center gap-1.5">
-                    <span>{s.artist || '未知歌手'}</span>
-                    {s.duration && s.duration > 0 && (
-                      <>
-                        <span>·</span>
-                        <span className="flex items-center gap-0.5">
-                          <Clock className="w-2.5 h-2.5" />
-                          {formatDuration(s.duration)}
-                        </span>
-                      </>
-                    )}
-                    {isFallback && (
-                      <span className="text-[var(--accent)]">· 跨平台匹配</span>
-                    )}
-                    {isFailed && s.failureReason && (
-                      <span className="text-zinc-500">· {s.failureReason}</span>
-                    )}
-                  </div>
-                </div>
-                {!isFailed && (
-                  <button
-                    onClick={async () => {
-                      try {
-                        await playerEngine.playTrack({
-                          id: s.songId,
-                          title: s.title,
-                          artist: s.artist,
-                          album: s.album,
-                          coverUrl: s.coverUrl,
-                          duration: s.duration,
-                          sourceId: s.source,
-                          sourceSongId: s.songId,
-                          uri: `stream://${s.source}/${s.songId}`,
-                        }, currentQuality);
-                      } catch (err) {
-                        const msg = toUserMessage(err, '播放失败');
-                        toast.error('播放失败', msg);
-                      }
-                    }}
-                    className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--accent)] transition-all"
-                    aria-label="播放"
-                  >
-                    <Play className="w-3.5 h-3.5" />
-                  </button>
-                )}
-                <button
-                  onClick={() => {
-                    setConfirmRequest({
-                      title: '移除歌曲',
-                      message: `确定从歌单中移除「${s.title}」吗？`,
-                      confirmText: '移除',
-                      onConfirm: () => {
-                        removeSongFromPlaylist(playlistId, s.songId).catch((err) => {
-                          toast.error('移除歌曲失败', toUserMessage(err, '未知错误'));
-                        });
-                      },
-                    });
-                  }}
-                  className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-red-500 transition-all"
-                  aria-label="移除"
+        <div ref={vl.containerRef} className="flex-1 min-h-0 overflow-y-auto scrollbar-hide" data-testid="playlist-detail-list">
+          <div style={{ height: vl.totalSize, position: 'relative' }}>
+            {vl.getVirtualItems().map((vi) => {
+              const s = visible[vi.index];
+              const isFailed = s.matchStatus === 'failed';
+              const isFallback = s.matchStatus === 'fallback';
+              return (
+                <div
+                  key={`${s.songId}_${vi.index}`}
+                  ref={vl.measureElement}
+                  data-index={vi.index}
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: ROW_HEIGHT, transform: `translateY(${vi.start}px)` }}
+                  className={`flex items-center gap-3 px-3 rounded-xl group transition-colors ${
+                    isFailed
+                      ? 'bg-zinc-500/5 opacity-60'
+                      : 'hover:bg-[var(--bg-tertiary)]'
+                  }`}
+                  title={isFailed ? s.failureReason : undefined}
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            );
+                  <div className="w-8 h-8 rounded-lg bg-[var(--bg-tertiary)] flex items-center justify-center flex-shrink-0">
+                    {isFailed ? (
+                      <AlertCircle className="w-4 h-4 text-zinc-500" />
+                    ) : isFallback ? (
+                      <CloudDownload className="w-4 h-4 text-[var(--accent)]" />
+                    ) : (
+                      <Music2 className="w-4 h-4 text-[var(--text-tertiary)]" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className={`text-sm truncate ${isFailed ? 'text-zinc-500 line-through' : 'text-[var(--text-primary)]'}`}>
+                      {s.title}
+                    </div>
+                    <div className="text-xs text-[var(--text-tertiary)] truncate flex items-center gap-1.5">
+                      <span>{s.artist || '未知歌手'}</span>
+                      {s.duration && s.duration > 0 && (
+                        <>
+                          <span>·</span>
+                          <span className="flex items-center gap-0.5">
+                            <Clock className="w-2.5 h-2.5" />
+                            {formatDuration(s.duration)}
+                          </span>
+                        </>
+                      )}
+                      {isFallback && (
+                        <span className="text-[var(--accent)]">· 跨平台匹配</span>
+                      )}
+                      {isFailed && s.failureReason && (
+                        <span className="text-zinc-500">· {s.failureReason}</span>
+                      )}
+                    </div>
+                  </div>
+                  {!isFailed && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          await playerEngine.playTrack({
+                            id: s.songId,
+                            title: s.title,
+                            artist: s.artist,
+                            album: s.album,
+                            coverUrl: s.coverUrl,
+                            duration: s.duration,
+                            sourceId: s.source,
+                            sourceSongId: s.songId,
+                            uri: `stream://${s.source}/${s.songId}`,
+                          }, currentQuality);
+                        } catch (err) {
+                          const msg = toUserMessage(err, '播放失败');
+                          toast.error('播放失败', msg);
+                        }
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--accent)] transition-all"
+                      aria-label="播放"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setConfirmRequest({
+                        title: '移除歌曲',
+                        message: `确定从歌单中移除「${s.title}」吗？`,
+                        confirmText: '移除',
+                        onConfirm: () => {
+                          removeSongFromPlaylist(playlistId, s.songId).catch((err) => {
+                            toast.error('移除歌曲失败', toUserMessage(err, '未知错误'));
+                          });
+                        },
+                      });
+                    }}
+                    className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-[var(--text-tertiary)] hover:text-red-500 transition-all"
+                    aria-label="移除"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              );
             })}
           </div>
         </div>
@@ -608,6 +601,26 @@ function PlaylistDetailView({ playlistId, playlistName, onBack }: { playlistId: 
         }}
         onCancel={() => setConfirmRequest(null)}
       />
+    </div>
+  );
+}
+
+/** 歌单详情虚拟行固定行高（px） */
+const ROW_HEIGHT = 56;
+
+/** 歌单详情加载骨架（固定高度行，避免布局跳动） */
+function PlaylistDetailSkeleton({ count = 8 }: { count?: number }) {
+  return (
+    <div className="space-y-1">
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className="flex items-center gap-3 px-3" style={{ height: ROW_HEIGHT }}>
+          <Skeleton className="w-8 h-8 rounded-lg flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <Skeleton className="h-3.5 w-2/3 mb-2" />
+            <Skeleton className="h-3 w-1/3" />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

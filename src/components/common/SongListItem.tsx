@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
 import { Music, MoreVertical, Play, ChevronDown, ChevronUp } from 'lucide-react';
+import SmartCover from '../ui/SmartCover';
 import { PLATFORM_ABBREVS, PLATFORM_COLORS } from '@core/platformPriority';
 import type { AggregatedSearchResult } from '@core/search';
 import type { AggregatedSearchSource } from '@core/search';
-import SmartCover from '../ui/SmartCover';
 
 export interface SongListItemProps {
   result: AggregatedSearchResult;
@@ -112,13 +112,7 @@ export default function SongListItem({
 
         {/* 封面 48×48 dp，圆角 4 dp */}
         <div className="w-12 h-12 rounded flex-shrink-0 overflow-hidden relative bg-[var(--bg-tertiary)]">
-          {result.coverUrl ? (
-            <SmartCover src={result.coverUrl} alt="" className="w-full h-full" />
-          ) : (
-            <div className="w-full h-full flex items-center justify-center">
-              <Music className="w-5 h-5 text-[var(--text-tertiary)]" />
-            </div>
-          )}
+          <SmartCover src={result.coverUrl} />
           {/* hover 播放图标 */}
           <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
             <Play className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" />

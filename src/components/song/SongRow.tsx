@@ -1,4 +1,4 @@
-import { MoreVertical } from 'lucide-react';
+import { Music, MoreVertical } from 'lucide-react';
 import { SOURCE_COLORS } from './sourceColors';
 import { PLATFORM_SHORT_NAMES } from '../../core/platformPriority';
 import { usePlayerStore } from '@shared/store/playerStore';
@@ -58,7 +58,7 @@ export default function SongRow({ song, onPlay, onMore }: SongRowProps) {
       }`}
     >
       <div className="w-12 h-12 rounded-lg bg-[var(--bg-tertiary)] flex-shrink-0 overflow-hidden">
-        <SmartCover src={song.coverUrl} className="w-full h-full" />
+        <SmartCover src={song.coverUrl} />
       </div>
 
       <div className="flex-1 min-w-0">

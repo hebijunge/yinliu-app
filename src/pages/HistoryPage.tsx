@@ -33,12 +33,17 @@ function formatDuration(s?: number): string {
   return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
+/** 播放历史虚拟行固定行高（px）：卡片 72 + 间距 6 */
+const ROW_HEIGHT = 78;
+
 export default function HistoryPage() {
   const { records, isLoading, loadRecords, clearHistory, removeRecord } = usePlayHistoryStore();
   const { playlists, addSongToPlaylist, toggleFavorite, isFavorite } = usePlaylistStore();
   const [pickerFor, setPickerFor] = useState<HistoryRecord | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const { currentQuality } = usePlayerStore();
+  // P3：播放历史虚拟化（固定行高 78px = 卡片 72 + 间距 6）
+  const vl = useVirtualList({ count: records.length, estimateSize: ROW_HEIGHT });
 
   // E4: 清空历史守卫（进行中禁用 + 300ms 防抖，防双击重复清空）
   const handleClearHistory = async () => {
@@ -123,13 +128,10 @@ export default function HistoryPage() {
     [toggleFavorite]
   );
 
-  // P3：播放历史列表虚拟化（固定行高 78px）
-  const { scrollRef, virtualItems, totalSize, rowStyle } = useVirtualList(records, 78);
-
   return (
-    <div className="max-w-4xl mx-auto w-full h-full flex flex-col pb-8">
+    <div className="max-w-4xl mx-auto pb-8 h-full flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6 flex-shrink-0">
+      <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-[var(--accent-soft)] flex items-center justify-center">
             <Clock className="w-5 h-5 text-[var(--accent)]" />
@@ -167,17 +169,19 @@ export default function HistoryPage() {
           <p className="text-sm text-[var(--text-tertiary)]">去发现页搜索并播放一首歌试试</p>
         </div>
       ) : (
-        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto pr-1">
-          <div style={{ height: totalSize, position: 'relative' }}>
-            {virtualItems.map((vRow) => {
-            const record = records[vRow.index];
-            const isFav = isFavorite({ title: record.title, artist: record.artist });
-            return (
-              <div
-                key={record.id}
-                style={rowStyle(vRow)}
-                className="group flex items-center gap-3 p-3 rounded-2xl bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors border border-transparent hover:border-[var(--border-subtle)]"
-              >
+        <div ref={vl.containerRef} className="flex-1 min-h-0 overflow-y-auto scrollbar-hide" data-testid="history-list">
+          <div style={{ height: vl.totalSize, position: 'relative' }}>
+            {vl.getVirtualItems().map((vi) => {
+              const record = records[vi.index];
+              const isFav = isFavorite({ title: record.title, artist: record.artist });
+              return (
+                <div
+                  key={record.id}
+                  ref={vl.measureElement}
+                  data-index={vi.index}
+                  style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: ROW_HEIGHT, transform: `translateY(${vi.start}px)` }}
+                  className="group flex items-center gap-3 p-3 mb-1.5 rounded-2xl bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors border border-transparent hover:border-[var(--border-subtle)]"
+                >
                 {/* Cover / Icon */}
                 <button
                   onClick={() => handlePlay(record)}
@@ -243,7 +247,7 @@ export default function HistoryPage() {
                 </div>
               </div>
             );
-            })}
+          })}
           </div>
         </div>
       )}

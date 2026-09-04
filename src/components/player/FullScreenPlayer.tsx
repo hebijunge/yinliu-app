@@ -15,7 +15,7 @@ import QueuePanel from './QueuePanel';
 import QualitySelector, { qualityLabel } from './QualitySelector';
 import type { ParsedLyrics } from '../../modules/music/lyrics';
 import type { RepeatMode } from '../../shared/store/playerStore';
-import SmartCover from '../ui/SmartCover';
+import SmartCover from '../../components/ui/SmartCover';
 
 const MODE_ICONS: Record<RepeatMode, typeof Repeat> = {
   sequence: ListMusic,
