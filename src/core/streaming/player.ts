@@ -79,6 +79,8 @@ class StreamingAudioPlayer {
   // 数据缓冲
   private chunks: Array<{ data: Uint8Array; start: number; end: number }> = [];
   private totalDownloaded = 0;
+  // v29-A2: 用户设定音量基准 —— 新建 audio 元素时统一应用，避免重建后音量跳变
+  private volume = 1;
   private totalSize = 0;
   private mimeType = 'audio/mpeg';
 
@@ -500,72 +502,105 @@ class StreamingAudioPlayer {
 
     this.setState('loading');
 
+    // v29-A2: load() 语义 = 「首块就绪即返回」。旧实现把整曲下载+解密循环放在
+    // load() 内同步执行，PlayGate 管线被整曲下载阻塞——快速切歌时新请求必须
+    // 排队等旧歌唱完下载完才轮到，表现为主界面长时间 loading。现在：
+    //   - 下载循环移交后台执行（数据落缓存 / blob 刷新照旧）；
+    //   - load() 仅等待首块就绪（或首块前失败/取消），即可让出管线。
+    let resolveFirstChunk!: () => void;
+    let rejectFirstChunk!: (err: Error) => void;
+    let firstChunkSettled = false;
+    const firstChunkReady = new Promise<void>((resolve, reject) => {
+      resolveFirstChunk = () => {
+        if (!firstChunkSettled) {
+          firstChunkSettled = true;
+          resolve();
+        }
+      };
+      rejectFirstChunk = (err: Error) => {
+        if (!firstChunkSettled) {
+          firstChunkSettled = true;
+          reject(err);
+        }
+      };
+    });
+
     const MIN_START_SIZE = 256 * 1024;
-    let totalReceived = 0;
-    let chunkIndex = 0;
 
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+    // 后台下载循环（detached —— 错误经 onError 上报，不再阻塞 load 调用方）
+    void (async () => {
+      let totalReceived = 0;
+      let chunkIndex = 0;
 
-        const start = totalReceived;
-        const end = start + value.length - 1;
-        this.chunks.push({ data: value, start, end });
-        totalReceived += value.length;
-        this.totalDownloaded = totalReceived;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        // 写入缓存
-        await streamCacheEngine.appendData(this.cacheKey, value, start);
+          const start = totalReceived;
+          const end = start + value.length - 1;
+          this.chunks.push({ data: value, start, end });
+          totalReceived += value.length;
+          this.totalDownloaded = totalReceived;
 
-        // 首次达到起播阈值时开始播放
-        if (this.state === 'loading' && totalReceived >= MIN_START_SIZE) {
-          debugLogger.info('streaming', 'Encrypted stream first chunk ready', {
-            cacheKey: this.cacheKey,
-            received: totalReceived,
-          });
-          await this.onFirstChunkReady();
-        }
+          // 写入缓存
+          await streamCacheEngine.appendData(this.cacheKey, value, start);
 
-        // 后续 chunks：定期刷新 blob URL
-        if (chunkIndex > 0 && !this.useMSE) {
-          const shouldRefreshBySize =
-            this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
-          if (shouldRefreshBySize) {
-            await this.setupBlobPlayback();
-            this.lastRefreshDownloaded = this.totalDownloaded;
+          // 首次达到起播阈值时开始播放
+          if (this.state === 'loading' && totalReceived >= MIN_START_SIZE) {
+            debugLogger.info('streaming', 'Encrypted stream first chunk ready', {
+              cacheKey: this.cacheKey,
+              received: totalReceived,
+            });
+            await this.onFirstChunkReady();
+            resolveFirstChunk();
           }
+
+          // 后续 chunks：定期刷新 blob URL
+          if (chunkIndex > 0 && !this.useMSE) {
+            const shouldRefreshBySize =
+              this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
+            if (shouldRefreshBySize) {
+              await this.setupBlobPlayback();
+              this.lastRefreshDownloaded = this.totalDownloaded;
+            }
+          }
+
+          chunkIndex++;
         }
 
-        chunkIndex++;
-      }
+        // 流结束后的处理
+        if (this.state === 'loading') {
+          // 数据量不足 MIN_START_SIZE，但流已结束，直接播放
+          await this.onFirstChunkReady();
+          resolveFirstChunk();
+        } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
+          // 最终刷新 blob（P3：chunks 已清空时也要刷新，尾部数据在缓存中）
+          debugLogger.info('streaming', 'Encrypted stream completed, final blob refresh');
+          await this.setupBlobPlayback();
+        }
 
-      // 流结束后的处理
-      if (this.state === 'loading') {
-        // 数据量不足 MIN_START_SIZE，但流已结束，直接播放
-        await this.onFirstChunkReady();
-      } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
-        // 最终刷新 blob（P3：chunks 已清空时也要刷新，尾部数据在缓存中）
-        debugLogger.info('streaming', 'Encrypted stream completed, final blob refresh');
-        await this.setupBlobPlayback();
+        this.totalSize = totalReceived;
+        if (this.cacheKey && this.totalSize > 0) {
+          await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
+        }
+      } catch (err) {
+        if (this.encryptedStreamAbortController?.signal.aborted) {
+          // 正常取消（切歌/停止）：与旧行为一致静默返回，load 以成功落定
+          resolveFirstChunk();
+          return;
+        }
+        this.setState('error');
+        this.callbacks.onError?.(err instanceof Error ? err.message : 'Encrypted stream failed');
+        // 首块前的失败让 load() 拿到错误（调用方包装上报）；首块后只经 onError 上报
+        rejectFirstChunk(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        reader.releaseLock();
+        this.encryptedStreamAbortController = null;
       }
+    })();
 
-      this.totalSize = totalReceived;
-      if (this.cacheKey && this.totalSize > 0) {
-        await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
-      }
-    } catch (err) {
-      if (this.encryptedStreamAbortController?.signal.aborted) {
-        // 正常取消，不报错
-        return;
-      }
-      this.setState('error');
-      this.callbacks.onError?.(err instanceof Error ? err.message : 'Encrypted stream failed');
-      throw err;
-    } finally {
-      reader.releaseLock();
-      this.encryptedStreamAbortController = null;
-    }
+    await firstChunkReady;
   }
 
   /**
@@ -617,85 +652,114 @@ class StreamingAudioPlayer {
 
     this.setState('loading');
 
-    const MIN_START_SIZE = 256 * 1024;
-    let totalReceived = 0;
-    let chunkIndex = 0;
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const start = totalReceived;
-        const end = start + value.length - 1;
-        this.chunks.push({ data: value, start, end });
-        totalReceived += value.length;
-        this.totalDownloaded = totalReceived;
-
-        // 写入缓存
-        await streamCacheEngine.appendData(this.cacheKey, value, start);
-
-        // 首次达到起播阈值时开始播放
-        if (this.state === 'loading' && totalReceived >= MIN_START_SIZE) {
-          debugLogger.info('streaming', 'Z3D stream first chunk ready', {
-            cacheKey: this.cacheKey,
-            received: totalReceived,
-          });
-          await this.onFirstChunkReady();
-          // P2: Z3D 大文件内存控制——起播后清空内存 chunks，数据已落地缓存
-          this.chunks = [];
-          debugLogger.info('streaming', 'Z3D: cleared in-memory chunks after first playback', {
-            cacheKey: this.cacheKey,
-          });
+    // v29-A2: load() 语义 = 「首块就绪即返回」，下载循环移交后台（与 CENC 同）
+    let resolveFirstChunk!: () => void;
+    let rejectFirstChunk!: (err: Error) => void;
+    let firstChunkSettled = false;
+    const firstChunkReady = new Promise<void>((resolve, reject) => {
+      resolveFirstChunk = () => {
+        if (!firstChunkSettled) {
+          firstChunkSettled = true;
+          resolve();
         }
+      };
+      rejectFirstChunk = (err: Error) => {
+        if (!firstChunkSettled) {
+          firstChunkSettled = true;
+          reject(err);
+        }
+      };
+    });
 
-        // 后续 chunks：定期刷新 blob URL
-        if (chunkIndex > 0 && !this.useMSE) {
-          const shouldRefreshBySize =
-            this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
-          if (shouldRefreshBySize) {
-            await this.setupBlobPlayback();
-            this.lastRefreshDownloaded = this.totalDownloaded;
-            // P2: Z3D 大文件内存控制——刷新后清空内存 chunks，数据已落地缓存
-            this.chunks = [];
-            debugLogger.info('streaming', 'Z3D: cleared in-memory chunks after blob refresh', {
+    const MIN_START_SIZE = 256 * 1024;
+
+    // 后台下载循环（detached —— 错误经 onError 上报，不再阻塞 load 调用方）
+    void (async () => {
+      let totalReceived = 0;
+      let chunkIndex = 0;
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const start = totalReceived;
+          const end = start + value.length - 1;
+          this.chunks.push({ data: value, start, end });
+          totalReceived += value.length;
+          this.totalDownloaded = totalReceived;
+
+          // 写入缓存
+          await streamCacheEngine.appendData(this.cacheKey, value, start);
+
+          // 首次达到起播阈值时开始播放
+          if (this.state === 'loading' && totalReceived >= MIN_START_SIZE) {
+            debugLogger.info('streaming', 'Z3D stream first chunk ready', {
               cacheKey: this.cacheKey,
-              totalDownloaded: this.totalDownloaded,
+              received: totalReceived,
+            });
+            await this.onFirstChunkReady();
+            resolveFirstChunk();
+            // P2: Z3D 大文件内存控制——起播后清空内存 chunks，数据已落地缓存
+            this.chunks = [];
+            debugLogger.info('streaming', 'Z3D: cleared in-memory chunks after first playback', {
+              cacheKey: this.cacheKey,
             });
           }
+
+          // 后续 chunks：定期刷新 blob URL
+          if (chunkIndex > 0 && !this.useMSE) {
+            const shouldRefreshBySize =
+              this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
+            if (shouldRefreshBySize) {
+              await this.setupBlobPlayback();
+              this.lastRefreshDownloaded = this.totalDownloaded;
+              // P2: Z3D 大文件内存控制——刷新后清空内存 chunks，数据已落地缓存
+              this.chunks = [];
+              debugLogger.info('streaming', 'Z3D: cleared in-memory chunks after blob refresh', {
+                cacheKey: this.cacheKey,
+                totalDownloaded: this.totalDownloaded,
+              });
+            }
+          }
+
+          chunkIndex++;
         }
 
-        chunkIndex++;
-      }
+        // 流结束后的处理
+        if (this.state === 'loading') {
+          // 数据量不足 MIN_START_SIZE，但流已结束，直接播放
+          await this.onFirstChunkReady();
+          resolveFirstChunk();
+          this.chunks = []; // P2
+        } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
+          // 最终刷新 blob（P3：chunks 已清空时也要刷新，尾部数据在缓存中）
+          debugLogger.info('streaming', 'Z3D stream completed, final blob refresh');
+          await this.setupBlobPlayback();
+          this.chunks = []; // P2
+        }
 
-      // 流结束后的处理
-      if (this.state === 'loading') {
-        // 数据量不足 MIN_START_SIZE，但流已结束，直接播放
-        await this.onFirstChunkReady();
-        this.chunks = []; // P2
-      } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
-        // 最终刷新 blob（P3：chunks 已清空时也要刷新，尾部数据在缓存中）
-        debugLogger.info('streaming', 'Z3D stream completed, final blob refresh');
-        await this.setupBlobPlayback();
-        this.chunks = []; // P2
+        this.totalSize = totalReceived;
+        if (this.cacheKey && this.totalSize > 0) {
+          await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
+        }
+      } catch (err) {
+        if (this.encryptedStreamAbortController?.signal.aborted) {
+          // 正常取消（切歌/停止）：与旧行为一致静默返回，load 以成功落定
+          resolveFirstChunk();
+          return;
+        }
+        this.setState('error');
+        this.callbacks.onError?.(err instanceof Error ? err.message : 'Z3D stream failed');
+        // 首块前的失败让 load() 拿到错误（调用方包装上报）；首块后只经 onError 上报
+        rejectFirstChunk(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        reader.releaseLock();
+        this.encryptedStreamAbortController = null;
       }
+    })();
 
-      this.totalSize = totalReceived;
-      if (this.cacheKey && this.totalSize > 0) {
-        await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
-      }
-    } catch (err) {
-      if (this.encryptedStreamAbortController?.signal.aborted) {
-        // 正常取消，不报错
-        return;
-      }
-      this.setState('error');
-      this.callbacks.onError?.(err instanceof Error ? err.message : 'Z3D stream failed');
-      throw err;
-    } finally {
-      reader.releaseLock();
-      this.encryptedStreamAbortController = null;
-    }
+    await firstChunkReady;
   }
 
   /**
@@ -786,10 +850,14 @@ class StreamingAudioPlayer {
 
   /**
    * 设置音量
+   * v29-A2: 持久化音量基准 —— 新建的 audio 元素（首块起播 / blob 刷新重建）
+   * 统一应用最近一次用户设定音量；旧实现只写当前 audio，元素重建后音量
+   * 回落到默认 1.0，表现为切歌/刷新瞬间音量跳变
    */
   setVolume(volume: number): void {
+    this.volume = Math.max(0, Math.min(1, volume));
     if (this.audio) {
-      this.audio.volume = Math.max(0, Math.min(1, volume));
+      this.audio.volume = this.volume;
     }
   }
 
@@ -1404,6 +1472,8 @@ class StreamingAudioPlayer {
 
       this.audio = new Audio(url);
       this.audio.crossOrigin = 'anonymous';
+      // v29-A2: 新元素统一应用用户音量基准
+      this.audio.volume = this.volume;
       this.audioElementListener?.(this.audio);
 
       let resolved = false;
@@ -1518,6 +1588,8 @@ class StreamingAudioPlayer {
 
     this.audio = new Audio(url);
     this.audio.crossOrigin = 'anonymous';
+    // v29-A2: 新元素统一应用用户音量基准
+    this.audio.volume = this.volume;
     this.audioElementListener?.(this.audio);
 
     this.audio.addEventListener('canplay', () => {
