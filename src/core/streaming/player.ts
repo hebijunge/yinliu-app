@@ -96,6 +96,13 @@ class StreamingAudioPlayer {
   private useMSE = false;
   private mseQueue: Uint8Array[] = [];
   private mseUpdating = false;
+  // v28-fix: MSE 实际传给 addSourceBuffer 的 MIME（MP4 流需带 codecs 串）；
+  // 空串表示本流不支持 MSE
+  private mseMimeType = '';
+  // v28-fix: MSE 模式下 audio.duration 是已缓冲段时长（随 append 增长），
+  // 用 totalSize/已下载数据估算全时长供进度条与 seek 换算；完成时由
+  // endOfStream 校正后回落真实值
+  private mseEstimatedDuration = 0;
 
   // 缓存
   private cacheKey = '';
@@ -216,6 +223,11 @@ class StreamingAudioPlayer {
   }
 
   getDuration(): number {
+    // v28-fix: MSE 模式下 audio.duration 是已缓冲段时长（随 append 增长），
+    // 已估算全时长时优先返回估算值；完成时 endOfStream 给出真实时长后回落
+    if (this.useMSE && this.mseEstimatedDuration > 0) {
+      return this.mseEstimatedDuration;
+    }
     return this.audio?.duration ?? 0;
   }
 
@@ -291,13 +303,36 @@ class StreamingAudioPlayer {
     }
 
     // 检测 MSE 可用性
+    // v28-fix: 旧判定 `preferredMimeType === this.mimeType` 在支持 AAC 的设备上
+    // （preferred 固定为 audio/mp4; codecs=...）使 MP3 流永远判定失败 → 永远走
+    // Blob 刷新模式，每 256KB 整体换 src 造成真机可感知断播（v27 真机日志证实：
+    // useMSE=false + 7 连刷「Blob refresh from cache」）。
+    // 改为按「本流 MIME 是否受 MSE 支持」判定；MP4 流用带 codecs 的 preferred 串。
     const mseCap = detectMSECapability();
-    this.useMSE = mseCap.isUsable && mseCap.preferredMimeType === this.mimeType;
+    this.mseMimeType = '';
+    if (mseCap.isUsable) {
+      if (this.mimeType === 'audio/mpeg' && mseCap.mp3Supported) {
+        this.mseMimeType = 'audio/mpeg';
+      } else if (
+        this.mimeType === 'audio/mp4' &&
+        mseCap.mp4Supported &&
+        mseCap.preferredMimeType
+      ) {
+        this.mseMimeType = mseCap.preferredMimeType;
+      }
+    }
+    this.useMSE = this.mseMimeType !== '';
 
     debugLogger.info('streaming', 'StreamingAudioPlayer.load', {
       cacheKey: options.cacheKey,
       useMSE: this.useMSE,
       mimeType: this.mimeType,
+      mseMimeType: this.mseMimeType || null,
+      mseCap: {
+        mp3Supported: mseCap.mp3Supported,
+        mp4Supported: mseCap.mp4Supported,
+        preferred: mseCap.preferredMimeType,
+      },
     });
 
     // 初始化缓存
@@ -319,6 +354,21 @@ class StreamingAudioPlayer {
 
     // 开始下载（从缓存已下载的最远位置开始）
     const resumeOffset = this.getResumeOffset();
+    // v28-fix: MSE 模式断点续播——缓存前缀必须先拼进 SourceBuffer，否则已缓存
+    // 区间在 MSE 缓冲之外，回放/seek 到该区间无媒体可用。前缀读失败则本会话
+    // 整体降级 Blob 模式（Blob 路径读缓存文件天然覆盖前缀）
+    if (this.useMSE && resumeOffset > 0) {
+      const prefixOk = await this.loadResumePrefixIntoMSE(resumeOffset);
+      if (!prefixOk) {
+        this.useMSE = false;
+        this.mseMimeType = '';
+        this.chunks = [];
+        debugLogger.info('streaming', 'MSE unavailable after prefix load failure, blob fallback', {
+          cacheKey: options.cacheKey,
+          resumeOffset,
+        });
+      }
+    }
     this.setState('loading');
     if (!options.url) {
       throw new Error('StreamingAudioPlayer.load: url is required for fetch-based playback');
@@ -648,7 +698,11 @@ class StreamingAudioPlayer {
   async seek(time: number): Promise<void> {
     if (!this.audio) return;
 
-    const duration = this.audio.duration || 0;
+    // v28-fix: MSE 模式下 audio.duration 是已缓冲段时长，字节换算必须用估算全时长
+    const duration =
+      this.useMSE && this.mseEstimatedDuration > 0
+        ? this.mseEstimatedDuration
+        : this.audio.duration || 0;
     const clampedTime = duration > 0 ? Math.max(0, Math.min(time, duration)) : Math.max(0, time);
 
     // v21.3: 加密流由浏览器自行处理 seek（blob URL 顺序增长）
@@ -852,6 +906,9 @@ class StreamingAudioPlayer {
     this.seekResumePlay = false;
     this.mseQueue = [];
     this.mseUpdating = false;
+    // v28-fix: 清理 MSE 模式选择与时长估算状态
+    this.mseMimeType = '';
+    this.mseEstimatedDuration = 0;
     // v22-lru-fix: 播放会话结束，释放当前播放/预取条目的活跃标记
     if (this.lastActiveCacheKey) {
       streamCacheEngine.markInactive(this.lastActiveCacheKey);
@@ -1034,7 +1091,10 @@ class StreamingAudioPlayer {
     }
 
     // 文件完整性校验
-    const hasSizeMismatch = this.totalSize > 0 && allData.length !== this.totalSize;
+    // v28-fix: 流式前缀 < totalSize 是边下边播的正常中间态——旧判定把首块场景
+    // 误报「size mismatch」WARN 并强制走内存 blob（v27 真机日志证实）。
+    // 仅当合并数据越过 totalSize（真实异常）才走内存 blob 兜底，其余走缓存读路径
+    const hasSizeMismatch = this.totalSize > 0 && allData.length > this.totalSize;
     if (hasSizeMismatch) {
       debugLogger.warn('streaming', 'setupBlobPlayback: size mismatch', {
         mergedSize: allData.length,
@@ -1141,10 +1201,85 @@ class StreamingAudioPlayer {
   }
 
   /**
+   * v28-fix: MSE 断点续播——把缓存前缀（0..resumeOffset-1）读入 SourceBuffer 预挂载队列。
+   * 原生平台 readAsBlobUrl 返回 zero-copy file URL，用 fetch 读回字节后整体作为一个
+   * chunk 暂存，由 setupMSE 的 sourceopen 回调统一 append。任何失败返回 false，
+   * 由调用方降级 Blob 模式。
+   */
+  private async loadResumePrefixIntoMSE(resumeOffset: number): Promise<boolean> {
+    try {
+      // 前缀过大时不为 MSE 整段载入内存（Blob 模式缓存读路径零拷贝更合适）
+      const MAX_MSE_PREFIX_BYTES = 32 * 1024 * 1024;
+      if (resumeOffset > MAX_MSE_PREFIX_BYTES) {
+        debugLogger.info('streaming', 'MSE resume: prefix too large, blob fallback', {
+          cacheKey: this.cacheKey,
+          resumeOffset,
+        });
+        return false;
+      }
+      const url = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        throw new Error(`prefix fetch failed: ${resp.status}`);
+      }
+      const buf = new Uint8Array(await resp.arrayBuffer());
+      if (buf.length < resumeOffset) {
+        throw new Error(`prefix short: file=${buf.length}, expected=${resumeOffset}`);
+      }
+      // 文件可能比登记范围略长（append 边界），以登记范围为准
+      const prefix = buf.length === resumeOffset ? buf : buf.subarray(0, resumeOffset);
+      this.chunks.push({ data: prefix, start: 0, end: resumeOffset - 1 });
+      // 计入已下载体量，供 MSE 时长估算与刷新判定使用
+      this.totalDownloaded += resumeOffset;
+      debugLogger.info('streaming', 'MSE resume: cached prefix staged for SourceBuffer', {
+        cacheKey: this.cacheKey,
+        bytes: resumeOffset,
+      });
+      return true;
+    } catch (err) {
+      debugLogger.warn('streaming', 'MSE resume: cached prefix load failed', {
+        cacheKey: this.cacheKey,
+        resumeOffset,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * v28-fix: 估算 MSE 全时长。
+   * SourceBuffer 模式下 audio.duration 是已缓冲段时长（随 append 增长），
+   * 用 totalSize / 已下载体量 比例外推全时长，仅供进度条与 seek 字节换算；
+   * 下载完成 endOfStream 后由 getDuration 回落真实 duration。
+   * 必须在 SourceBuffer 空闲时设置（updateend 回调内调用）。
+   */
+  private applyMSEDurationEstimate(): void {
+    if (!this.useMSE || !this.mediaSource || this.mediaSource.readyState !== 'open') return;
+    if (this.mseEstimatedDuration > 0 || this.totalSize <= 0) return;
+    if (this.mseUpdating || (this.sourceBuffer && this.sourceBuffer.updating)) return;
+    const bufferedDur = this.audio?.duration ?? 0;
+    if (!(bufferedDur > 0) || this.totalDownloaded <= 0) return;
+    const estimated = bufferedDur * (this.totalSize / this.totalDownloaded);
+    if (estimated > bufferedDur) {
+      try {
+        this.mediaSource.duration = estimated;
+        this.mseEstimatedDuration = estimated;
+        debugLogger.info('streaming', 'MSE duration estimated', {
+          bufferedDur,
+          downloaded: this.totalDownloaded,
+          totalSize: this.totalSize,
+          estimated,
+        });
+      } catch {
+        // duration 设置失败不影响播放（完成时 endOfStream 会给出真实时长）
+      }
+    }
+  }
+
+  /**
    * MSE 模式：设置 MediaSource
    */
-  private async setupMSE(): Promise<void> {
-    return new Promise((resolve, reject) => {
+  private async setupMSE(): Promise<void> {    return new Promise((resolve, reject) => {
       try {
         this.mediaSource = new MediaSource();
         const url = URL.createObjectURL(this.mediaSource);
@@ -1154,12 +1289,14 @@ class StreamingAudioPlayer {
           if (!this.mediaSource) return;
 
           try {
-            this.sourceBuffer = this.mediaSource.addSourceBuffer(this.mimeType);
+            this.sourceBuffer = this.mediaSource.addSourceBuffer(this.mseMimeType || this.mimeType);
             this.sourceBuffer.mode = 'segments';
 
             this.sourceBuffer.addEventListener('updateend', () => {
               this.mseUpdating = false;
               this.flushMSEQueue();
+              // v28-fix: 每次 append 稳定后尝试估算全时长（totalSize 已知且尚未估算时）
+              this.applyMSEDurationEstimate();
             });
 
             this.sourceBuffer.addEventListener('error', (e) => {
@@ -1276,6 +1413,22 @@ class StreamingAudioPlayer {
       });
 
       this.audio.addEventListener('ended', () => {
+        // v28-fix: 数据尚未下载完成时触达已缓冲末尾 ≠ 播放结束——按缓冲等待处理，
+        // 下一块数据刷新 blob/追加 SourceBuffer 后自动续播，防止误跳下一首
+        if (
+          this.totalSize > 0 &&
+          this.totalDownloaded < this.totalSize &&
+          this.state !== 'idle'
+        ) {
+          debugLogger.warn('streaming', 'Reached buffered end while still downloading', {
+            cacheKey: this.cacheKey,
+            currentTime: this.audio?.currentTime ?? 0,
+            downloaded: this.totalDownloaded,
+            totalSize: this.totalSize,
+          });
+          this.setState('buffering');
+          return;
+        }
         // P3 内存修复：播放结束即停掉 250ms 进度轮询，释放对 audio 的定时引用
         this.stopProgressTracking();
         this.setState('completed');
@@ -1343,6 +1496,21 @@ class StreamingAudioPlayer {
     });
 
     this.audio.addEventListener('ended', () => {
+      // v28-fix: 同 setupAudioWithReadyWait——下载未完成时触达缓冲末尾按缓冲等待处理
+      if (
+        this.totalSize > 0 &&
+        this.totalDownloaded < this.totalSize &&
+        this.state !== 'idle'
+      ) {
+        debugLogger.warn('streaming', 'Reached buffered end while still downloading (refresh)', {
+          cacheKey: this.cacheKey,
+          currentTime: this.audio?.currentTime ?? 0,
+          downloaded: this.totalDownloaded,
+          totalSize: this.totalSize,
+        });
+        this.setState('buffering');
+        return;
+      }
       // P3 内存修复：播放结束即停掉 250ms 进度轮询，释放对 audio 的定时引用
       this.stopProgressTracking();
       this.setState('completed');
@@ -1392,7 +1560,13 @@ class StreamingAudioPlayer {
     return {
       onChunkComplete: async (chunk, data) => {
         // 保存 chunk
-        this.chunks.push({ data, start: chunk.start, end: chunk.end });
+        // v28-fix: MSE 模式下数据直接进 SourceBuffer，不再累积内存 chunks
+        //（避免大文件整曲驻留内存，回退 P2 内存优化）；仅 MSE 就绪前的
+        // 首块/前缀需要暂存，供 setupMSE 的 sourceopen 统一 append
+        const mseActive = this.useMSE && !!this.sourceBuffer;
+        if (!mseActive) {
+          this.chunks.push({ data, start: chunk.start, end: chunk.end });
+        }
         this.totalDownloaded += data.length;
 
         // 更新总大小
@@ -1406,6 +1580,27 @@ class StreamingAudioPlayer {
         // v23-fix: seek 后首块数据到位 → 立即刷新 blob 并把播放位置回填到 seek 目标
         // （此前 pendingSeekTime 只记录不消费，导致 seek 不生效、进度条回弹）
         if (this.state === 'seeking' && this.pendingSeekTime >= 0) {
+          // v28-fix: MSE 模式——seek 数据直接 append 进 SourceBuffer 并回填位置，
+          // 严禁走 setupBlobPlayback（会换 src 撕毁 MSE 会话）
+          if (mseActive) {
+            const seekTarget = this.pendingSeekTime;
+            this.pendingSeekTime = -1;
+            this.appendToMSE(data);
+            try {
+              this.audio!.currentTime = seekTarget;
+            } catch {
+              // ignore
+            }
+            if (this.seekResumePlay) {
+              this.setState('playing');
+              void this.audio?.play().catch(() => {
+                // 自动播放策略可能阻止
+              });
+            } else {
+              this.setState('paused');
+            }
+            return;
+          }
           debugLogger.info('streaming', 'Seek target data ready, applying pending seek', {
             pendingSeekTime: this.pendingSeekTime,
             chunkStart: chunk.start,
@@ -1448,14 +1643,17 @@ class StreamingAudioPlayer {
         }
 
         // Blob 模式：定期刷新
-        // v21.2 修复：增加按累计下载量触发刷新，不依赖播放进度条件
+        // v28-fix: 尺寸触发必须与播放位置条件联判——旧逻辑每 256KB 无条件换 src，
+        // 真机实测每次刷新都是一次可感知断播（v27 日志 18:49:57–18:50:01 七连刷）。
+        // 现在只在播放逼近已缓冲末尾（shouldRefreshBlob）时才换 src；
+        // 下载余量充足时后台继续拉数据，不再打断播放
         if (!this.useMSE && chunk.index > 0) {
           const shouldRefreshByProgress =
             chunk.index % MIN_CHUNKS_BEFORE_REFRESH === 0 && this.shouldRefreshBlob();
           const shouldRefreshBySize =
             this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
 
-          if (shouldRefreshByProgress || shouldRefreshBySize) {
+          if ((shouldRefreshByProgress || shouldRefreshBySize) && this.shouldRefreshBlob()) {
             await this.setupBlobPlayback();
             this.lastRefreshDownloaded = this.totalDownloaded;
           }
@@ -1495,6 +1693,8 @@ class StreamingAudioPlayer {
           } catch {
             // 忽略
           }
+          // v28-fix: 下载完成，估算时长让位给 endOfStream 给出的真实时长
+          this.mseEstimatedDuration = 0;
         } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
           // v21.2 修复：Blob 模式下所有 chunk 下载完成后重建完整 blob
           // P3 内存修复：chunks 已清空时也要重建（尾部数据落地缓存后 blob 可能落后）
@@ -1512,17 +1712,18 @@ class StreamingAudioPlayer {
    * 判断是否需要刷新 blob URL（播放接近已缓存末尾）
    */
   private shouldRefreshBlob(): boolean {
-    if (!this.audio || this.totalSize === 0) return false;
+    if (!this.audio) return false;
 
-    const duration = this.audio.duration || 1;
-    const currentTime = this.audio.currentTime;
-    const progress = currentTime / duration;
-
-    // 已缓存的比例
-    const cachedRatio = this.totalDownloaded / this.totalSize;
-
-    // 当播放进度超过已缓存数据的 85% 时刷新
-    return progress > cachedRatio * BUFFER_THRESHOLD;
+    // v28-fix: 用 audio.buffered 的真实可解码末尾判定逼近程度，不再依赖
+    // duration 语义（部分 WebView 对截断 MP3 会按码率外推全文件时长，
+    // 旧 cachedRatio×progress 判定在两种时长语义下表现不一致）。
+    // 播放进入已缓冲区间最后 15% 才刷新，下载余量充足时不打断播放；
+    // 同时天然覆盖 totalSize 未知的场景
+    const buffered = this.audio.buffered;
+    if (buffered.length === 0) return false;
+    const bufferedEnd = buffered.end(buffered.length - 1);
+    if (!(bufferedEnd > 0)) return false;
+    return this.audio.currentTime / bufferedEnd > BUFFER_THRESHOLD;
   }
 
   /**
