@@ -543,6 +543,7 @@ export class DownloadEngine {
     let downloaded = resumeOffset;
     let lastTime = Date.now();
     let lastDownloaded = downloaded;
+    let lastEmitAt = 0;
 
     const emitProgress = () => {
       task.downloadedSize = downloaded;
@@ -556,6 +557,11 @@ export class DownloadEngine {
         lastTime = now;
         lastDownloaded = downloaded;
       }
+      // v24 性能修复：progress 事件节流（300ms 或到达 100% 时才发）——
+      // 旧实现每个 1MiB 分块都 emit 一次，快网下每秒十余次 store 更新会让
+      // 订阅下载 store 的页面（下载管理/我的）跟着高频重渲染，拖累整机流畅度。
+      if (now - lastEmitAt < 300 && downloaded < totalSize) return;
+      lastEmitAt = now;
       this.emit('progress', {
         taskId,
         progress: ratio,

@@ -498,3 +498,13 @@ html.dark {
     transform: none;
   }
 }
+
+
+/* ===== v24: 下载弹窗遮罩淡入（配合 panel-slide-up 面板滑入） ===== */
+@keyframes sheet-backdrop-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.sheet-backdrop-fade {
+  animation: sheet-backdrop-fade 0.25s ease-out both;
+}

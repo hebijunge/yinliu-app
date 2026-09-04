@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, memo } from 'react';
 import { useDownloadStore } from '../shared/store/downloadStore';
 import { downloadEngine } from '../core/download';
 import { PLATFORM_DISPLAY_NAMES } from '../core/platformPriority';
@@ -32,8 +32,8 @@ function StatusBadge({ status }: { status: DownloadTask['status'] }) {
   return <span className={`text-xs px-2 py-0.5 rounded-full ${s.className}`}>{s.text}</span>;
 }
 
-/* ========== 下载队列单条卡片 ========== */
-function QueueTaskCard({ task }: { task: DownloadTask }) {
+/* ========== 下载队列单条卡片（v24: memo 化——某条任务进度更新不带动其他卡片重渲染） ========== */
+const QueueTaskCard = memo(function QueueTaskCard({ task }: { task: DownloadTask }) {
   const handlePause = (taskId: string) => {
     downloadEngine.pauseDownload(taskId);
   };
@@ -140,7 +140,7 @@ function QueueTaskCard({ task }: { task: DownloadTask }) {
       )}
     </div>
   );
-}
+});
 
 /* ========== 已下载 · 按源分组卡片 ========== */
 function CompletedSourceSection({
