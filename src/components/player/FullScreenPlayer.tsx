@@ -10,10 +10,10 @@ import { useResponsiveLayout } from '../../shared/hooks/useResponsiveLayout';
 import { useNetworkStatus } from '../../shared/hooks/useNetworkStatus';
 import { playerEngine } from '../../core/player';
 import { PLATFORM_DISPLAY_NAMES } from '../../core/platformPriority';
+import { useLyrics } from '../../shared/hooks/useLyrics';
 import { lyricsManager } from '../../modules/music/lyrics';
 import QueuePanel from './QueuePanel';
 import QualitySelector, { qualityLabel } from './QualitySelector';
-import type { ParsedLyrics } from '../../modules/music/lyrics';
 import type { RepeatMode } from '../../shared/store/playerStore';
 import SmartCover from '../../components/ui/SmartCover';
 
@@ -45,22 +45,11 @@ export default function FullScreenPlayer({ onClose }: Props) {
   const [showLyrics, setShowLyrics] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
   const [showQuality, setShowQuality] = useState(false);
-  const [lyrics, setLyrics] = useState<ParsedLyrics | null>(null);
+  const lyrics = useLyrics(currentTrack);
   const [currentLineIndex, setCurrentLineIndex] = useState(-1);
 
   const lyricsScrollRef = useRef<HTMLDivElement>(null);
   const lineRefs = useRef<(HTMLDivElement | null)[]>([]);
-
-  // Load lyrics
-  useEffect(() => {
-    if (!currentTrack) {
-      setLyrics(null);
-      return;
-    }
-    lyricsManager.getLyrics(currentTrack.sourceSongId, currentTrack.sourceId).then((parsed) => {
-      setLyrics(parsed);
-    });
-  }, [currentTrack]);
 
   // Update current lyric line
   useEffect(() => {
