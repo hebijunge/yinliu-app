@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  E1: 按域名放行 http 音源（Android 9+ 默认禁明文）。
+  不使用全局 usesCleartextTraffic，仅对已知 http 音源域放行明文请求。
+  域名来源：代码中出现的 kuwo / kugou 明文接口域
+  （m.kuwo.cn / wapi.kuwo.cn / search.kuwo.cn / m.kugou.com / mobilecdn.kugou.com / lyrics.kugou.com / krcs.kugou.com）。
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">kuwo.cn</domain>
+        <domain includeSubdomains="true">kugou.com</domain>
+    </domain-config>
+</network-security-config>
