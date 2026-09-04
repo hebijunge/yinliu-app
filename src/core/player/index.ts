@@ -96,6 +96,8 @@ export class PlayerEngine {
   private prefetchCache = new Map<string, { url: string; result: PlayUrlResult; actualSourceId: string }>();
   // v14.5: 播放去重 —— 当前正在进行的 resolvePlayUrl Promise
   private resolvePlayUrlPromise: Promise<{ url: string; isLocal: boolean; result: PlayUrlResult; actualSourceId: string }> | null = null;
+  // E4: 进行中取链请求的去重键（sourceId_songId_quality），同键新请求直接合并
+  private pendingDedupKey: string | null = null;
   // v20.1-fix: 切歌取消旧取链 AbortController
   private playAbortController: AbortController | null = null;
 
@@ -458,9 +460,10 @@ export class PlayerEngine {
       this.isStreaming = false;
     }
 
-    // v14.5: 播放去重保护 —— 同曲同音质正在加载中，等待现有请求完成
+    // v14.5/E4: 播放去重保护 —— 同一 track 同音质的取链请求进行中时，新请求直接合并等待，
+    // 不再并发触发第二条取链链路（全量比对 sourceId+songId+quality，避免不同源/不同音质被误合并）
     const dedupKey = `${track.sourceId}_${track.sourceSongId}_${quality}`;
-    if (this.state === 'loading' && this.currentTrack?.sourceSongId === track.sourceSongId && this.resolvePlayUrlPromise) {
+    if (this.state === 'loading' && this.resolvePlayUrlPromise && this.pendingDedupKey === dedupKey) {
       debugLogger.info('player', `播放去重等待: ${track.title}`, { dedupKey });
       const { result } = await this.resolvePlayUrlPromise;
       return result;
@@ -475,6 +478,7 @@ export class PlayerEngine {
     try {
       const resolvePromise = this.resolvePlayUrl(track, quality);
       this.resolvePlayUrlPromise = resolvePromise;
+      this.pendingDedupKey = dedupKey;
       const { url, isLocal, result, actualSourceId } = await resolvePromise;
 
       if (isLocal) {

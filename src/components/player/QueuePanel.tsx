@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { X, Trash2, ChevronUp, ChevronDown, Play, GripVertical } from 'lucide-react';
 import { usePlayerStore } from '../../shared/store/playerStore';
 import { playerEngine } from '../../core/player';
+import { useGuardedAction } from '../../shared/hooks/useGuardedAction';
 
 interface Props {
   onClose: () => void;
@@ -54,9 +55,11 @@ export default function QueuePanel({ onClose }: Props) {
     }
   };
 
-  const handleClear = () => {
+  // E4：清空队列入口守卫——进行中禁用 + 300ms 防抖
+  const doClear = () => {
     usePlayerStore.getState().clearQueue();
   };
+  const { run: handleClear } = useGuardedAction(doClear);
 
   const handleDragStart = (index: number) => {
     setDragIndex(index);

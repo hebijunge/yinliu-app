@@ -4,6 +4,7 @@ import { usePlayHistoryStore, type HistoryRecord } from '../shared/store/playHis
 import { usePlaylistStore, type PlaylistSongInput } from '../shared/store/playlistStore';
 import { usePlayerStore } from '../shared/store/playerStore';
 import { playerEngine } from '../core/player';
+import { useGuardedAction } from '../shared/hooks/useGuardedAction';
 
 const SOURCE_COLORS: Record<string, string> = {
   netease: 'bg-red-500',
@@ -36,6 +37,8 @@ export default function HistoryPage() {
   const { playlists, addSongToPlaylist, toggleFavorite, isFavorite } = usePlaylistStore();
   const [pickerFor, setPickerFor] = useState<HistoryRecord | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  // E4：清空播放历史入口守卫
+  const { run: guardedClear } = useGuardedAction(async (fn: () => Promise<void>) => { await fn(); });
   const { currentQuality } = usePlayerStore();
 
   useEffect(() => {
@@ -299,9 +302,12 @@ export default function HistoryPage() {
                 取消
               </button>
               <button
-                onClick={async () => {
-                  await clearHistory();
-                  setConfirmClear(false);
+                onClick={() => {
+                  // E4：清空入口守卫——进行中禁用 + 300ms 防抖，狂点不重复执行
+                  guardedClear(async () => {
+                    await clearHistory();
+                    setConfirmClear(false);
+                  });
                 }}
                 className="px-5 py-3 rounded-2xl bg-red-500 text-white text-sm font-medium hover:bg-red-600 transition-colors focus-ring"
               >
