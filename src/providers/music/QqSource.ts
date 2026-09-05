@@ -530,9 +530,11 @@ export class QqSource extends BaseHttpSource {
         }
       }
     } catch {
-      /* 缓存留空，匹配不到时返回空列表 */
+      /* B2: 失败不缓存，留空下次重试 —— 失败结果永久缓存会导致断网启动后歌单分类永远为空 */
     }
-    this.qqTagIdCache = map;
+    if (map.size > 0) {
+      this.qqTagIdCache = map;
+    }
     return map;
   }
 
