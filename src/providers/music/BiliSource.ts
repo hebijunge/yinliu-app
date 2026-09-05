@@ -216,8 +216,10 @@ export class BiliSource extends BaseHttpSource {
         return {
           url,
           quality,
+          actualQuality: quality, // 第三方代理，无法校验真实档位
           bitrate: this.qualityToBitrate(quality),
           format: this.guessFormat(url),
+          accurate: false,
         };
       },
     });
@@ -260,7 +262,8 @@ export class BiliSource extends BaseHttpSource {
 
     return {
       url: match.baseUrl,
-      quality: actualQuality,
+      quality: targetQuality,
+      actualQuality,
       bitrate,
       format: this.guessFormat(match.baseUrl),
       accurate: actualQuality === targetQuality,

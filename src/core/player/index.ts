@@ -286,7 +286,7 @@ export class PlayerEngine {
       return {
         url: localUrl,
         isLocal: true,
-        result: { url: localUrl, quality, bitrate: 0, format: ext },
+        result: { url: localUrl, quality, actualQuality: quality, bitrate: 0, format: ext },
         actualSourceId: 'local',
       };
     }
@@ -313,7 +313,7 @@ export class PlayerEngine {
           return {
             url: localUrl,
             isLocal: true,
-            result: { url: localUrl, quality, bitrate: 0, format: 'mp3' },
+            result: { url: localUrl, quality, actualQuality: quality, bitrate: 0, format: 'mp3' },
             actualSourceId: track.sourceId,
           };
         } catch (localErr) {

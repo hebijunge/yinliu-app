@@ -120,7 +120,7 @@ export async function getAggregatedHotSongs(): Promise<AggregatedSearchResult[]>
     const { sourceId, sourceName, songs } = r.value;
 
     for (const song of songs) {
-      const key = makeKey(song.title, song.artist || '', song.duration);
+      const key = makeKey(song.title, song.artist || '');
       let existing = resultMap.get(key);
       if (existing && !isSameSong(existing, song)) {
         // 主键冲突但严格判定不同版本 → 跳过（榜单场景宁可少并不误并）

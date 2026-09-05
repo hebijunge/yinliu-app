@@ -32,6 +32,20 @@ const QUALITY_OPTIONS: Array<{ value: Quality; label: string }> = [
   { value: Quality.HIRES, label: 'Hi-Res' },
 ];
 
+// D6: Toggle 定义在模块作用域，避免每次渲染都生成新组件类型导致子树卸载重建
+const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => (
+  <button
+    onClick={() => onChange(!on)}
+    className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 focus-ring ${on ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
+    role="switch"
+    aria-checked={on}
+  >
+    <span
+      className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-5' : ''}`}
+    />
+  </button>
+);
+
 /**
  * v23 修复走查 #13：自定义下拉组件，替代原生 <select>，与整体视觉风格统一。
  * 点击展开选项浮层；点击外部或选项后收起。
@@ -172,6 +186,9 @@ export default function SettingsPage() {
       confirmText: '恢复默认',
       onConfirm: () => {
         clearAllSettings();
+        // D6: 恢复默认后三库音质同步回标准档，避免设置页/播放器/搜索各自为政
+        usePlayerStore.getState().setQuality(Quality.STANDARD);
+        useSearchStore.getState().setQuality(Quality.STANDARD);
         useSearchStore.getState().clearHistory();
         setCleanDone('all');
         setTimeout(() => setCleanDone(null), 2000);
@@ -194,18 +211,6 @@ export default function SettingsPage() {
     });
   };
 
-  const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => (
-    <button
-      onClick={() => onChange(!on)}
-      className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 focus-ring ${on ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
-      role="switch"
-      aria-checked={on}
-    >
-      <span
-        className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-5' : ''}`}
-      />
-    </button>
-  );
 
   return (
     <div className="max-w-2xl mx-auto">

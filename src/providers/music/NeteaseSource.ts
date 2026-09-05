@@ -20,8 +20,12 @@ export class NeteaseSource extends BaseHttpSource {
 
   private readonly HOST = 'https://music.163.com';
   private readonly REF = 'https://music.163.com/';
-  /** 内置VIP Cookie（非登录态共享账号），用于VIP歌试听片段取链 */
-  private readonly VIP_COOKIE = 'MUSIC_U=5d5843ce6bfe31ce7e8657ca39441fbe99f997601ba68c44d62e3734d5f5ccec519e07624a9f005374ebfa3006384e39dcfdf1652d53fd3f9dd917fbc052e791cf92cf76d152e608d4dbf082a8813684';
+  /**
+   * B4: 内置VIP Cookie（非登录态共享账号）改为构建时注入（VITE_NETEASE_VIP_COOKIE），
+   * 不再硬编码进源码。未注入/失效时官方取链走匿名请求，
+   * 失败由 linkRace 自动降级到 THIRD_PARTIES 第三方代理通道。
+   */
+  private readonly VIP_COOKIE = (import.meta.env.VITE_NETEASE_VIP_COOKIE || '').trim();
 
   // 第三方代理列表
   private readonly THIRD_PARTIES = [
@@ -341,7 +345,7 @@ export class NeteaseSource extends BaseHttpSource {
       method: 'GET',
       timeout: 8000,
       priority: 1,
-      headers: { Cookie: this.VIP_COOKIE, Referer: this.REF },
+      headers: { ...(this.VIP_COOKIE ? { Cookie: this.VIP_COOKIE } : {}), Referer: this.REF },
       resolve: async (resp) => this.resolveOfficialV1(resp, quality),
     });
 
@@ -351,7 +355,7 @@ export class NeteaseSource extends BaseHttpSource {
       method: 'GET',
       timeout: 8000,
       priority: 1,
-      headers: { Cookie: this.VIP_COOKIE, Referer: this.REF },
+      headers: { ...(this.VIP_COOKIE ? { Cookie: this.VIP_COOKIE } : {}), Referer: this.REF },
       resolve: async (resp) => this.resolveOfficialBr(resp, quality),
     });
 
@@ -373,8 +377,10 @@ export class NeteaseSource extends BaseHttpSource {
         return {
           url: data.url,
           quality,
+          actualQuality: quality, // 第三方代理无法校验真实档位，accurate:false 标记不确定性
           bitrate: this.brToBitrate(br),
           format: this.detectFormat('', data.url),
+          accurate: false,
         };
       },
     });
@@ -390,7 +396,7 @@ export class NeteaseSource extends BaseHttpSource {
         const data = await resp.json().catch(() => null);
         const url = data?.url || data?.data?.url;
         if (!url) return null;
-        return { url, quality, bitrate: this.brToBitrate(br), format: this.detectFormat('', url) };
+        return { url, quality, actualQuality: quality, bitrate: this.brToBitrate(br), format: this.detectFormat('', url), accurate: false };
       },
     });
 
@@ -405,7 +411,7 @@ export class NeteaseSource extends BaseHttpSource {
         // 302 redirect，最终URL在响应中
         const url = resp.url;
         if (!url || !url.startsWith('http')) return null;
-        return { url, quality, bitrate: this.brToBitrate(br), format: this.detectFormat('', url) };
+        return { url, quality, actualQuality: quality, bitrate: this.brToBitrate(br), format: this.detectFormat('', url), accurate: false };
       },
     });
 
@@ -426,7 +432,7 @@ export class NeteaseSource extends BaseHttpSource {
     const type = o.type || 'mp3';
     const isPreview = !!o.freeTrialInfo;
     const accurate = !isPreview && this.isAccurateNetease(quality, actualBr, type);
-    return { url, quality, bitrate: actualBr, format: type, isPreview, accurate };
+    return { url, quality, actualQuality: this.neteaseActualQuality(actualBr, type), bitrate: actualBr, format: type, isPreview, accurate };
   }
 
   private async resolveOfficialBr(resp: Response, quality: Quality): Promise<PlayUrlResult | null> {
@@ -441,7 +447,17 @@ export class NeteaseSource extends BaseHttpSource {
     const type = o.type || 'mp3';
     const isPreview = !!o.freeTrialInfo;
     const accurate = !isPreview && this.isAccurateNetease(quality, actualBr, type);
-    return { url, quality, bitrate: actualBr, format: type, isPreview, accurate };
+    return { url, quality, actualQuality: this.neteaseActualQuality(actualBr, type), bitrate: actualBr, format: type, isPreview, accurate };
+  }
+
+  /** B6: 按官方回传码率/格式判定实际音质档 */
+  private neteaseActualQuality(br: number, type: string): Quality {
+    const t = (type || '').toLowerCase();
+    if (t.includes('flac')) return br >= 900000 ? Quality.HIRES : Quality.LOSSLESS;
+    if (br >= 320000) return Quality.HIGH;
+    if (br >= 192000) return Quality.HIGHER;
+    if (br >= 96000) return Quality.STANDARD;
+    return Quality.LOW;
   }
 
   /**

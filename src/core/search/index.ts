@@ -79,22 +79,17 @@ export function normalizeArtist(raw: string): string {
   if (!raw) return '';
   return raw
     .toLowerCase()
+    // C5: 分隔符/feat 必须带词边界（\b），否则 "Daft Punk" 的 ft、"Loft" 会被误切；
+    // 先按边界切出主歌手，再去空白，保证同一歌手不同空格写法归一到相同 key
+    .split(/\s*(?:[、，,/&]|\bfeaturing\b|\bfeat\.?|\bft\.?)\s*/i)[0]
     .replace(/\s+/g, '')
-    .split(/[、，,/&]|feat\.?|ft\.?|featuring/i)[0]
     .trim();
 }
 
-/** 构造主键；duration 提供时附加二级 key 用于合并不同录音时长 */
-export function makeKey(title: string, artist: string, duration?: number): string {
-  const t = normalizeTitle(title);
-  const a = normalizeArtist(artist);
-  const base = `${t}|${a}`;
-  if (duration && duration > 0) {
-    // 以 5s 桶分组（5s 内视作同一录音）
-    const bucket = Math.floor(duration / DURATION_TOLERANCE_SEC);
-    return `${base}|${bucket}`;
-  }
-  return base;
+/** 构造主键；C5: 去除时长分桶——固定桶在 ±tolerance 边界处会把同一录音切到两个 key，
+ *  改为 base key 分组 + isSameSong 的 ±容差配对比较 */
+export function makeKey(title: string, artist: string): string {
+  return `${normalizeTitle(title)}|${normalizeArtist(artist)}`;
 }
 
 /** 同曲不同条目是否可视为「同一首歌」（用于合并：先试无时长 key，再放宽） */
@@ -112,16 +107,9 @@ export function isSameSong(a: SearchResult, b: SearchResult): boolean {
   return true;
 }
 
-/** MV 归一化 key：歌名+歌手（MV 时长容差放宽到 15s） */
-function makeMvKey(title: string, artist: string, duration?: number): string {
-  const t = normalizeTitle(title);
-  const a = normalizeArtist(artist);
-  const base = `${t}|${a}`;
-  if (duration && duration > 0) {
-    const bucket = Math.floor(duration / 15);
-    return `${base}|${bucket}`;
-  }
-  return base;
+/** MV 归一化 key：歌名+歌手（C5: 同样去除时长分桶，配对交给 isSameMv 容差比较） */
+function makeMvKey(title: string, artist: string): string {
+  return `${normalizeTitle(title)}|${normalizeArtist(artist)}`;
 }
 
 /** 判断两个 MV 结果是否为同一支 MV */
@@ -215,69 +203,53 @@ export class SearchEngine {
     results: AggregatedSearchResult[];
     sourceStats: Record<string, { total: number; latency: number; error?: string; errorType?: string }>;
   } {
-    const resultMap = new Map<string, AggregatedSearchResult>();
-    const fallbackMap = new Map<string, AggregatedSearchResult>();
+    // C5: base key 分组 → 组内 isSameSong ±容差配对，取代旧的「分桶 key + fallbackMap 兜底」
+    const groups = new Map<string, AggregatedSearchResult[]>();
 
     for (const sr of fulfilled) {
       for (const r of sr.results) {
-        const key = makeKey(r.title, r.artist || '', r.duration);
-        let existing: AggregatedSearchResult | undefined = resultMap.get(key);
-
-        if (existing && !isSameSong(existing, r)) {
-          existing = fallbackMap.get(key);
+        const key = makeKey(r.title, r.artist || '');
+        let list = groups.get(key);
+        if (!list) {
+          list = [];
+          groups.set(key, list);
         }
 
+        const existing = list.find((m) => isSameSong(m, r));
+
+        const sourceInfo: AggregatedSearchSource = {
+          sourceId: sr.source.id,
+          sourceName: sr.source.name,
+          maxQuality: sr.source.maxQuality,
+          available: true,
+          sourceSongId: r.sourceSongId,
+          sizes: r.sizes,
+        };
+
         if (existing) {
-          const sourceInfo: AggregatedSearchSource = {
-            sourceId: sr.source.id,
-            sourceName: sr.source.name,
-            maxQuality: sr.source.maxQuality,
-            available: true,
-            sourceSongId: r.sourceSongId,
-            sizes: r.sizes,
-          };
           if (!existing.sources.find((s) => s.sourceId === sr.source.id)) {
             existing.sources.push(sourceInfo);
           }
+          // 补全缺失的展示字段（封面/时长）
+          if (!existing.coverUrl && r.coverUrl) existing.coverUrl = r.coverUrl;
+          if (!existing.duration && r.duration) existing.duration = r.duration;
         } else {
-          const merged: AggregatedSearchResult = {
-            ...r,
-            sources: [{
-              sourceId: sr.source.id,
-              sourceName: sr.source.name,
-              maxQuality: sr.source.maxQuality,
-              available: true,
-              sourceSongId: r.sourceSongId,
-              sizes: r.sizes,
-            }],
-          };
-          if (resultMap.has(key)) {
-            fallbackMap.set(key, merged);
-          } else {
-            resultMap.set(key, merged);
-          }
+          list.push({ ...r, sources: [sourceInfo] });
         }
       }
     }
 
     const results: AggregatedSearchResult[] = [];
-    for (const r of resultMap.values()) {
-      r.sources = sortByDisplayPriority(r.sources);
-      const playBest = sortByPriority(r.sources)[0];
-      if (playBest) {
-        r.sourceId = playBest.sourceId;
-        r.sourceSongId = playBest.sourceSongId;
+    for (const list of groups.values()) {
+      for (const r of list) {
+        r.sources = sortByDisplayPriority(r.sources);
+        const playBest = sortByPriority(r.sources)[0];
+        if (playBest) {
+          r.sourceId = playBest.sourceId;
+          r.sourceSongId = playBest.sourceSongId;
+        }
+        results.push(r);
       }
-      results.push(r);
-    }
-    for (const r of fallbackMap.values()) {
-      r.sources = sortByDisplayPriority(r.sources);
-      const playBest = sortByPriority(r.sources)[0];
-      if (playBest) {
-        r.sourceId = playBest.sourceId;
-        r.sourceSongId = playBest.sourceSongId;
-      }
-      results.push(r);
     }
 
     results.sort((a, b) => {
@@ -305,113 +277,78 @@ export class SearchEngine {
     results: AggregatedSearchResult[];
     sourceStats: Record<string, { total: number; latency: number; error?: string; errorType?: string }>;
   } {
-    const resultMap = new Map<string, AggregatedSearchResult>();
-    const fallbackMap = new Map<string, AggregatedSearchResult>();
+    // C5: 与歌曲聚合一致——base key 分组 → 组内 isSameMv ±容差配对
+    const groups = new Map<string, AggregatedSearchResult[]>();
 
     for (const sr of fulfilled) {
       for (const r of sr.results) {
-        const key = makeMvKey(r.title, r.artist || '', r.duration);
-        let existing: AggregatedSearchResult | undefined = resultMap.get(key);
-
-        if (existing && !isSameMv(existing, r)) {
-          existing = fallbackMap.get(key);
+        const key = makeMvKey(r.title, r.artist || '');
+        let list = groups.get(key);
+        if (!list) {
+          list = [];
+          groups.set(key, list);
         }
 
+        const existing = list.find((m) => isSameMv(m, r));
+
+        const sourceInfo: AggregatedSearchSource = {
+          sourceId: sr.source.id,
+          sourceName: sr.source.name,
+          maxQuality: sr.source.maxQuality,
+          available: true,
+          sourceSongId: r.sourceSongId,
+        };
+        const mvInfo: MvSourceInfo = {
+          sourceId: sr.source.id,
+          sourceName: sr.source.name,
+          sourceMvId: r.sourceSongId,
+          availableQualities: [],
+        };
+
         if (existing) {
-          // 合并音频源信息（保持兼容）
-          const sourceInfo: AggregatedSearchSource = {
-            sourceId: sr.source.id,
-            sourceName: sr.source.name,
-            maxQuality: sr.source.maxQuality,
-            available: true,
-            sourceSongId: r.sourceSongId,
-          };
           if (!existing.sources.find((s) => s.sourceId === sr.source.id)) {
             existing.sources.push(sourceInfo);
           }
-          // 合并 MV 源信息
-          const mvInfo: MvSourceInfo = {
-            sourceId: sr.source.id,
-            sourceName: sr.source.name,
-            sourceMvId: r.sourceSongId,
-            availableQualities: [],
-          };
           if (!existing.mvSources) existing.mvSources = [];
           if (!existing.mvSources.find((s) => s.sourceId === sr.source.id)) {
             existing.mvSources.push(mvInfo);
           }
         } else {
-          const merged: AggregatedSearchResult = {
+          list.push({
             ...r,
-            sources: [{
-              sourceId: sr.source.id,
-              sourceName: sr.source.name,
-              maxQuality: sr.source.maxQuality,
-              available: true,
-              sourceSongId: r.sourceSongId,
-            }],
-            mvSources: [{
-              sourceId: sr.source.id,
-              sourceName: sr.source.name,
-              sourceMvId: r.sourceSongId,
-              availableQualities: [],
-            }],
-          };
-          if (resultMap.has(key)) {
-            fallbackMap.set(key, merged);
-          } else {
-            resultMap.set(key, merged);
-          }
+            sources: [sourceInfo],
+            mvSources: [mvInfo],
+          });
         }
       }
     }
 
     const results: AggregatedSearchResult[] = [];
-    for (const r of resultMap.values()) {
-      r.sources = sortByDisplayPriority(r.sources);
-      if (r.mvSources) {
-        r.mvSources = sortByDisplayPriority(r.mvSources.map((s) => ({
-          ...s,
-          // 兼容 sortByDisplayPriority 需要的字段
-          maxQuality: Quality.STANDARD,
-          available: true,
-          sourceSongId: s.sourceMvId,
-        }))).map((s) => ({
-          sourceId: s.sourceId,
-          sourceName: s.sourceName,
-          sourceMvId: s.sourceMvId,
-          availableQualities: (s as any).availableQualities || [],
-        }));
+    for (const list of groups.values()) {
+      for (const r of list) {
+        r.sources = sortByDisplayPriority(r.sources);
+        if (r.mvSources) {
+          r.mvSources = sortByDisplayPriority(r.mvSources.map((s) => ({
+            ...s,
+            // 兼容 sortByDisplayPriority 需要的字段
+            maxQuality: Quality.STANDARD,
+            available: true,
+            sourceSongId: s.sourceMvId,
+          }))).map((s) => ({
+            sourceId: s.sourceId,
+            sourceName: s.sourceName,
+            sourceMvId: s.sourceMvId,
+            availableQualities: (s as any).availableQualities || [],
+          }));
+        }
+        // 播放默认指向展示优先级最高的源
+        const playBest = r.sources[0];
+        if (playBest) {
+          r.sourceId = playBest.sourceId;
+          r.sourceSongId = playBest.sourceSongId;
+        }
+        results.push(r);
       }
-      // 播放默认指向展示优先级最高的源
-      const playBest = r.sources[0];
-      if (playBest) {
-        r.sourceId = playBest.sourceId;
-        r.sourceSongId = playBest.sourceSongId;
-      }
-      results.push(r);
-    }
-    for (const r of fallbackMap.values()) {
-      r.sources = sortByDisplayPriority(r.sources);
-      if (r.mvSources) {
-        r.mvSources = sortByDisplayPriority(r.mvSources.map((s) => ({
-          ...s,
-          maxQuality: Quality.STANDARD,
-          available: true,
-          sourceSongId: s.sourceMvId,
-        }))).map((s) => ({
-          sourceId: s.sourceId,
-          sourceName: s.sourceName,
-          sourceMvId: s.sourceMvId,
-          availableQualities: (s as any).availableQualities || [],
-        }));
-      }
-      const playBest = r.sources[0];
-      if (playBest) {
-        r.sourceId = playBest.sourceId;
-        r.sourceSongId = playBest.sourceSongId;
-      }
-      results.push(r);
     }
 
     // MV 排序：平台数 desc → 展示优先级 asc

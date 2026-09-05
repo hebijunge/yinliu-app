@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search as SearchIcon, Loader2, Flame, ArrowDown } from 'lucide-react';
 import { getAggregatedHotSongs } from '../core/charts';
@@ -8,7 +8,7 @@ import {
   isHomeCacheFresh,
   saveHomeHotCache,
 } from '../core/homeCache';
-import SongRow from '../components/song/SongRow';
+import SongRow, { type SongRowData } from '../components/song/SongRow';
 import QualitySizeSheet from '../components/song/QualitySizeSheet';
 import { playerEngine } from '../core/player';
 import { useSearchStore } from '../shared/store/searchStore';
@@ -34,6 +34,56 @@ function formatCacheAge(ts: number): string {
   return `${h} 小时前更新`;
 }
 
+/** PullIndicator 对外暴露的命令式句柄：手势逐帧更新走 ref，不经 React 状态 */
+interface PullIndicatorHandle {
+  setDistance: (d: number) => void;
+}
+
+/**
+ * D5: 下拉刷新指示器子组件。
+ * 手势驱动的 pullDistance 逐帧更新被隔离在此组件内（ref + 直接改 style），
+ * 父组件 HomePage 不再因下拉手势每帧 setState 触发 100 行列表全量重渲染。
+ * 仅 refreshing prop 变化（每次刷新两次）走正常 React 更新。
+ */
+const PullIndicator = forwardRef<PullIndicatorHandle, { refreshing: boolean }>(
+  function PullIndicator({ refreshing }, ref) {
+    const barRef = useRef<HTMLDivElement | null>(null);
+    const arrowRef = useRef<SVGSVGElement | null>(null);
+    const labelRef = useRef<HTMLSpanElement | null>(null);
+
+    useImperativeHandle(ref, () => ({
+      setDistance: (d: number) => {
+        const el = barRef.current;
+        if (!el) return;
+        el.style.height = d > 0 ? `${d}px` : '0px';
+        const progress = Math.min(1, d / PULL_THRESHOLD);
+        if (arrowRef.current) arrowRef.current.style.transform = progress >= 1 ? 'rotate(180deg)' : 'none';
+        if (labelRef.current) labelRef.current.textContent = progress >= 1 ? '松开刷新' : '下拉刷新';
+      },
+    }));
+
+    return (
+      <div
+        ref={barRef}
+        className="flex items-center justify-center gap-2 text-xs text-[var(--text-tertiary)] overflow-hidden transition-[height]"
+        style={{ height: refreshing ? 40 : 0 }}
+      >
+        {refreshing ? (
+          <>
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span>正在刷新…</span>
+          </>
+        ) : (
+          <>
+            <ArrowDown ref={arrowRef as never} className="w-4 h-4 transition-transform" />
+            <span ref={labelRef}>下拉刷新</span>
+          </>
+        )}
+      </div>
+    );
+  }
+);
+
 /**
  * 首页：搜索入口 + 多源聚合热歌榜
  * 聚合排序：权重1=支持的源越多越靠前；权重2=展示优先级（汽水>酷我>咪咕>网易云>QQ>酷狗）
@@ -56,7 +106,8 @@ export default function HomePage() {
   // —— 下拉刷新状态 ——
   const contentRef = useRef<HTMLDivElement | null>(null);
   const scrollElRef = useRef<HTMLElement | null>(null);
-  const [pullDistance, setPullDistance] = useState(0);
+  // D5: pullDistance 不再进 React 状态，逐帧更新经 ref 直达指示器子组件
+  const indicatorRef = useRef<PullIndicatorHandle | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const pullDistRef = useRef(0);
   const refreshingRef = useRef(false);
@@ -145,13 +196,13 @@ export default function HomePage() {
       if (dy <= 0 || (main && main.scrollTop > 0)) {
         st.pulling = false;
         pullDistRef.current = 0;
-        setPullDistance(0);
+        indicatorRef.current?.setDistance(0);
         return;
       }
       if (e.cancelable) e.preventDefault();
       const d = Math.round(dy * PULL_DAMPING);
       pullDistRef.current = d;
-      setPullDistance(d);
+      indicatorRef.current?.setDistance(d);
     };
     const onTouchEnd = () => {
       const st = touchState.current;
@@ -159,7 +210,7 @@ export default function HomePage() {
       touchState.current = { startY: 0, pulling: false };
       if (pullDistRef.current >= PULL_THRESHOLD) void triggerRefresh();
       pullDistRef.current = 0;
-      setPullDistance(0);
+      indicatorRef.current?.setDistance(0);
     };
     el.addEventListener('touchstart', onTouchStart, { passive: true });
     el.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -173,7 +224,8 @@ export default function HomePage() {
     };
   }, [triggerRefresh]);
 
-  const handlePlay = async (result: AggregatedSearchResult, preferredSourceId?: string) => {
+  // D5: 参数化回调，引用稳定，配合 memo 化的 SongRow 避免全列表重渲染
+  const handlePlay = useCallback(async (result: AggregatedSearchResult, preferredSourceId?: string) => {
     if (!result.sources || result.sources.length === 0) {
       toast.error('暂无可用音源', '该歌曲在所有平台均无播放链接');
       return;
@@ -204,7 +256,11 @@ export default function HomePage() {
       const msg = toUserMessage(err, '播放失败');
       toast.error('播放失败', msg);
     }
-  };
+  }, [selectedQuality]);
+
+  const handleMore = useCallback((song: AggregatedSearchResult) => {
+    setQualitySheetSong(song);
+  }, []);
 
   // D9: 稳定回调引用 —— SongRow memo 化后，热歌榜父组件重渲染（如下拉刷新 state 变化）
   // 不再连带 100 行列表全量重绘；通过 ref 始终转发到最新 handlePlay（含最新 selectedQuality）
@@ -258,27 +314,7 @@ export default function HomePage() {
       </div>
 
       {/* 下拉刷新指示器：触摸下拉时出现，越过阈值松手触发刷新 */}
-      {(pullDistance > 0 || refreshing) && (
-        <div
-          className="flex items-center justify-center gap-2 text-xs text-[var(--text-tertiary)] overflow-hidden transition-[height]"
-          style={{ height: refreshing ? 40 : pullDistance }}
-        >
-          {refreshing ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span>正在刷新…</span>
-            </>
-          ) : (
-            <>
-              <ArrowDown
-                className="w-4 h-4 transition-transform"
-                style={{ transform: pullProgress >= 1 ? 'rotate(180deg)' : 'none' }}
-              />
-              <span>{pullProgress >= 1 ? '松开刷新' : '下拉刷新'}</span>
-            </>
-          )}
-        </div>
-      )}
+      <PullIndicator ref={indicatorRef} refreshing={refreshing} />
 
       {loading ? (
         <SkeletonSearchResult count={8} />

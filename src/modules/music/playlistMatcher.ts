@@ -188,13 +188,19 @@ export class PlaylistMatcher {
         }),
       ]);
       if (!url || !url.url) return false;
-      // 再做一次轻量 HEAD 校验（避免 404/版权空链）
       if (url.isPreview) return false;
-      const head = await platformFetch(url.url, {
-        method: 'HEAD',
+      // C7: HEAD 探活对 CDN 常被 403/405 误判（如酷我/部分 CDN 禁 HEAD）导致导入匹配率虚低，
+      // 改用 Range: bytes=0-1 的 GET：只拉 2 字节，能确认资源真实可访问
+      const probe = await platformFetch(url.url, {
+        method: 'GET',
+        headers: { Range: 'bytes=0-1' },
         signal: controller.signal,
       }).catch(() => null);
-      return Boolean(head && head.ok);
+      // 206 Partial Content / 200 OK 均视为可访问
+      if (probe) {
+        await probe.body?.cancel().catch(() => {});
+      }
+      return Boolean(probe && (probe.status === 206 || probe.ok));
     } catch {
       return false;
     } finally {

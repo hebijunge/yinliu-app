@@ -508,6 +508,7 @@ export class QishuiSource extends BaseHttpSource {
     return {
       url: audio?.url || '',
       quality,
+      actualQuality: mapping?.quality || Quality.STANDARD,
       bitrate,
       format: 'mp4',
       headers: {

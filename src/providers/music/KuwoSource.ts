@@ -30,7 +30,7 @@ export class KuwoSource extends BaseHttpSource {
   readonly maxQuality = Quality.MASTER;
 
   private readonly SEARCH_V2_HOST = 'https://kuwo.cn';
-  private readonly SEARCH_HOST = 'http://search.kuwo.cn';
+  private readonly SEARCH_HOST = 'https://search.kuwo.cn';
   private readonly NMOBI_HOSTS = [
     'https://nmobi.kuwo.cn',
     'https://mobi.kuwo.cn',
@@ -254,18 +254,65 @@ export class KuwoSource extends BaseHttpSource {
     const rid = songId.replace(/^kw_/, '');
     const cached = this.songMetaCache.get(rid);
 
-    if (!cached?.name) {
-      throw new Error(`酷我歌曲详情获取失败：rid=${rid} 无缓存元数据`);
+    if (cached?.name) {
+      return {
+        id: songId,
+        title: cached.name,
+        artist: cached.artist || '',
+        album: '',
+        duration: 0,
+        coverUrl: '',
+      };
     }
 
-    return {
-      id: songId,
-      title: cached.name,
-      artist: cached.artist || '',
-      album: '',
-      duration: 0,
-      coverUrl: '',
-    };
+    // B3: 冷启动播放历史场景（内存 songMetaCache 为空）走反查回退：
+    // 1) 歌曲页 https://www.kuwo.cn/yinyue/{rid} 的 <title> 含「歌名_歌手」
+    // 2) 用「歌名 歌手」走 searchV2 关键字反查，按 rid 精确匹配补全专辑/时长/封面
+    try {
+      const detail = await this.fetchDetailByReverseLookup(rid);
+      if (detail) {
+        this.songMetaCache.set(rid, { name: detail.title, artist: detail.artist || '' });
+        return { id: songId, ...detail };
+      }
+    } catch (err) {
+      debugLogger.warn('network', `酷我详情反查失败 rid=${rid}`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    throw new Error(`酷我歌曲详情获取失败：rid=${rid} 无缓存元数据`);
+  }
+
+  /**
+   * B3 反查回退：歌曲页取「歌名_歌手」→ searchV2 反查 → rid 匹配。
+   * 任一步失败返回 null，由调用方抛错。
+   */
+  private async fetchDetailByReverseLookup(rid: string): Promise<Omit<SongDetail, 'id'> | null> {
+    const resp = await platformFetch(`${this.SEARCH_V2_HOST}/yinyue/${rid}`, {
+      headers: { Referer: 'https://www.kuwo.cn/' },
+      timeout: 8000,
+    });
+    if (!resp.ok) return null;
+    const html = await resp.text();
+    const m = html.match(/<title>([^_<]{1,120})_([^<]{1,120})<\/title>/);
+    if (!m) return null;
+    const title = m[1].trim();
+    const artist = m[2].trim();
+    if (!title) return null;
+
+    const results = await this.searchV2(`${title} ${artist}`, 0);
+    const hit = results.find((r) => r.id === `kw_${rid}`) || results.find((r) => r.title === title);
+    if (hit) {
+      return {
+        title: hit.title || title,
+        artist: hit.artist || artist,
+        album: hit.album || '',
+        duration: hit.duration || 0,
+        coverUrl: hit.coverUrl || '',
+      };
+    }
+    // 反查未命中 rid：仍返回页面标题里的基础信息（比直接抛错可用）
+    return { title, artist, album: '', duration: 0, coverUrl: '' };
   }
 
 
@@ -308,7 +355,7 @@ export class KuwoSource extends BaseHttpSource {
         if (!ct.includes('audio') && !ct.includes('octet-stream')) return null;
         const url = `${this.HAITANG_HOST}/music/kw.php?id=${rid}&level=${level}&type=mp3`;
         // 海棠为第三方代理，无法校验真实码率，标记 accurate:false 作为降级 fallback
-        return { url, quality, bitrate: expectedBitrate, format: 'mp3', accurate: false };
+        return { url, quality, actualQuality: quality, bitrate: expectedBitrate, format: 'mp3', accurate: false };
       },
     });
 
@@ -353,7 +400,22 @@ export class KuwoSource extends BaseHttpSource {
     // 判断加密：有 ekey 或格式为 mflac/mgg
     const isEncrypted = !!ekey || format === 'mflac' || format === 'mgg' || url.endsWith('.mflac') || url.endsWith('.mgg');
 
-    return { url, quality, bitrate, format, accurate, isEncrypted, ekey };
+    return { url, quality, actualQuality: this.kwBitrateToQuality(bitrate, format), bitrate, format, accurate, isEncrypted, ekey };
+  }
+
+  /** B6: 按酷我回传码率（mflac 档为 level 值）判定实际音质档 */
+  private kwBitrateToQuality(bitrate: number, format: string): Quality {
+    const f = (format || '').toLowerCase();
+    if (f === 'mflac' || f === 'mgg') {
+      if (bitrate >= 20900) return Quality.MASTER;
+      if (bitrate >= 20501) return Quality.DOLBY;
+      if (bitrate >= 20201) return Quality.ZHIZHEN;
+      return Quality.LOSSLESS;
+    }
+    if (f === 'flac') return bitrate >= 900 ? Quality.LOSSLESS : Quality.HIGH;
+    if (bitrate >= 250) return Quality.HIGH;
+    if (bitrate >= 96) return Quality.STANDARD;
+    return Quality.LOW;
   }
 
   /**
@@ -654,9 +716,9 @@ export class KuwoSource extends BaseHttpSource {
       if (lrc) return lrc;
     }
 
-    // 回退m.kuwo.cn
-    const fallbackUrl = `http://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=${rid}`;
-    const fbData = await this.httpGetJson(fallbackUrl, { Referer: 'http://m.kuwo.cn/' });
+    // 回退m.kuwo.cn（B3: 明文 http → https）
+    const fallbackUrl = `https://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=${rid}`;
+    const fbData = await this.httpGetJson(fallbackUrl, { Referer: 'https://m.kuwo.cn/' });
     return this.buildLrc(fbData?.data?.lrclist);
   }
 
@@ -827,17 +889,23 @@ export class KuwoSource extends BaseHttpSource {
           for (const v of Object.values(node)) walk(v);
         };
         walk(data);
-        this.tagListCache = tags;
+        // B2: 仅在成功拿到标签时才缓存，失败结果永久缓存会导致断网启动后歌单分类永远为空
+        if (tags.length > 0) {
+          this.tagListCache = tags;
+        }
       }
 
       const wanted = KuwoSource.KW_TAG_ALIASES[categoryName] || categoryName;
+      // B2: 请求失败时缓存可能仍为空 → 直接返回空列表，下次调用重试
+      const tagList = this.tagListCache;
+      if (!tagList) return [];
       // 精确匹配 → 包含匹配
       const tag =
-        this.tagListCache.find((t) => t.name === wanted) ||
-        this.tagListCache.find((t) => t.name.includes(wanted) || wanted.includes(t.name));
+        tagList.find((t) => t.name === wanted) ||
+        tagList.find((t) => t.name.includes(wanted) || wanted.includes(t.name));
       if (!tag) return [];
 
-      const url = `http://wapi.kuwo.cn/api/pc/classify/playlist/getTagPlayList?loginUid=0&loginSid=0&appUid=38668888&pn=${pn}&id=${tag.id}`;
+      const url = `https://wapi.kuwo.cn/api/pc/classify/playlist/getTagPlayList?loginUid=0&loginSid=0&appUid=38668888&pn=${pn}&id=${tag.id}`;
       const data = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
       const list = data?.data?.list || (Array.isArray(data?.data) ? data.data : []);
       if (!Array.isArray(list)) return [];
@@ -1057,8 +1125,8 @@ export class KuwoSource extends BaseHttpSource {
 
   /**
    * 从 HTML 中提取 window.__NUXT__ 数据
-   * Nuxt 格式: window.__NUXT__=(function(a,b,...){return {...}})(...)
-   * 由于 Nuxt 使用函数参数替换，无法直接正则提取 JSON，需用 new Function 安全执行。
+   * B3: 移除 new Function（远端 JS 动态执行违反 CSP unsafe-eval 禁令且有安全风险），
+   * 改为定位 return 对象字面量后手工解析（支持 unquoted key / 单引号字符串 / !0!1 布尔缩写 / 尾逗号）。
    */
   private extractNuxtData(html: string): any | null {
     const marker = 'window.__NUXT__=';
@@ -1068,10 +1136,13 @@ export class KuwoSource extends BaseHttpSource {
     const scriptEnd = html.indexOf('</script>', start);
     const nuxtCode = html.slice(start + marker.length, scriptEnd);
 
+    const returnIdx = nuxtCode.indexOf('return');
+    if (returnIdx === -1) return null;
+    const objStart = nuxtCode.indexOf('{', returnIdx);
+    if (objStart === -1) return null;
+
     try {
-      // new Function 比 eval 安全：不访问局部作用域
-      const fn = new Function('return ' + nuxtCode);
-      const parsed = fn();
+      const [parsed] = this.parseJsLiteral(nuxtCode, objStart);
       if (parsed && Array.isArray(parsed.data) && parsed.data.length > 0) {
         return parsed.data[0];
       }
@@ -1079,6 +1150,97 @@ export class KuwoSource extends BaseHttpSource {
     } catch {
       return null;
     }
+  }
+
+  /** 从 src 的 index 处解析一个 JS 值字面量，返回 [value, 结束下标]，越界/非法抛错 */
+  private parseJsLiteral(src: string, index: number): [any, number] {
+    let i = index;
+    const skipWs = () => {
+      while (i < src.length && /\s/.test(src[i])) i++;
+    };
+    const parseString = (quote: string): string => {
+      i++; // 跳过起始引号
+      let out = '';
+      while (i < src.length && src[i] !== quote) {
+        if (src[i] === '\\') {
+          i++;
+          const c = src[i];
+          out += c === 'n' ? '\n' : c === 't' ? '\t' : c === 'r' ? '\r' : c === 'u' ? String.fromCharCode(parseInt(src.slice(i + 1, i + 5), 16) || 0) : c;
+          if (c === 'u') i += 4;
+        } else {
+          out += src[i];
+        }
+        i++;
+      }
+      i++; // 跳过结束引号
+      return out;
+    };
+    const parseValue = (): any => {
+      skipWs();
+      if (i >= src.length) throw new Error('unexpected end');
+      const ch = src[i];
+      if (ch === '{') return parseObject();
+      if (ch === '[') return parseArray();
+      if (ch === '"' || ch === "'") return parseString(ch);
+      if (ch === '!' && src[i + 1] === '0') { i += 2; return true; }
+      if (ch === '!' && src[i + 1] === '1') { i += 2; return false; }
+      if (ch === '-' || (ch >= '0' && ch <= '9')) {
+        let j = i + 1;
+        while (j < src.length && /[0-9.eE+-]/.test(src[j])) {
+          if ((src[j] === '+' || src[j] === '-') && !/[eE]/.test(src[j - 1])) break;
+          j++;
+        }
+        const numStr = src.slice(i, j);
+        i = j;
+        return Number(numStr);
+      }
+      if (src.startsWith('true', i)) { i += 4; return true; }
+      if (src.startsWith('false', i)) { i += 5; return false; }
+      if (src.startsWith('null', i)) { i += 4; return null; }
+      if (src.startsWith('undefined', i)) { i += 9; return undefined; }
+      throw new Error(`unexpected char at ${i}`);
+    };
+    const parseObject = (): any => {
+      i++; // '{'
+      const obj: Record<string, any> = {};
+      skipWs();
+      if (src[i] === '}') { i++; return obj; }
+      for (;;) {
+        skipWs();
+        let key: string;
+        if (src[i] === '"' || src[i] === "'") key = parseString(src[i]);
+        else {
+          let j = i;
+          while (j < src.length && /[\w$]/.test(src[j])) j++;
+          if (j === i) throw new Error(`bad key at ${i}`);
+          key = src.slice(i, j);
+          i = j;
+        }
+        skipWs();
+        if (src[i] !== ':') throw new Error(`expected : at ${i}`);
+        i++;
+        obj[key] = parseValue();
+        skipWs();
+        if (src[i] === ',') { i++; continue; }
+        if (src[i] === '}') { i++; return obj; }
+        throw new Error(`expected , or } at ${i}`);
+      }
+    };
+    const parseArray = (): any[] => {
+      i++; // '['
+      const arr: any[] = [];
+      skipWs();
+      if (src[i] === ']') { i++; return arr; }
+      for (;;) {
+        arr.push(parseValue());
+        skipWs();
+        if (src[i] === ',') { i++; skipWs(); if (src[i] === ']') { i++; return arr; } continue; }
+        if (src[i] === ']') { i++; return arr; }
+        throw new Error(`expected , or ] at ${i}`);
+      }
+    };
+
+    return [parseValue(), i];
   }
 
   async parsePlaylistUrl(url: string): Promise<PlaylistDetail> {

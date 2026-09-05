@@ -60,7 +60,7 @@ class FloatingLyricsBridge {
         this.currentTrackId = track.id;
         this.lastLineIndex = -1;
         // 尝试加载歌词
-        void lyricsManager.getLyrics(track.sourceSongId, track.sourceId).then((parsed) => {
+        void lyricsManager.getLyrics(track.sourceSongId, track.sourceId, { title: track.title, artist: track.artist }).then((parsed) => {
           this.currentLyrics = parsed;
           if (this.enabled) {
             void this.tryShow();

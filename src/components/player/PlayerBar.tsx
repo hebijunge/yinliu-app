@@ -56,7 +56,7 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
       return;
     }
 
-    lyricsManager.getLyrics(currentTrack.sourceSongId, currentTrack.sourceId).then((parsed) => {
+    lyricsManager.getLyrics(currentTrack.sourceSongId, currentTrack.sourceId, { title: currentTrack.title, artist: currentTrack.artist }).then((parsed) => {
       setLyrics(parsed);
     });
   }, [currentTrack]);

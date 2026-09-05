@@ -243,9 +243,9 @@ export class KugouSource extends BaseHttpSource {
           const cl = head.headers.get('content-length') || '0';
           const format = ct.includes('flac') ? 'flac' : ct.includes('mpeg') || ct.includes('mp3') ? 'mp3' : 'mp3';
           const bitrate = this.estimateBitrate(cl, quality);
-          return { url, quality, bitrate, format, accurate: false };
+          return { url, quality, actualQuality: quality, bitrate, format, accurate: false };
         } catch {
-          return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
+          return { url, quality, actualQuality: quality, bitrate: 128, format: 'mp3', accurate: false };
         }
       },
     });
@@ -292,24 +292,24 @@ export class KugouSource extends BaseHttpSource {
             // FLAC 最低阈值：按 500kbps * duration 估算，至少 3MB
             const minFlacMb = Math.max(3, (500 * durationSec) / 8 / 1024 / 1024);
             if (!isFlac || sizeMb < minFlacMb) {
-              return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
+              return { url, quality, actualQuality: Quality.STANDARD, bitrate: 128, format: 'mp3', accurate: false };
             }
-            return { url, quality, bitrate: this.levelToBitrate(level), format: 'flac', accurate: true };
+            return { url, quality, actualQuality: quality, bitrate: this.levelToBitrate(level), format: 'flac', accurate: true };
           }
 
           if (quality === Quality.HIGH) {
             if (!isMpeg) {
-              return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
+              return { url, quality, actualQuality: Quality.STANDARD, bitrate: 128, format: 'mp3', accurate: false };
             }
             // 320K MP3 最低阈值：按 192kbps * duration 估算，至少 2MB
             const minMp3Mb = Math.max(2, (192 * durationSec) / 8 / 1024 / 1024);
             if (sizeMb < minMp3Mb) {
-              return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
+              return { url, quality, actualQuality: Quality.STANDARD, bitrate: 128, format: 'mp3', accurate: false };
             }
-            return { url, quality, bitrate: this.levelToBitrate(level), format: 'mp3', accurate: true };
+            return { url, quality, actualQuality: quality, bitrate: this.levelToBitrate(level), format: 'mp3', accurate: true };
           }
 
-          return { url, quality, bitrate: 128, format: 'mp3', accurate: false };
+          return { url, quality, actualQuality: Quality.STANDARD, bitrate: 128, format: 'mp3', accurate: false };
         },
       });
     }
