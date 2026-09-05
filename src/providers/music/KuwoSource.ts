@@ -1189,7 +1189,7 @@ export class KuwoSource extends BaseHttpSource {
     // B3: 结构校验——必须是 IIFE 格式：(function(...){...})(...)
     // 防止第三方注入恶意代码
     if (!/^\(function\s*\([a-z,\s]*\)\s*\{/i.test(nuxtCode)) {
-      debugLogger.warn('kuwo', 'extractNuxtData: 代码结构不符合 Nuxt IIFE 格式，跳过执行', {
+      debugLogger.warn('network', 'extractNuxtData: 代码结构不符合 Nuxt IIFE 格式，跳过执行', {
         codePreview: nuxtCode.slice(0, 100),
       });
       return null;
@@ -1212,7 +1212,7 @@ export class KuwoSource extends BaseHttpSource {
     ];
     for (const pattern of dangerousPatterns) {
       if (pattern.test(nuxtCode)) {
-        debugLogger.warn('kuwo', 'extractNuxtData: 检测到危险关键字，跳过执行', {
+        debugLogger.warn('network', 'extractNuxtData: 检测到危险关键字，跳过执行', {
           pattern: pattern.toString(),
         });
         return null;
