@@ -29,9 +29,16 @@ export class LyricsManager {
 
   /**
    * 获取歌曲歌词
-   * 优先从当前播放源获取，失败则尝试其他源
+   * 优先从当前播放源获取，失败则尝试其他源。
+   * C4: 跨源回退必须先按 title+artist 在目标平台搜索并确认命中，再用命中 id 取词；
+   * 禁止把原平台 songId 直接喂给其他源（不同源 id 体系不互通，会取到错词并写入缓存）。
+   * 命中失败不写缓存。
    */
-  async getLyrics(songId: string, sourceId: string): Promise<ParsedLyrics | null> {
+  async getLyrics(
+    songId: string,
+    sourceId: string,
+    track?: { title: string; artist?: string }
+  ): Promise<ParsedLyrics | null> {
     const cacheKey = `${sourceId}_${songId}`;
 
     // 检查缓存
@@ -42,14 +49,19 @@ export class LyricsManager {
     const pending = this.pending.get(cacheKey);
     if (pending) return pending;
 
-    const task = this.fetchLyrics(songId, sourceId, cacheKey).finally(() => {
+    const task = this.fetchLyrics(songId, sourceId, cacheKey, track).finally(() => {
       this.pending.delete(cacheKey);
     });
     this.pending.set(cacheKey, task);
     return task;
   }
 
-  private async fetchLyrics(songId: string, sourceId: string, cacheKey: string): Promise<ParsedLyrics | null> {
+  private async fetchLyrics(
+    songId: string,
+    sourceId: string,
+    cacheKey: string,
+    track?: { title: string; artist?: string }
+  ): Promise<ParsedLyrics | null> {
     // 从指定源获取
     const source = sourceRegistry.get(sourceId);
     if (source && source.getLyrics) {
@@ -65,22 +77,42 @@ export class LyricsManager {
       }
     }
 
-    // 尝试从其他源获取歌词
+    // 尝试从其他源获取歌词（C4: 搜索验证式回退 —— 先搜索命中再用命中 id 取词）
     const fallbackSources = ['netease', 'kugou', 'kuwo'];
     for (const fallbackId of fallbackSources) {
       if (fallbackId === sourceId) continue;
       const fallbackSource = sourceRegistry.get(fallbackId);
-      if (fallbackSource && fallbackSource.getLyrics) {
-        try {
-          const lrcText = await fallbackSource.getLyrics(songId);
-          if (lrcText) {
-            const parsed = this.parseLrc(lrcText, fallbackSource.name);
-            this.cache.set(cacheKey, parsed);
-            return parsed;
-          }
-        } catch {
-          continue;
+      if (!fallbackSource?.getLyrics) continue;
+
+      try {
+        let fallbackSongId: string | null = null;
+
+        if (track?.title && typeof fallbackSource.search === 'function') {
+          // 1) 先按「歌名 歌手」在目标平台搜索
+          const hits = await fallbackSource.search({
+            keyword: `${track.title} ${track.artist || ''}`.trim(),
+            type: 'song',
+            pageSize: 10,
+          });
+          const norm = (s: string) => (s || '').toLowerCase().replace(/\s+/g, '');
+          // 2) 歌名精确命中优先，其次前缀命中（允许少量后缀差异）；命中失败 → 跳过该源，绝不写缓存
+          const hit =
+            hits.find((r) => r.type === 'song' && norm(r.title) === norm(track.title)) ||
+            hits.find((r) => r.type === 'song' && norm(r.title).startsWith(norm(track.title)) && norm(r.title).length - norm(track.title).length <= 4);
+          if (hit) fallbackSongId = hit.sourceSongId;
         }
+
+        if (!fallbackSongId) continue;
+
+        const lrcText = await fallbackSource.getLyrics(fallbackSongId);
+        if (lrcText) {
+          const parsed = this.parseLrc(lrcText, fallbackSource.name);
+          // C4: 只以目标平台自己的 songId 作缓存键，避免错键/错词污染原始键
+          this.cache.set(`${fallbackId}_${fallbackSongId}`, parsed);
+          return parsed;
+        }
+      } catch {
+        continue;
       }
     }
 

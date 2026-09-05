@@ -9,11 +9,19 @@ import type { ParsedLyrics } from '@modules/music/lyrics';
  * 同时补上旧实现缺失的 .catch，取词失败时回落为 null 而非 unhandled rejection。
  */
 export function useLyrics(
-  track: { sourceSongId: string; sourceId: string } | null | undefined
+  track: {
+    sourceSongId: string;
+    sourceId: string;
+    title?: string;
+    artist?: string;
+  } | null | undefined
 ): ParsedLyrics | null {
   const [lyrics, setLyrics] = useState<ParsedLyrics | null>(null);
   const sourceSongId = track?.sourceSongId;
   const sourceId = track?.sourceId;
+  // C4: 跨源回退需要 title/artist 做搜索命中校验，由调用方透传
+  const title = track?.title;
+  const artist = track?.artist;
 
   useEffect(() => {
     if (!sourceSongId || !sourceId) {
@@ -22,7 +30,7 @@ export function useLyrics(
     }
     let cancelled = false;
     lyricsManager
-      .getLyrics(sourceSongId, sourceId)
+      .getLyrics(sourceSongId, sourceId, { title: title || '', artist })
       .then((parsed) => {
         if (!cancelled) setLyrics(parsed);
       })
@@ -32,7 +40,7 @@ export function useLyrics(
     return () => {
       cancelled = true;
     };
-  }, [sourceSongId, sourceId]);
+  }, [sourceSongId, sourceId, title, artist]);
 
   return lyrics;
 }
