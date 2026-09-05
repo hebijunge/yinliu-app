@@ -2,6 +2,9 @@
  * 平台感知的 HTTP 请求封装
  * - Capacitor 环境：使用 CapacitorHttp 绕过 WebView CORS 限制
  * - 浏览器/Tauri 环境：回退到标准 fetch
+ *
+ * C1 修复：超时用 AbortController 统一「超时=取消」语义
+ * （旧实现 Promise.race 只 reject 不取消，底层请求继续挂起）
  */
 
 import { Capacitor } from '@capacitor/core';
@@ -16,9 +19,12 @@ export interface PlatformFetchOptions {
   redirect?: 'follow' | 'error' | 'manual';
   /** 响应类型：text（默认）或 arraybuffer（二进制下载） */
   responseType?: 'text' | 'arraybuffer';
-  /** 超时时间（毫秒），默认不超时 */
+  /** 超时时间（毫秒），默认 8s；传 0 表示不超时 */
   timeout?: number;
 }
+
+/** 默认超时：8s */
+export const DEFAULT_TIMEOUT_MS = 8000;
 
 /**
  * 平台感知的 fetch 封装
@@ -28,30 +34,21 @@ export async function platformFetch(url: string, options: PlatformFetchOptions =
   const isCapacitor = Capacitor.isNativePlatform();
   const startTime = performance.now();
 
-  const doFetch = async (): Promise<Response> => {
-    const response = isCapacitor
-      ? await capacitorFetch(url, options)
-      : await browserFetch(url, options);
-    return response;
-  };
+  // C1: 未显式传 timeout 默认 8s 超时；传 0 = 不超时
+  const timeoutMs = options.timeout ?? DEFAULT_TIMEOUT_MS;
 
-  // E2: 未显式传 timeout 的请求默认 8s 超时，避免弱网下请求无限挂起
-  const effectiveOptions: PlatformFetchOptions = {
-    ...options,
-    timeout: options.timeout ?? DEFAULT_TIMEOUT_MS,
-  };
-
-  // E2: 幂等 GET 且无外部取消信号时，网络级失败自动重试 1 次
-  const isIdempotentGet = (effectiveOptions.method || 'GET').toUpperCase() === 'GET' && !options.signal;
+  // C1: 幂等 GET 且无外部取消信号时，网络级失败自动重试 1 次
+  const isIdempotentGet = (options.method || 'GET').toUpperCase() === 'GET' && !options.signal;
 
   try {
     let response: Response;
     if (isIdempotentGet) {
-      response = await fetchWithRetry(doFetch, 1, effectiveOptions.signal);
+      response = await fetchWithRetry(
+        () => executeRequest(url, options, timeoutMs, isCapacitor),
+        1,
+      );
     } else {
-      response = effectiveOptions.timeout && effectiveOptions.timeout > 0
-        ? await fetchWithTimeout(doFetch(), effectiveOptions.timeout, effectiveOptions.signal)
-        : await doFetch();
+      response = await executeRequest(url, options, timeoutMs, isCapacitor);
     }
 
     const duration = Math.round(performance.now() - startTime);
@@ -82,7 +79,7 @@ export async function platformFetch(url: string, options: PlatformFetchOptions =
         url: truncateUrl(url),
         method: options.method || 'GET',
         duration: `${duration}ms`,
-        error: err instanceof Error ? err.message : String(err),
+        error: normalizeErrorMessage(err),
         capacitor: isCapacitor,
       });
     }
@@ -90,24 +87,39 @@ export async function platformFetch(url: string, options: PlatformFetchOptions =
   }
 }
 
-/** 默认超时：8s */
-export const DEFAULT_TIMEOUT_MS = 8000;
+/** 归一化任意抛出对象的可读 message（CapacitorHttp 原生错误是普通对象而非 Error 实例） */
+function normalizeErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err instanceof DOMException) return `${err.name}: ${err.message}`;
+  if (typeof err === 'string') return err;
+  if (err && typeof err === 'object') {
+    const anyErr = err as Record<string, unknown>;
+    if (typeof anyErr.message === 'string') return anyErr.message;
+    if (typeof anyErr.error === 'string') return anyErr.error;
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return String(err);
+    }
+  }
+  return String(err);
+}
 
-/** 网络级失败（超时/断连）才重试；4xx/5xx 响应不算失败，不重试 */
+/**
+ * 网络级失败（超时/断连）才重试；4xx/5xx 响应不算失败，不重试。
+ * C1: 兼容 CapacitorHttp 抛出的原生错误对象（非 Error 实例，只有 message 字段）。
+ */
 function isRetryableError(err: unknown): boolean {
   if (err instanceof DOMException) {
     return err.name === 'TimeoutError';
   }
-  if (err instanceof Error) {
-    return /Failed to fetch|NetworkError|ECONN|timed out|timeout|SSL|GnuTLS/i.test(err.message);
-  }
-  return false;
+  const message = normalizeErrorMessage(err);
+  return /Failed to fetch|NetworkError|ECONN|timed out|timeout|SSL|GnuTLS/i.test(message);
 }
 
 async function fetchWithRetry(
   doFetch: () => Promise<Response>,
   retries: number,
-  externalSignal?: AbortSignal
 ): Promise<Response> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -116,7 +128,8 @@ async function fetchWithRetry(
       await new Promise((r) => setTimeout(r, 600));
     }
     try {
-      return await fetchWithTimeout(doFetch(), DEFAULT_TIMEOUT_MS, externalSignal);
+      // C1: 每次重试都用同样的超时语义（doFetch 内部已处理）
+      return await doFetch();
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') throw err;
       lastErr = err;
@@ -127,53 +140,86 @@ async function fetchWithRetry(
   throw lastErr;
 }
 
-async function fetchWithTimeout(
-  fetchPromise: Promise<Response>,
+/**
+ * C1: 单次请求执行——超时真正取消底层请求。
+ * - 浏览器路径：AbortController 同时管理「外部取消」与「超时取消」
+ * - Capacitor 路径：超时通过 connectTimeout/readTimeout 交给原生层执行
+ */
+async function executeRequest(
+  url: string,
+  options: PlatformFetchOptions,
   timeoutMs: number,
-  externalSignal?: AbortSignal
+  isCapacitor: boolean,
 ): Promise<Response> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new DOMException(`Request timeout after ${timeoutMs}ms`, 'TimeoutError'));
-    }, timeoutMs);
+  const controller = new AbortController();
+  let timedOut = false;
+  let externallyAborted = false;
 
-    if (externalSignal) {
-      const onAbort = () => {
-        clearTimeout(timer);
-        reject(new DOMException('Aborted', 'AbortError'));
-      };
-      if (externalSignal.aborted) {
-        clearTimeout(timer);
-        reject(new DOMException('Aborted', 'AbortError'));
-        return;
-      }
-      externalSignal.addEventListener('abort', onAbort, { once: true });
-
-      fetchPromise
-        .then((res) => { clearTimeout(timer); externalSignal.removeEventListener('abort', onAbort); resolve(res); })
-        .catch((err) => { clearTimeout(timer); externalSignal.removeEventListener('abort', onAbort); reject(err); });
-    } else {
-      fetchPromise
-        .then((res) => { clearTimeout(timer); resolve(res); })
-        .catch((err) => { clearTimeout(timer); reject(err); });
+  const externalSignal = options.signal;
+  const onExternalAbort = () => {
+    externallyAborted = true;
+    controller.abort();
+  };
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
     }
-  });
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (timeoutMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  }
+
+  const cleanup = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
+  };
+
+  const settleError = (err: unknown): unknown => {
+    if (externallyAborted) return new DOMException('Aborted', 'AbortError');
+    if (timedOut) {
+      return new DOMException(`Request timeout after ${timeoutMs}ms`, 'TimeoutError');
+    }
+    return err;
+  };
+
+  try {
+    if (isCapacitor) {
+      return await capacitorFetch(url, options, timeoutMs, controller.signal);
+    }
+    return await browserFetch(url, options, controller.signal);
+  } catch (err) {
+    throw settleError(err);
+  } finally {
+    cleanup();
+  }
 }
 
-function browserFetch(url: string, options: PlatformFetchOptions): Promise<Response> {
+function browserFetch(url: string, options: PlatformFetchOptions, signal: AbortSignal): Promise<Response> {
   return fetch(url, {
     method: options.method || 'GET',
     headers: options.headers,
     body: options.body as BodyInit | undefined,
-    signal: options.signal,
+    signal,
     redirect: options.redirect || 'follow',
   });
 }
 
 /**
  * CapacitorHttp 适配层：将 CapacitorHttp 的响应包装成标准 Response
+ * C1: 超时通过 connectTimeout/readTimeout 交给原生层执行
  */
-async function capacitorFetch(url: string, options: PlatformFetchOptions): Promise<Response> {
+async function capacitorFetch(
+  url: string,
+  options: PlatformFetchOptions,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<Response> {
   const responseType = options.responseType || 'text';
   const httpOptions: HttpOptions = {
     url,
@@ -181,11 +227,14 @@ async function capacitorFetch(url: string, options: PlatformFetchOptions): Promi
     headers: options.headers,
     data: typeof options.body === 'string' ? options.body : undefined,
     responseType,
+    // C1: 原生层超时控制（毫秒）
+    connectTimeout: timeoutMs > 0 ? timeoutMs : undefined,
+    readTimeout: timeoutMs > 0 ? timeoutMs : undefined,
   };
 
   let aborted = false;
   const abortHandler = () => { aborted = true; };
-  options.signal?.addEventListener('abort', abortHandler);
+  signal.addEventListener('abort', abortHandler);
 
   try {
     if (aborted) {
@@ -239,7 +288,7 @@ async function capacitorFetch(url: string, options: PlatformFetchOptions): Promi
 
     return new Response(body, { status, statusText, headers });
   } finally {
-    options.signal?.removeEventListener('abort', abortHandler);
+    signal.removeEventListener('abort', abortHandler);
   }
 }
 
