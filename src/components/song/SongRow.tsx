@@ -82,11 +82,11 @@ function SongRowInner<T extends SongRowData = SongRowData>({ song, onPlay, onMor
         <div className="text-sm text-[var(--text-secondary)] truncate">
           {song.artist} {song.album && `· ${song.album}`}
         </div>
-        <div className="flex gap-1 mt-1">
+        <div className="flex gap-1 mt-1 flex-wrap">
           {(song.sources || []).map((s) => (
             <span
               key={s.sourceId}
-              className={`text-[10px] px-1.5 py-0.5 rounded text-white ${SOURCE_COLORS[s.sourceId] || 'bg-gray-500'}`}
+              className={`text-[10px] px-1.5 py-0.5 rounded text-white flex-shrink-0 ${SOURCE_COLORS[s.sourceId] || 'bg-gray-500'}`}
             >
               {PLATFORM_SHORT_NAMES[s.sourceId] || s.sourceName}
             </span>
@@ -114,5 +114,8 @@ function SongRowInner<T extends SongRowData = SongRowData>({ song, onPlay, onMor
   );
 }
 
-const SongRow = memo(SongRowInner) as typeof SongRowInner;
+const SongRow = memo(SongRowInner, (prev, next) => {
+  // 核心渲染只依赖 song，事件回调变化不触发重渲染
+  return prev.song === next.song;
+}) as typeof SongRowInner;
 export default SongRow;
