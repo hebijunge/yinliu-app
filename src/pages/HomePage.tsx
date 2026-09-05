@@ -270,7 +270,6 @@ export default function HomePage() {
     void handlePlayRef.current(song, preferredSourceId);
   }, []);
 
-  const pullProgress = Math.min(1, pullDistance / PULL_THRESHOLD);
 
   return (
     <div className="max-w-4xl mx-auto" ref={contentRef}>
