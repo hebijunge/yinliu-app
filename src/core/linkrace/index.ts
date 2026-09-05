@@ -49,14 +49,22 @@ export async function linkRace(
 
       if (!response.ok) return null;
 
-      // 可选：验证URL有效性（HEAD请求检查Content-Length）
+      // C7: URL 有效性验证——用 Range: bytes=0-0 的 GET 替代 HEAD
+      // 部分 CDN/源站不支持 HEAD（返回 405），导致有效链接被误判为失效；
+      // Range GET 兼容性更好，且只拉 1 字节，开销与 HEAD 相当
       if (validateUrl && candidate.method === 'GET') {
-        const headResponse = await platformFetch(candidate.url, {
-          method: 'HEAD',
-          headers: candidate.headers,
+        const probeResponse = await platformFetch(candidate.url, {
+          method: 'GET',
+          headers: {
+            ...candidate.headers,
+            'Range': 'bytes=0-0',
+          },
           signal: controller.signal,
         });
-        if (!headResponse.ok) return null;
+        // 206 = Range 支持（正常），200 = 不支持 Range 但链接有效，都算通过
+        if (probeResponse.status !== 206 && probeResponse.status !== 200) {
+          return null;
+        }
       }
 
       const contentType = response.headers.get('content-type') || '';
