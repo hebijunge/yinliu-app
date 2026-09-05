@@ -27,17 +27,17 @@ export interface MusicSource {
   readonly supportedSearchTypes?: SearchType[];
 
   search(params: SearchParams): Promise<SearchResult[]>;
-  /**
-   * v29 B6：opts.durationSec 传入歌曲时长（秒）时，取链成功后会探测真实文件大小
-   * 并按码率推算 actualQuality（推算不出则不填，诚实性口径见 qualityProbe.ts）。
-   */
-  getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal, opts?: { durationSec?: number }): Promise<PlayUrlResult>;
+  getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal): Promise<PlayUrlResult>;
   getSongDetail(songId: string): Promise<SongDetail>;
   getLyrics?(songId: string): Promise<string | null>;
   getPlaylist?(playlistId: string): Promise<PlaylistDetail>;
   parsePlaylistUrl?(url: string): Promise<PlaylistDetail>;
   getCharts?(): Promise<Chart[]>;
-  getChartDetail?(chartId: string): Promise<ChartDetail>;
+  /**
+   * P0-perf：opts.maxSongs 传入时限制榜单拉取条数（各源据此少翻页/少请求数据），
+   * 供首页聚合等只需头部条目的场景提速；不传时行为不变（全量拉取）。
+   */
+  getChartDetail?(chartId: string, opts?: { maxSongs?: number }): Promise<ChartDetail>;
   /** 按融合固定分类拉取歌单列表（分类名由 core 传入，源内部映射到自家标签；仅实现有对应能力的源） */
   getPlaylistsByCategory?(categoryName: string, page?: number): Promise<PlaylistSummary[]>;
   /** 获取歌曲在各音质档位的可选下载项（用于音质弹窗；无则回退搜索结果里的 sizes） */
