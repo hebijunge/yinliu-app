@@ -28,7 +28,8 @@ public class AudioFocusManagerPlugin extends Plugin {
 
     private AudioManager audioManager;
     private AudioFocusRequest focusRequest;
-    private boolean focusHeld = false;
+    // v29-A4: 移除死字段 focusHeld —— 仅被写入从未被读取，焦点持有状态由 JS 侧
+    // nativeFocusHeld 统一管理
 
     private final BroadcastReceiver noisyReceiver = new BroadcastReceiver() {
         @Override
@@ -81,9 +82,9 @@ public class AudioFocusManagerPlugin extends Plugin {
             result = audioManager.requestAudioFocus(
                     focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
         }
-        focusHeld = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        boolean granted = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
         JSObject ret = new JSObject();
-        ret.put("granted", focusHeld);
+        ret.put("granted", granted);
         call.resolve(ret);
     }
 
@@ -98,12 +99,26 @@ public class AudioFocusManagerPlugin extends Plugin {
                 audioManager.abandonAudioFocus(focusListener);
             }
         }
-        focusHeld = false;
         call.resolve();
     }
 
     @Override
     protected void handleOnDestroy() {
+        // v29-A4: 销毁时释放音频焦点 —— 旧实现只注销广播接收器，App 退出后
+        // 仍持有焦点，其他应用无法正常获取（Android 焦点泄漏）
+        try {
+            if (audioManager != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    if (focusRequest != null) {
+                        audioManager.abandonAudioFocusRequest(focusRequest);
+                    }
+                } else {
+                    audioManager.abandonAudioFocus(focusListener);
+                }
+            }
+        } catch (Exception ignored) {
+            // 释放失败不阻断销毁
+        }
         try {
             getContext().unregisterReceiver(noisyReceiver);
         } catch (IllegalArgumentException ignored) {

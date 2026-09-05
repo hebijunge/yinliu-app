@@ -9,12 +9,12 @@ import { usePlaylistStore } from '../../shared/store/playlistStore';
 import { playerEngine } from '../../core/player';
 import { PLATFORM_DISPLAY_NAMES } from '../../core/platformPriority';
 import { lyricsManager } from '../../modules/music/lyrics';
+import { useLyrics } from '@shared/hooks/useLyrics';
 import { downloadEngine } from '../../core/download';
 import { useSettingsStore } from '../../shared/store/settingsStore';
 import { useGuardedAction } from '../../shared/hooks/useGuardedAction';
 import FullScreenPlayer from './FullScreenPlayer';
 import QueuePanel from './QueuePanel';
-import type { ParsedLyrics } from '../../modules/music/lyrics';
 import type { RepeatMode } from '../../shared/store/playerStore';
 import SmartCover from '../../components/ui/SmartCover';
 
@@ -44,22 +44,11 @@ export default function PlayerBar({ isLandscape = false }: PlayerBarProps) {
   const setShowFullScreen = usePlayerStore((s) => s.setFullscreenOpen);
   const [showLyrics, setShowLyrics] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
-  const [lyrics, setLyrics] = useState<ParsedLyrics | null>(null);
+  // v29-A7: 歌词加载统一走 useLyrics hook（内置取消标记，修复快速切歌竞态）
+  const lyrics = useLyrics(currentTrack);
   const [currentLineIndex, setCurrentLineIndex] = useState(-1);
   const isPlaying = state === 'playing';
   const carMode = useSettingsStore((s) => s.carMode);
-
-  // 加载歌词
-  useEffect(() => {
-    if (!currentTrack) {
-      setLyrics(null);
-      return;
-    }
-
-    lyricsManager.getLyrics(currentTrack.sourceSongId, currentTrack.sourceId).then((parsed) => {
-      setLyrics(parsed);
-    });
-  }, [currentTrack]);
 
   // 更新当前歌词行
   useEffect(() => {

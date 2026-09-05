@@ -111,6 +111,11 @@ export class PlayerEngine {
 
   // v23: 快速切歌竞态防护 —— 每次 playTrack 递增，过期请求的错误不再上报 UI
   private playGeneration = 0;
+  // v29-A2-fix: stop() 自响修复的作废水位 —— 仅 stop() 递增。取链后的代际复核
+  // 只拦「被停止作废」的管线；被新切歌取代的管线沿用 v24 串行闸门语义
+  // （后发管线接管，前管线自然落定），保持「并发点两首不同歌各自成功」的
+  // 外部契约（verify-player-race S3）
+  private stopSeq = 0;
   // v23: 上一首/下一首切歌进行中标记（防抖锁：切歌过程中再次点击无效）
   private switchInProgress = false;
   // v23: 缓冲状态缓存（去重，避免重复 emit）
@@ -505,11 +510,22 @@ export class PlayerEngine {
     // 不同 key → 串行排队，前一条播放管线落定后才开始下一条，状态机不存在并发突变窗口
     // （修复：连点切歌时新请求的 reset 与旧流 load 并发赛跑，旧流回调事后把状态拉回 → 图标与实际播放不符）。
     const key = `${track.sourceId}_${track.sourceSongId}_${quality}`;
-    const { reused, promise } = this.playGate.enter(key, () => this.doPlayTrack(track, quality));
+    // v29-A2: 代际号在请求入口（非复用路径）同步分配。genBox 由闭包在任务真正
+    // 启动时读取（PlayGate 经 chain.then 异步启动，此刻 genBox 已填充）——
+    // 旧实现在 doPlayTrack 内才递增，stop()/后发请求的作废语义对「已请求、
+    // 尚排队」的管线不生效
+    const genBox: { value: number; stopSeq: number } = {
+      value: this.playGeneration,
+      stopSeq: this.stopSeq,
+    };
+    const { reused, promise } = this.playGate.enter(key, () =>
+      this.doPlayTrack(track, quality, genBox.value, genBox.stopSeq)
+    );
     if (reused) {
       debugLogger.info('player', `播放去重命中: ${track.title}`, { key });
       return promise;
     }
+    genBox.value = ++this.playGeneration;
 
     // 非复用的新请求：同步取消上一首的取链（旧管线被 abort 后快速落定，闸门立即放行本请求，
     // 串行排队不会拖慢切歌响应）。AbortController 在 doPlayTrack 任务内重新创建，
@@ -542,9 +558,13 @@ export class PlayerEngine {
    * 每条管线持有独立的 AbortController（v20.1-fix 快速切歌取消取链）与代际号
    * （v23：被更新请求取代的过期错误不再上报 UI）。
    */
-  private async doPlayTrack(track: PlayerTrack, quality: Quality): Promise<PlayUrlResult> {
-    // v23: 本次播放请求的代际号 —— 被更新的切歌取代后，其错误不再上报
-    const generation = ++this.playGeneration;
+  private async doPlayTrack(
+    track: PlayerTrack,
+    quality: Quality,
+    generation: number,
+    stopSeqAtEntry: number
+  ): Promise<PlayUrlResult> {
+    // v29-A2: 代际号改由 playTrack 入口分配并传入（见 playTrack 注释）
 
     // v25: 新播放意图 → 清除上一轮的"起播前暂停"标记
     this.pauseBeforeStartPending = false;
@@ -576,6 +596,15 @@ export class PlayerEngine {
 
     try {
       const { url, isLocal, result, actualSourceId } = await this.resolvePlayUrl(track, quality);
+
+      // v29-A2-fix: 取链后复核收窄为「仅 stop() 作废」——stopSeqAtEntry 之后
+      // 发生过 stop() 的管线不再进入播放态（修复 stop 后旧管线自响）；
+      // 被新切歌取代（仅 playGeneration 前进）的管线不在此拦，沿用 v24 串行
+      // 闸门语义，保证并发点两首不同歌各自成功（verify-player-race S3）
+      if (stopSeqAtEntry !== this.stopSeq) {
+        debugLogger.info('player', `丢弃被停止作废的播放管线: ${track.title}`, { generation });
+        throw new DOMException('stale play request (stopped)', 'AbortError');
+      }
 
       if (isLocal) {
         this.currentBlobUrl = url;
@@ -642,6 +671,9 @@ export class PlayerEngine {
 
     this.audio = new Audio(url);
     this.audio.crossOrigin = 'anonymous';
+    // v29-A2: 新建 audio 元素统一应用用户音量基准（duck 状态一并生效），
+    // 修复切到本地/已下载歌曲时音量回落默认 1.0 的跳变
+    this.audio.volume = this.getEffectiveVolume();
     // v18 EQ：均衡器开启时挂接（内部自校验同源/运行态，失败自动直出）
     void eqService.attachElement(this.audio);
 
@@ -754,6 +786,11 @@ export class PlayerEngine {
       void eqService.attachElement(el);
     });
 
+    // v29-A2: 回调注册统一提前到任何 load 之前 —— 旧实现在 CENC/Z3D/全量解密
+    // 分支的 await load() 之后才 setCallbacks，首块就绪窗口内的状态变化与错误
+    // 事件全部丢失（加密流回调注册过晚）
+    streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
+
     // v21.3: CENC 加密流式处理（汽水音乐 track.php）
     // 流式管道解密：fetch → decryptStream → Blob 刷新，支持长音频无损
     if (isEncrypted && decryptKey) {
@@ -781,8 +818,6 @@ export class PlayerEngine {
         );
       }
 
-      // 设置回调
-      streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
       return;
     }
 
@@ -811,8 +846,6 @@ export class PlayerEngine {
         );
       }
 
-      // v23: 统一使用 buildStreamingCallbacks（含缓冲状态上报），避免两套映射漂移
-      streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
       return;
     }
 
@@ -846,8 +879,6 @@ export class PlayerEngine {
           autoStart: !this.pauseBeforeStartPending, // v25
         });
 
-        // 设置回调（loadDecryptedData 不经过流式下载，但仍需状态回调）
-        streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
         return;
       } catch (cencErr) {
         debugLogger.error('player', 'CENC 解密播放失败', {
@@ -903,8 +934,6 @@ export class PlayerEngine {
           autoStart: !this.pauseBeforeStartPending, // v25
         });
 
-        // 设置回调（loadDecryptedData 不经过流式下载，但仍需状态回调）
-        streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
         return;
       } catch (qmc2Err) {
         debugLogger.error('player', 'QMC2 解密播放失败', {
@@ -917,9 +946,7 @@ export class PlayerEngine {
       }
     }
 
-    // 设置流式播放器回调
-    streamingAudioPlayer.setCallbacks(this.buildStreamingCallbacks(track));
-
+    // v29-A2: 回调已在函数顶部统一注册，此处直接进入加载
     await streamingAudioPlayer.load({
       url,
       headers,
@@ -1190,6 +1217,22 @@ export class PlayerEngine {
   }
 
   stop(): void {
+    // v29-A2: stop 即作废 —— 递增代际，使在途取链/排队管线的错误不再上报、
+    // 过期管线不再进入播放态（修复：stop 后旧管线完成并进入播放态的"自响"）
+    this.playGeneration++;
+    // v29-A2-fix: 作废水位 —— 取链后复核以 stopSeq 判定，仅 stop() 递增
+    this.stopSeq++;
+    this.pauseBeforeStartPending = false;
+    // v29-A2: 取消在途取链
+    if (this.playAbortController) {
+      this.playAbortController.abort();
+      this.playAbortController = null;
+    }
+    // v29-A2: 取消已调度的"预取下一首"定时器（停止播放后不应再发起预取）
+    if (this.prefetchTimer) {
+      clearTimeout(this.prefetchTimer);
+      this.prefetchTimer = null;
+    }
     if (this.isStreaming) {
       void streamingAudioPlayer.reset();
       this.isStreaming = false;
@@ -1197,6 +1240,12 @@ export class PlayerEngine {
     if (this.audio) {
       this.audio.pause();
       this.audio.currentTime = 0;
+    }
+    // v29-A2: 释放当前 blob URL（本地/已下载文件路径），避免播放停止后 WebView
+    // 继续持有旧媒体引用
+    if (this.currentBlobUrl) {
+      URL.revokeObjectURL(this.currentBlobUrl);
+      this.currentBlobUrl = null;
     }
     this.setState('idle', 'user');
     this.setBuffering(false);

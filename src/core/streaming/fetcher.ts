@@ -12,17 +12,6 @@
  *   首块下载本身不需要 totalSize，HEAD 只服务于后续块的边界钳制）；
  *   同时从首个响应学习 totalSize（206 短返回 = 尾块 / 200 = 全量），
  *   HEAD 失败或未返回时下载不再失速。
- * - v29: 会话/运行代际守卫（P1 播放核心链路修复）——
- *   ① session：每次 start() 递增。切歌/seek 重启下载 = 新会话，
- *      旧会话在途请求（Capacitor 原生 HTTP 无法真正取消，abort 只是置标志）
- *      完成后的错误与回调全部丢弃——此前旧循环的 AbortError 用「当前 state」
- *      归因，stop→start 后恰好落在新会话的 fetching 态上，把错误记到新歌头上
- *      （seek 无声 / 快速切歌误报播放失败的直接根因）；
- *   ② runId：每次 start()/resume()/seek() 递增，区分同会话内的下载循环，
- *      防止 pause→resume 后旧循环污染新循环；
- *   ③ 非 seek 重启的 start() 清零 totalSize——上一首遗留的 totalSize 会钳制
- *      新歌分块边界，并令播放端 totalDownloaded < totalSize 永远成立，
- *      ended 守卫误判 buffering → 播完卡死无法自动切下一首。
  */
 
 import { platformFetch } from '@shared/utils/platformFetch';
@@ -68,9 +57,10 @@ export class StreamFetcher {
   private overallReceived = 0;
   private callbacks: FetcherCallbacks = {};
 
-  // v29: 会话与运行代际（见文件头注释）
+  // v29-A1: 会话代际 —— 每次 start()/reset() 递增。在途的 HEAD 预检完成后
+  // 只有代际仍等于当前值才允许写 totalSize，防止上一首歌的陈旧 HEAD
+  // 覆盖新会话刚学到的 totalSize（跨歌残留的另一个来源）
   private session = 0;
-  private runId = 0;
 
   // v25: 并行 HEAD 预检 —— start() 不再串行等待，downloadLoop 在需要 totalSize
   // （首块之后的边界钳制）时才 await 该 Promise
@@ -110,19 +100,18 @@ export class StreamFetcher {
       await this.stop();
     }
 
-    // v29: 新会话开始——使旧会话在途请求的全部结果作废
+    // v29-A1: 会话代际 + totalSize 生命周期 —— 同一 fetcher 实例（单例播放器内复用）
+    // 跨歌残留旧 totalSize 时，新歌的块范围会被旧 totalSize 错误钳制；
+    // 且 skipHead 判定可能因残留 totalSize 误跳 HEAD。现在：
+    //   - skipHead 且确有 totalSize（同歌 seek 重启）→ 保留 totalSize、不发 HEAD；
+    //   - 其余情况（新歌/无 totalSize）→ totalSize 归零、重发 HEAD。
+    // 每次 start() 递增 session，作废在途旧 HEAD 的写入资格。
     const session = ++this.session;
-    const runId = ++this.runId;
-
-    // v29: 非 seek 重启（skipHead）时清零上一首遗留的 totalSize。
-    // 旧值会钳制新歌的分块边界（chunk.end 提前截断），并令播放端
-    // totalDownloaded < totalSize 永远成立 → ended 守卫误判 → 播完卡死
-    if (!(options.skipHead && this.totalSize > 0)) {
-      this.totalSize = 0;
-    }
+    const keepTotalSize = options.skipHead && this.totalSize > 0 ? this.totalSize : 0;
 
     this.url = url;
     this.headers = headers;
+    this.totalSize = keepTotalSize;
     this.currentByteOffset = startByte;
     this.currentChunkIndex = 0;
     this.overallReceived = 0;
@@ -135,7 +124,7 @@ export class StreamFetcher {
     //      并由 downloadChunk 从响应学习 totalSize 兜底。
     this.headPromise = null;
     this.headPending = false;
-    if (!(options.skipHead && this.totalSize > 0)) {
+    if (!keepTotalSize) {
       this.headPending = true;
       this.headPromise = this.probeHead(session);
     }
@@ -146,12 +135,10 @@ export class StreamFetcher {
       startByte,
       totalSize: this.totalSize,
       headParallel: this.headPending,
-      session,
-      runId,
     });
 
     // 2. 立即开始分块下载（后台执行，不等 HEAD）
-    void this.downloadLoop(session, runId);
+    void this.downloadLoop();
   }
 
   /** v25: HEAD 预检（并行执行，失败静默——由响应学习 totalSize 兜底） */
@@ -162,8 +149,8 @@ export class StreamFetcher {
         headers: this.headers,
         signal: AbortSignal.timeout(6000),
       });
-      // v29: 会话已切换 → 旧 URL 的 HEAD 结果不得写入新会话（会污染 totalSize
-      // 与 Range 边界，导致新歌分块错位/时长估算错误）
+      // v29-A1: HEAD 是上一轮 start() 发出的；若期间已 reset()/新一轮 start()，
+      // 陈旧 content-length 不得覆盖新会话的 totalSize（否则新歌块范围被旧值钳制）
       if (session !== this.session) return;
       const contentLength = headResp.headers.get('content-length');
       if (contentLength) {
@@ -182,10 +169,8 @@ export class StreamFetcher {
         error: err instanceof Error ? err.message : String(err),
       });
     } finally {
-      // v29: 仅当前会话才清除 headPending 标记（旧会话的 finally 不得影响新会话）
-      if (session === this.session) {
-        this.headPending = false;
-      }
+      // v29-A1: 只清理属于当前会话的 headPending 标记，避免旧 HEAD 吞掉新一轮的标记
+      if (session === this.session) this.headPending = false;
     }
   }
 
@@ -212,11 +197,7 @@ export class StreamFetcher {
     });
 
     this.seekTargetByte = bytePosition;
-    // v29: 递增 runId 使在途请求结果作废，并重新拉起下载循环
-    // （旧实现在 abort 后旧循环 break 退出、无人重启，fetcher 假死）
-    const runId = ++this.runId;
     this.abortController?.abort();
-    void this.downloadLoop(this.session, runId);
   }
 
   /**
@@ -225,8 +206,6 @@ export class StreamFetcher {
   pause(): void {
     if (this.state === 'fetching') {
       this.state = 'paused';
-      // v29: 作废在途请求结果
-      this.runId++;
       this.abortController?.abort();
     }
   }
@@ -237,8 +216,7 @@ export class StreamFetcher {
   async resume(): Promise<void> {
     if (this.state === 'paused') {
       this.state = 'fetching';
-      const runId = ++this.runId;
-      await this.downloadLoop(this.session, runId);
+      await this.downloadLoop();
     }
   }
 
@@ -247,19 +225,37 @@ export class StreamFetcher {
    */
   async stop(): Promise<void> {
     this.state = 'idle';
-    // v29: 作废在途请求结果（旧循环/在途 chunk 的回调与错误全部丢弃）
-    this.session++;
-    this.runId++;
     this.abortController?.abort();
-    this.seekTargetByte = -1;
     // 等待一小段时间让 abort 生效
     await new Promise((r) => setTimeout(r, 50));
   }
 
+  /**
+   * v29-A1: 彻底重置 —— 切歌/停止播放时调用。区别于 stop()（仅停下载循环、
+   * 保留 url/headers/totalSize 供 seek 复用）：本方法清空全部会话状态并递增
+   * 会话代际（作废在途 HEAD 的写入资格），确保上一首歌的元数据
+   * （尤其 totalSize 与陈旧 HEAD）不会泄漏到下一首歌。
+   */
+  reset(): void {
+    this.session++;
+    this.state = 'idle';
+    this.abortController?.abort();
+    this.abortController = null;
+    this.url = '';
+    this.headers = {};
+    this.totalSize = 0;
+    this.currentByteOffset = 0;
+    this.currentChunkIndex = 0;
+    this.overallReceived = 0;
+    this.seekTargetByte = -1;
+    this.headPromise = null;
+    this.headPending = false;
+  }
+
   // === 内部分块下载循环 ===
 
-  private async downloadLoop(session: number, runId: number): Promise<void> {
-    while (this.state === 'fetching' && session === this.session && runId === this.runId) {
+  private async downloadLoop(): Promise<void> {
+    while (this.state === 'fetching') {
       // 检查是否有 seek 请求
       if (this.seekTargetByte >= 0) {
         this.currentByteOffset = this.seekTargetByte;
@@ -277,23 +273,13 @@ export class StreamFetcher {
       // 若 HEAD 仍未返回（极慢 CDN），在此等待——仅影响第二块之后的节奏，不阻塞起播。
       if (this.headPending && this.currentChunkIndex > 0) {
         await this.headPromise;
-        // v29: 等待 HEAD 期间会话/循环可能已切换（切歌/seek/暂停），
-        // 旧循环必须立即退出，不得继续发请求
-        if (session !== this.session || runId !== this.runId || this.state !== 'fetching') {
-          return;
-        }
       }
 
       // 计算当前块范围
       const chunk = this.calcChunk(this.currentChunkIndex, this.currentByteOffset);
 
       try {
-        await this.downloadChunk(chunk, session, runId);
-        // v29: chunk 下载期间被打断（seek/pause/切歌）→ 立即退出，
-        // 不得推进偏移量，也不得触发完成判定
-        if (session !== this.session || runId !== this.runId || this.state !== 'fetching') {
-          return;
-        }
+        await this.downloadChunk(chunk);
         this.currentChunkIndex++;
         this.currentByteOffset = chunk.end + 1;
 
@@ -304,15 +290,7 @@ export class StreamFetcher {
           break;
         }
       } catch (err) {
-        // v29: 错误只允许归属「发起它的那个循环」——旧循环被 abort 后，其
-        // 原生请求仍会跑完并补抛 AbortError，此时 state/runId 已是新循环的，
-        // 旧判定（只看 state）会把错误记到新会话头上 → seek 无声 / 切歌误报
-        if (
-          session === this.session &&
-          runId === this.runId &&
-          this.state === 'fetching' &&
-          this.seekTargetByte < 0
-        ) {
+        if (this.state === 'fetching' && this.seekTargetByte < 0) {
           // 不是由 seek/暂停 导致的错误
           this.state = 'error';
           const error = err instanceof Error ? err : new Error(String(err));
@@ -321,16 +299,8 @@ export class StreamFetcher {
             error: error.message,
           });
           this.callbacks.onError?.(error);
-        } else {
-          debugLogger.info('streaming', 'Stale download loop error discarded', {
-            chunk: chunk.index,
-            staleSession: session !== this.session,
-            staleRun: runId !== this.runId,
-            state: this.state,
-            error: err instanceof Error ? err.message : String(err),
-          });
         }
-        return;
+        break;
       }
     }
   }
@@ -360,7 +330,7 @@ export class StreamFetcher {
     };
   }
 
-  private async downloadChunk(chunk: ChunkInfo, session: number, runId: number): Promise<void> {
+  private async downloadChunk(chunk: ChunkInfo): Promise<void> {
     this.abortController = new AbortController();
 
     const rangeHeader = `bytes=${chunk.start}-${chunk.end}`;
@@ -378,33 +348,11 @@ export class StreamFetcher {
       responseType: 'arraybuffer',
     });
 
-    // v29: 响应返回时会话/循环可能已被切换（原生 HTTP 无法真正取消在途请求），
-    // 旧会话的数据一律丢弃，不得进入回调（防止跨歌数据写入新歌缓存 → 混音）
-    if (session !== this.session || runId !== this.runId || this.state !== 'fetching') {
-      debugLogger.info('streaming', 'Stale chunk response discarded', {
-        chunk: chunk.index,
-        staleSession: session !== this.session,
-        staleRun: runId !== this.runId,
-        state: this.state,
-      });
-      return;
-    }
-
     if (!response.ok && response.status !== 206) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
     const arrayBuffer = await response.arrayBuffer();
-    // v29: body 读取期间同样可能被打断，读取完成后再校验一次
-    if (session !== this.session || runId !== this.runId || this.state !== 'fetching') {
-      debugLogger.info('streaming', 'Stale chunk body discarded', {
-        chunk: chunk.index,
-        staleSession: session !== this.session,
-        staleRun: runId !== this.runId,
-        state: this.state,
-      });
-      return;
-    }
     const data = new Uint8Array(arrayBuffer);
 
     // v25: 从响应学习 totalSize（HEAD 失败 / CDN 不返回 content-length 时兜底）

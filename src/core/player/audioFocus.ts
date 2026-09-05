@@ -249,6 +249,24 @@ function maybeResumeAfterFocusGain(fromFocus = false): void {
       try {
         // 再次检查状态，timeout 期间用户可能已主动操作
         if (engineRef?.getState() === 'paused') {
+          // v29-A4: GAIN 丢失/永久丢失后焦点已释放的场景下，续播前先向系统
+          // 重申音频焦点 —— 拒绝则保持暂停，避免与其他 App 争抢出声
+          if (isAndroidNative() && !nativeFocusHeld) {
+            void AudioFocusManager.requestFocus()
+              .then((res) => {
+                if (res?.granted === false) {
+                  debugLogger.info('player', '续播前焦点重申被拒绝，保持暂停', {
+                    granted: res?.granted,
+                  });
+                  return;
+                }
+                nativeFocusHeld = true;
+                engineRef?.resume();
+                lastResumeTime = Date.now();
+              })
+              .catch(() => {});
+            return;
+          }
           engineRef?.resume();
           lastResumeTime = Date.now();
         }
@@ -268,7 +286,19 @@ export function notifyPlaybackStateChange(state: 'playing' | 'paused' | 'idle' |
   if (isAndroidNative()) {
     if (state === 'playing' && !nativeFocusHeld) {
       nativeFocusHeld = true;
-      void AudioFocusManager.requestFocus().catch(() => { nativeFocusHeld = false; });
+      // v29-A4: requestFocus 的 granted 结果必须消费 —— 系统拒绝焦点
+      //（通话中/其他 App 独占）时不得停留在播放态
+      void AudioFocusManager.requestFocus()
+        .then((res) => {
+          if (res?.granted === false) {
+            nativeFocusHeld = false;
+            debugLogger.info('player', '音频焦点申请被系统拒绝，暂停播放', { granted: res?.granted });
+            engineRef?.pauseBySystem('requestFocus granted=false 焦点申请被拒绝');
+          }
+        })
+        .catch(() => {
+          nativeFocusHeld = false;
+        });
     } else if (source === 'user' && (state === 'paused' || state === 'idle') && nativeFocusHeld) {
       nativeFocusHeld = false;
       void AudioFocusManager.abandonFocus().catch(() => {});
