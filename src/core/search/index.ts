@@ -54,9 +54,9 @@ export interface SearchEngineOptions {
  * 匹配策略：
  * 1. 归一化：去多余空白、转小写、移除常见装饰符号（括号/feat./live/remix 等）
  * 2. 主键 = 归一化title + '|' + 归一化artist
- * 3. 时长容差：±5 秒（既能把同一录音的不同平台版本合并，
+ * 3. 时长容差：±10 秒（DURATION_TOLERANCE_SEC，既能把同一录音的不同平台版本合并，
  *    又不会把 cover / live / remix 版本误并入原版）
- * 4. 若原 key 已存在但时长差 > 5s，则创建带时长的二级 key
+ * 4. 同 base key 冲突时按 ±10s 容差做配对比较（对齐 isSameSong），不再创建带时长的二级 key
  */
 const DURATION_TOLERANCE_SEC = 10;
 

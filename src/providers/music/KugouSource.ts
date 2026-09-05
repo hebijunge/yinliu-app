@@ -245,7 +245,9 @@ export class KugouSource extends BaseHttpSource {
           const bitrate = this.estimateBitrate(cl, quality);
           return { url, quality, actualQuality: quality, bitrate, format, accurate: false };
         } catch {
-          return { url, quality, actualQuality: quality, bitrate: 128, format: 'mp3', accurate: false };
+          // HEAD 探测失败：实际拿到的是 128k mp3 兜底链路，actualQuality 必须如实标 STANDARD，
+          // 否则竞速胜出后 UI 无降档提示（走查 🟡 修复）
+          return { url, quality, actualQuality: Quality.STANDARD, bitrate: 128, format: 'mp3', accurate: false };
         }
       },
     });

@@ -258,10 +258,6 @@ export default function HomePage() {
     }
   }, [selectedQuality]);
 
-  const handleMore = useCallback((song: AggregatedSearchResult) => {
-    setQualitySheetSong(song);
-  }, []);
-
   // D9: 稳定回调引用 —— SongRow memo 化后，热歌榜父组件重渲染（如下拉刷新 state 变化）
   // 不再连带 100 行列表全量重绘；通过 ref 始终转发到最新 handlePlay（含最新 selectedQuality）
   const handlePlayRef = useRef(handlePlay);

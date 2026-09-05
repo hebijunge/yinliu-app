@@ -102,8 +102,7 @@ src/
 ├── core/              # 核心引擎
 │   ├── player/        # 统一播放器内核
 │   ├── search/        # 聚合搜索引擎
-│   ├── download/      # 下载管理引擎
-│   └── linkrace/      # 并发竞速取链引擎
+│   └── download/      # 下载管理引擎
 ├── components/        # React组件
 │   ├── layout/        # 布局组件
 │   ├── player/        # 播放器组件
