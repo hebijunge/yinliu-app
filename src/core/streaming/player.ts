@@ -115,6 +115,17 @@ class StreamingAudioPlayer {
   private lastErrorReport: { key: string; at: number } | null = null;
   private static readonly ERROR_DEDUP_WINDOW_MS = 3000;
 
+  // v29: 加载会话号 —— 每次 reset()（即每次新歌加载/停止）递增。
+  // 所有异步回调（fetcher 分块回调、加密流读取循环、blob 刷新）在入口处比对，
+  // 过期会话的数据与事件全部丢弃：防止切歌后旧歌的分块数据写进新歌缓存
+  // （跨歌残留/混音）、旧歌的 ended/error 覆盖新歌状态机。
+  private loadGeneration = 0;
+
+  // v29: 下载是否已完成。ended 事件的缓冲守卫据此区分「下载未完触达缓冲末尾」
+  // 与「真播放结束」——下载已完成的 ended 一律按真结束处理，防止 totalSize
+  // 记账偏差导致 ended 被误判 buffering、onEnded 永不触发 → 播完卡死。
+  private downloadComplete = false;
+
   // 预取下一首
   private prefetchFetcher: StreamFetcher | null = null;
   private prefetchCallbacks?: StreamingCallbacks;
@@ -491,6 +502,8 @@ class StreamingAudioPlayer {
 
     this.setState('loading');
 
+    // v29: 会话守卫——读取循环的每个 await 之后比对，切歌后立即静默退出
+    const gen = this.loadGeneration;
     const MIN_START_SIZE = 256 * 1024;
     let totalReceived = 0;
     let chunkIndex = 0;
@@ -499,6 +512,9 @@ class StreamingAudioPlayer {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        // v29: 会话已切换（切歌/停止）→ 旧歌解密数据一律丢弃，不得写入
+        // 新会话的 chunks/缓存
+        if (gen !== this.loadGeneration) return;
 
         const start = totalReceived;
         const end = start + value.length - 1;
@@ -508,6 +524,7 @@ class StreamingAudioPlayer {
 
         // 写入缓存
         await streamCacheEngine.appendData(this.cacheKey, value, start);
+        if (gen !== this.loadGeneration) return;
 
         // 首次达到起播阈值时开始播放
         if (this.state === 'loading' && totalReceived >= MIN_START_SIZE) {
@@ -608,6 +625,8 @@ class StreamingAudioPlayer {
 
     this.setState('loading');
 
+    // v29: 会话守卫（同 CENC 路径）
+    const gen = this.loadGeneration;
     const MIN_START_SIZE = 256 * 1024;
     let totalReceived = 0;
     let chunkIndex = 0;
@@ -616,6 +635,8 @@ class StreamingAudioPlayer {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        // v29: 会话已切换 → 旧歌解密数据一律丢弃
+        if (gen !== this.loadGeneration) return;
 
         const start = totalReceived;
         const end = start + value.length - 1;
@@ -625,6 +646,7 @@ class StreamingAudioPlayer {
 
         // 写入缓存
         await streamCacheEngine.appendData(this.cacheKey, value, start);
+        if (gen !== this.loadGeneration) return;
 
         // 首次达到起播阈值时开始播放
         if (this.state === 'loading' && totalReceived >= MIN_START_SIZE) {
@@ -731,9 +753,25 @@ class StreamingAudioPlayer {
 
     // 检查目标位置是否已缓存
     if (streamCacheEngine.isRangeDownloaded(this.cacheKey, bytePosition, bytePosition + 1)) {
-      // 已缓存，直接 seek
-      this.audio.currentTime = clampedTime;
-      return;
+      // v29: 缓存里有字节 ≠ 当前 audio 源覆盖该位置（blob 可能落后于缓存，
+      // 目标超出当前源时长时 WebView 会把 currentTime 钳到源末尾 → 无声/回弹）。
+      // MSE 的时长由估算值支撑、数据随后续 append 补齐，可直接 seek；
+      // Blob 模式必须确认目标在当前源时长内，否则走下方重新下载路径
+      const audioDur = this.audio.duration;
+      const srcCoversTarget =
+        this.useMSE ||
+        (Number.isFinite(audioDur) && audioDur > 0 && clampedTime <= audioDur + 0.5);
+      if (srcCoversTarget) {
+        // 已缓存且当前源可覆盖，直接 seek
+        this.audio.currentTime = clampedTime;
+        return;
+      }
+      debugLogger.info('streaming', 'Seek target cached but not covered by current src, reloading', {
+        cacheKey: this.cacheKey,
+        clampedTime,
+        audioDur,
+        useMSE: this.useMSE,
+      });
     }
 
     // 未缓存，需要重新从目标位置下载
@@ -850,6 +888,10 @@ class StreamingAudioPlayer {
    */
   async reset(): Promise<void> {
     this.stopProgressTracking();
+    // v29: 新加载会话开始——旧会话所有在途异步回调（分块/加密流/blob 刷新）
+    // 自此全部作废；跨歌残留与过期事件由此处一刀切断
+    this.loadGeneration++;
+    this.downloadComplete = false;
     // 复核修复：切歌/停止时复位断网自动续播标记 —— 否则断网期间切换曲目后，
     // 网络恢复会在新曲目上错误触发自动续播（E5 自动续播只应作用于被断网
     // 暂停的那一次播放会话）
@@ -1078,6 +1120,15 @@ class StreamingAudioPlayer {
         this.blobUrl = newUrl;
         if (!this.audio) {
           await this.setupAudioWithReadyWait(newUrl);
+          // v29: 首建 audio（load 期间 seek / 缓存分支首播）也要回填目标位置，
+          // 否则从 0 开始播，seek 意图丢失
+          if (currentTime > 0) {
+            try {
+              this.audio!.currentTime = currentTime;
+            } catch {
+              // ignore
+            }
+          }
         } else {
           this.audio.src = newUrl;
           if (currentTime > 0) {
@@ -1195,6 +1246,14 @@ class StreamingAudioPlayer {
       debugLogger.info('streaming', 'First chunk: waiting for audio ready');
       await this.setupAudioWithReadyWait(newUrl);
       debugLogger.info('streaming', 'First chunk: audio ready');
+      // v29: load 期间发生过 seek 时，audio 首建后回填目标位置
+      if (currentTime > 0) {
+        try {
+          this.audio!.currentTime = currentTime;
+        } catch {
+          // ignore
+        }
+      }
     } else {
       this.audio.src = newUrl;
       // 恢复播放位置
@@ -1434,6 +1493,10 @@ class StreamingAudioPlayer {
         // v28-fix: 数据尚未下载完成时触达已缓冲末尾 ≠ 播放结束——按缓冲等待处理，
         // 下一块数据刷新 blob/追加 SourceBuffer 后自动续播，防止误跳下一首
         if (
+          // v29: 下载已完成时，ended 一律按真结束处理——totalSize/totalDownloaded
+          // 的记账偏差（缓存前缀、短 206 学习时序）曾令该守卫在真结束时仍然成立，
+          // ended 被吞成 buffering、onEnded 永不触发 → 播完无法自动切下一首
+          !this.downloadComplete &&
           this.totalSize > 0 &&
           this.totalDownloaded < this.totalSize &&
           this.state !== 'idle'
@@ -1516,6 +1579,8 @@ class StreamingAudioPlayer {
     this.audio.addEventListener('ended', () => {
       // v28-fix: 同 setupAudioWithReadyWait——下载未完成时触达缓冲末尾按缓冲等待处理
       if (
+        // v29: 同上——下载已完成时 ended 按真结束处理（播完卡死防护）
+        !this.downloadComplete &&
         this.totalSize > 0 &&
         this.totalDownloaded < this.totalSize &&
         this.state !== 'idle'
@@ -1575,8 +1640,21 @@ class StreamingAudioPlayer {
   // === Fetcher 回调构建 ===
 
   private buildFetcherCallbacks(): FetcherCallbacks {
+    // v29: 捕获本次加载会话号——回调异步执行时先比对，过期会话的一切
+    // 数据/事件直接丢弃（跨歌残留防护）
+    const gen = this.loadGeneration;
+    const isStaleSession = () => gen !== this.loadGeneration;
     return {
       onChunkComplete: async (chunk, data) => {
+        // v29: 过期会话的分块不得写入 chunks/缓存（旧歌数据写进新歌缓存
+        // 文件 = 真实混音），也不得驱动状态机
+        if (isStaleSession()) {
+          debugLogger.warn('streaming', '丢弃过期会话分块（跨歌残留防护）', {
+            chunk: chunk.index,
+            bytes: data.length,
+          });
+          return;
+        }
         // 保存 chunk
         // v28-fix: MSE 模式下数据直接进 SourceBuffer，不再累积内存 chunks
         //（避免大文件整曲驻留内存，回退 P2 内存优化）；仅 MSE 就绪前的
@@ -1691,6 +1769,8 @@ class StreamingAudioPlayer {
       },
 
       onProgress: (progress) => {
+        // v29: 过期会话的进度不得改写新会话的 totalSize
+        if (isStaleSession()) return;
         // 更新总大小（如果从响应中获取到）
         if (progress.overallTotalBytes > this.totalSize) {
           this.totalSize = progress.overallTotalBytes;
@@ -1704,6 +1784,14 @@ class StreamingAudioPlayer {
       },
 
       onError: (error) => {
+        // v29: 过期会话的下载错误（原生请求无法真正取消，切歌后在途请求
+        // 完成后仍会补报错误）不得打断新歌的状态机
+        if (isStaleSession()) {
+          debugLogger.info('streaming', '丢弃过期会话下载错误', {
+            error: error.message,
+          });
+          return;
+        }
         // E5: 播放中断网导致的下载失败按断网暂停处理，恢复网络后自动续播；
         // 初始加载阶段断网无进度可续，仍走错误态
         if (!isOnline() && (this.state === 'playing' || this.state === 'buffering')) {
@@ -1715,6 +1803,10 @@ class StreamingAudioPlayer {
       },
 
       onComplete: async () => {
+        // v29: 过期会话的完成事件不得触发新会话的 blob 重建/endOfStream
+        if (isStaleSession()) return;
+        // v29: 标记下载完成——ended 守卫据此不再把播放到末尾误判为 buffering
+        this.downloadComplete = true;
         debugLogger.info('streaming', 'All chunks downloaded');
         if (this.useMSE && this.mediaSource?.readyState === 'open') {
           // MSE 模式下标记流结束
@@ -1725,6 +1817,14 @@ class StreamingAudioPlayer {
           }
           // v28-fix: 下载完成，估算时长让位给 endOfStream 给出的真实时长
           this.mseEstimatedDuration = 0;
+          // v29: 下载完成前触达缓冲末尾会先走 ended→buffering（audio 已暂停），
+          // endOfStream 之后不会再有 append 触发恢复 —— 此处必须补一次播放恢复，
+          // 否则歌停在最后一段缓冲末尾无声卡住，onEnded 永不触发 → 播完卡死
+          if (this.state === 'buffering' && this.audio?.paused) {
+            this.audio.play().catch(() => {
+              // 自动播放策略可能阻止
+            });
+          }
         } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
           // v21.2 修复：Blob 模式下所有 chunk 下载完成后重建完整 blob
           // P3 内存修复：chunks 已清空时也要重建（尾部数据落地缓存后 blob 可能落后）
