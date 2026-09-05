@@ -42,7 +42,7 @@ export class KuwoSource extends BaseHttpSource {
   readonly maxQuality = Quality.MASTER;
 
   private readonly SEARCH_V2_HOST = 'https://kuwo.cn';
-  private readonly SEARCH_HOST = 'http://search.kuwo.cn';
+  private readonly SEARCH_HOST = 'https://search.kuwo.cn';
   private readonly NMOBI_HOSTS = [
     'https://nmobi.kuwo.cn',
     'https://mobi.kuwo.cn',
@@ -101,7 +101,7 @@ export class KuwoSource extends BaseHttpSource {
     const pn = page;
     const url = `${this.SEARCH_HOST}/r.s?all=${q}&ft=music&itemset=web_2013&client=kt&pn=${pn}&rn=30&rformat=json&encoding=utf8`;
 
-    const resp = await this.httpGet(url, { Referer: 'http://m.kuwo.cn/' });
+    const resp = await this.httpGet(url, { Referer: 'https://m.kuwo.cn/' });
     if (!resp || !resp.ok) return [];
 
     let text: string;
@@ -265,18 +265,52 @@ export class KuwoSource extends BaseHttpSource {
     const rid = songId.replace(/^kw_/, '');
     const cached = this.songMetaCache.get(rid);
 
-    if (!cached?.name) {
-      throw new Error(`酷我歌曲详情获取失败：rid=${rid} 无缓存元数据`);
+    if (cached?.name) {
+      return {
+        id: songId,
+        title: cached.name,
+        artist: cached.artist || '',
+        album: '',
+        duration: this.durationCache.get(rid) || 0,
+        coverUrl: '',
+      };
     }
 
-    return {
-      id: songId,
-      title: cached.name,
-      artist: cached.artist || '',
-      album: '',
-      duration: 0,
-      coverUrl: '',
-    };
+    // B3: 缓存未命中时回退到网络请求获取歌曲详情
+    // 避免直接抛错导致歌单导入/详情页展示失败
+    try {
+      const fallbackUrl = `https://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=${rid}`;
+      const fbData = await this.httpGetJson(fallbackUrl, { Referer: 'https://m.kuwo.cn/' });
+      const songInfo = fbData?.data?.songinfo || fbData?.songinfo;
+      if (songInfo) {
+        const title = songInfo.songName || songInfo.name || '';
+        const artist = songInfo.artist || songInfo.singerName || '';
+        const duration = songInfo.duration ? Math.round(songInfo.duration / 1000) : 0;
+        const album = songInfo.albumName || songInfo.album || '';
+        const coverUrl = songInfo.albumPic || songInfo.cover || '';
+
+        // 回写缓存
+        if (title) {
+          this.songMetaCache.set(rid, { name: title, artist });
+        }
+        if (duration > 0) {
+          this.durationCache.set(rid, duration);
+        }
+
+        return {
+          id: songId,
+          title,
+          artist,
+          album,
+          duration,
+          coverUrl,
+        };
+      }
+    } catch {
+      // 网络回退失败，继续抛错
+    }
+
+    throw new Error(`酷我歌曲详情获取失败：rid=${rid} 无缓存且网络回退失败`);
   }
 
   /**
@@ -732,8 +766,8 @@ export class KuwoSource extends BaseHttpSource {
     }
 
     // 回退m.kuwo.cn
-    const fallbackUrl = `http://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=${rid}`;
-    const fbData = await this.httpGetJson(fallbackUrl, { Referer: 'http://m.kuwo.cn/' });
+    const fallbackUrl = `https://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId=${rid}`;
+    const fbData = await this.httpGetJson(fallbackUrl, { Referer: 'https://m.kuwo.cn/' });
     return this.buildLrc(fbData?.data?.lrclist);
   }
 
@@ -914,7 +948,7 @@ export class KuwoSource extends BaseHttpSource {
         this.tagListCache.find((t) => t.name.includes(wanted) || wanted.includes(t.name));
       if (!tag) return [];
 
-      const url = `http://wapi.kuwo.cn/api/pc/classify/playlist/getTagPlayList?loginUid=0&loginSid=0&appUid=38668888&pn=${pn}&id=${tag.id}`;
+      const url = `https://wapi.kuwo.cn/api/pc/classify/playlist/getTagPlayList?loginUid=0&loginSid=0&appUid=38668888&pn=${pn}&id=${tag.id}`;
       const data = await this.httpGetJson(url, { Referer: 'https://www.kuwo.cn/' });
       const list = data?.data?.list || (Array.isArray(data?.data) ? data.data : []);
       if (!Array.isArray(list)) return [];
@@ -1135,7 +1169,11 @@ export class KuwoSource extends BaseHttpSource {
   /**
    * 从 HTML 中提取 window.__NUXT__ 数据
    * Nuxt 格式: window.__NUXT__=(function(a,b,...){return {...}})(...)
-   * 由于 Nuxt 使用函数参数替换，无法直接正则提取 JSON，需用 new Function 安全执行。
+   *
+   * B3 安全改造：
+   * 1. 严格校验代码结构，只允许 Nuxt 标准的 IIFE 格式
+   * 2. 执行前扫描危险关键字（eval/setTimeout/setInterval/Fetch/XMLHttpRequest 等）
+   * 3. 用 new Function 执行（比 eval 安全：不访问局部作用域，仅访问全局）
    */
   private extractNuxtData(html: string): any | null {
     const marker = 'window.__NUXT__=';
@@ -1143,10 +1181,45 @@ export class KuwoSource extends BaseHttpSource {
     if (start === -1) return null;
 
     const scriptEnd = html.indexOf('</script>', start);
-    const nuxtCode = html.slice(start + marker.length, scriptEnd);
+    let nuxtCode = html.slice(start + marker.length, scriptEnd);
+
+    // B3: 去掉末尾分号
+    nuxtCode = nuxtCode.trim().replace(/;+$/, '');
+
+    // B3: 结构校验——必须是 IIFE 格式：(function(...){...})(...)
+    // 防止第三方注入恶意代码
+    if (!/^\(function\s*\([a-z,\s]*\)\s*\{/i.test(nuxtCode)) {
+      debugLogger.warn('kuwo', 'extractNuxtData: 代码结构不符合 Nuxt IIFE 格式，跳过执行', {
+        codePreview: nuxtCode.slice(0, 100),
+      });
+      return null;
+    }
+
+    // B3: 危险关键字扫描——发现直接拒绝，防止 XSS
+    const dangerousPatterns = [
+      /\beval\s*\(/,
+      /\bFunction\s*\(/,
+      /\bsetTimeout\s*\(/,
+      /\bsetInterval\s*\(/,
+      /\bnew\s+Image\b/,
+      /\bXMLHttpRequest\b/,
+      /\bfetch\s*\(/,
+      /\bdocument\s*\./,
+      /\bwindow\s*\./,
+      /\blocalStorage\b/,
+      /\bcookie\b/i,
+      /<\s*script/i,
+    ];
+    for (const pattern of dangerousPatterns) {
+      if (pattern.test(nuxtCode)) {
+        debugLogger.warn('kuwo', 'extractNuxtData: 检测到危险关键字，跳过执行', {
+          pattern: pattern.toString(),
+        });
+        return null;
+      }
+    }
 
     try {
-      // new Function 比 eval 安全：不访问局部作用域
       const fn = new Function('return ' + nuxtCode);
       const parsed = fn();
       if (parsed && Array.isArray(parsed.data) && parsed.data.length > 0) {
