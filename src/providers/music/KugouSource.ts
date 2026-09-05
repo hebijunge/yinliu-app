@@ -462,9 +462,11 @@ export class KugouSource extends BaseHttpSource {
    * （TOP500 total=500，5 页×100 条取完；page 翻页推进正常、无重叠）。
    * data.info[] 字段与 v3 搜索一致（hash/320hash/sqhash/songname），parseSong 直接复用
    */
-  async getChartDetail(chartId: string): Promise<ChartDetail> {
+  async getChartDetail(chartId: string, opts?: { maxSongs?: number }): Promise<ChartDetail> {
     const PAGE_SIZE = 100;
     const MAX_PAGES = 6;
+    // P0-perf: 首页聚合只需头部条目，maxSongs 限制翻页数（不传时全量拉取）
+    const maxSongs = opts?.maxSongs ?? Number.POSITIVE_INFINITY;
     const songs: SearchResult[] = [];
     const seen = new Set<string>();
 
@@ -486,8 +488,10 @@ export class KugouSource extends BaseHttpSource {
         }
       }
       if (added === 0 || list.length < PAGE_SIZE) break;
+      if (songs.length >= maxSongs) break;
     }
 
+    if (songs.length > maxSongs) songs.length = maxSongs;
     return {
       id: String(chartId),
       name: '酷狗榜单',
