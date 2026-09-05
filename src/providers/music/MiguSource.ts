@@ -504,8 +504,7 @@ export class MiguSource extends BaseHttpSource {
   private miguTagCache: Map<string, string> | null = null;
   private async resolveMiguTagId(categoryName: string): Promise<string> {
     if (!this.miguTagCache) {
-      // B2: 先构建局部 Map，成功拿到非空标签才写入缓存；失败不留空缓存占位，下次调用重试
-      const map = new Map<string, string>();
+      this.miguTagCache = new Map();
       try {
         const data = await this.httpGetJson(
           `${this.apiBase}/MIGUM3.0/v1.0/template/musiclistplaza-taglist/release?templateVersion=1`,
@@ -515,17 +514,13 @@ export class MiguSource extends BaseHttpSource {
           for (const tag of group?.content || []) {
             const texts = tag?.texts || [];
             if (texts.length >= 2) {
-              map.set(String(texts[0]), String(texts[1]));
+              this.miguTagCache.set(String(texts[0]), String(texts[1]));
             }
           }
         }
-        if (map.size > 0) {
-          this.miguTagCache = map;
-        }
       } catch {
-        /* B2: 失败不缓存，下次重试 */
+        /* 缓存留空 */
       }
-      if (!this.miguTagCache) return '';
     }
     const alias = MiguSource.MIGU_TAG_ALIASES[categoryName];
     return (
@@ -809,9 +804,11 @@ export class MiguSource extends BaseHttpSource {
     }
   }
 
-  async getChartDetail(chartId: string) {
+  async getChartDetail(chartId: string, opts?: { maxSongs?: number }) {
     const PAGE_SIZE = 100;
     const MAX_PAGES = 3;
+    // P0-perf: 首页聚合只需头部条目，maxSongs 限制翻页数（不传时全量拉取）
+    const maxSongs = opts?.maxSongs ?? Number.POSITIVE_INFINITY;
     const songs: SearchResult[] = [];
     const seen = new Set<string>();
 
@@ -862,8 +859,10 @@ export class MiguSource extends BaseHttpSource {
           }
         }
         if (added === 0 || data?.data?.hasNextPage !== true) break;
+        if (songs.length >= maxSongs) break;
       }
 
+      if (songs.length > maxSongs) songs.length = maxSongs;
       return { id: chartId, name: '咪咕榜单', songs };
     } catch {
       return { id: chartId, name: '咪咕榜单', songs };
