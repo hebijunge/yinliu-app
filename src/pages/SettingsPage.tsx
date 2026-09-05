@@ -33,6 +33,22 @@ const QUALITY_OPTIONS: Array<{ value: Quality; label: string }> = [
   { value: Quality.HIRES, label: 'Hi-Res' },
 ];
 
+/** D6: Toggle 提升到模块作用域 —— 原先定义在 SettingsPage 渲染体内，
+ * 每次渲染都会生成新组件类型，React 按类型卸载重建整棵子树，
+ * 导致 Toggle 动画丢失、焦点/点击状态异常。 */
+const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => (
+  <button
+    onClick={() => onChange(!on)}
+    className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 focus-ring ${on ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
+    role="switch"
+    aria-checked={on}
+  >
+    <span
+      className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-5' : ''}`}
+    />
+  </button>
+);
+
 /**
  * v23 修复走查 #13：自定义下拉组件，替代原生 <select>，与整体视觉风格统一。
  * 点击展开选项浮层；点击外部或选项后收起。
@@ -182,6 +198,10 @@ export default function SettingsPage() {
       onConfirm: () => {
         clearAllSettings();
         useSearchStore.getState().clearHistory();
+        // D6: 恢复默认音质需同步三处状态（settings 偏好 + 播放器 + 搜索），
+        // 只清 settingsStore 会导致播放页/搜索页仍停留在旧档位
+        usePlayerStore.getState().setQuality(Quality.STANDARD);
+        useSearchStore.getState().setQuality(Quality.STANDARD);
         setCleanDone('all');
         setTimeout(() => setCleanDone(null), 2000);
       },
@@ -202,19 +222,6 @@ export default function SettingsPage() {
       },
     });
   };
-
-  const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => (
-    <button
-      onClick={() => onChange(!on)}
-      className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 focus-ring ${on ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
-      role="switch"
-      aria-checked={on}
-    >
-      <span
-        className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-5' : ''}`}
-      />
-    </button>
-  );
 
   return (
     <div className="max-w-2xl mx-auto">
