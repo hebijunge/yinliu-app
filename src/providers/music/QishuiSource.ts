@@ -131,14 +131,16 @@ export class QishuiSource extends BaseHttpSource {
     return QishuiSource.CHARTS.map((c) => ({ id: c.id, name: c.name, description: c.description }));
   }
 
-  async getChartDetail(chartId: string): Promise<ChartDetail> {
+  async getChartDetail(chartId: string, opts?: { maxSongs?: number }): Promise<ChartDetail> {
+    // P0-perf: 首页聚合只需头部条目，maxSongs 限制条数（不传时全量返回）
+    const maxSongs = opts?.maxSongs ?? Number.POSITIVE_INFINITY;
     const meta = QishuiSource.CHARTS.find((c) => c.id === chartId);
     const songs = await this.fetchChartTracks(chartId);
     return {
       id: chartId,
       name: meta?.name || '汽水榜单',
       description: meta?.description,
-      songs,
+      songs: songs.slice(0, maxSongs),
     };
   }
 
