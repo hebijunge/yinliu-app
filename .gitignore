@@ -10,3 +10,6 @@ src-tauri/target/
 .vscode/
 .idea/
 tests/.build/
+
+# 拦截同名文件/符号链接（含目录形式，node_modules/ 之上补无斜杠规则）
+node_modules
