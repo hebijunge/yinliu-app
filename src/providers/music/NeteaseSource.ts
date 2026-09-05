@@ -21,8 +21,12 @@ export class NeteaseSource extends BaseHttpSource {
 
   private readonly HOST = 'https://music.163.com';
   private readonly REF = 'https://music.163.com/';
-  /** 内置VIP Cookie（非登录态共享账号），用于VIP歌试听片段取链 */
-  private readonly VIP_COOKIE = 'MUSIC_U=5d5843ce6bfe31ce7e8657ca39441fbe99f997601ba68c44d62e3734d5f5ccec519e07624a9f005374ebfa3006384e39dcfdf1652d53fd3f9dd917fbc052e791cf92cf76d152e608d4dbf082a8813684';
+  /**
+   * B4: VIP Cookie 从构建时环境变量注入，不再硬编码在源码中。
+   * 环境变量名：VITE_NETEASE_VIP_COOKIE
+   * 未配置时自动降级（不使用 VIP 试听，仅用公开接口）
+   */
+  private readonly VIP_COOKIE = (import.meta as any).env?.VITE_NETEASE_VIP_COOKIE || '';
 
   // 第三方代理列表
   private readonly THIRD_PARTIES = [
