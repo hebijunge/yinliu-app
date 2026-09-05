@@ -95,7 +95,26 @@ export async function getAllChartGroups(): Promise<ChartCategoryGroup[]> {
 /**
  * 六平台热歌榜聚合（首页热歌榜）。
  * 单个源失败/超时跳过；聚合逻辑与搜索一致（makeKey/isSameSong），双权重排序。
+ *
+ * P0-perf（2026-09-05）：
+ * 1. 每源只拉前 HOT_SONGS_PER_SOURCE 条（maxSongs 透传）——首页仅展示前 100 条，
+ *    旧实现各源翻页拉全量（最多 5~6 页×100，网易最多 1000 条）再聚合，数据量约为
+ *    展示量的 10 倍，是首页首次加载慢的主因；
+ * 2. 每源 10s 超时竞速——单个慢源/挂起请求（QQ/咪咕为裸 fetch 本无超时）不再拖死整页。
  */
+const HOT_SONGS_PER_SOURCE = 100;
+const HOT_SOURCE_TIMEOUT_MS = 10_000;
+
+/** 单源带超时竞速：超时按该源失败处理（跳过），不拖慢整体 */
+function withSourceTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} 超时（${HOT_SOURCE_TIMEOUT_MS}ms）`)), HOT_SOURCE_TIMEOUT_MS)
+    ),
+  ]);
+}
+
 export async function getAggregatedHotSongs(): Promise<AggregatedSearchResult[]> {
   const entries = Object.entries(HOT_CHART_IDS);
 
@@ -103,7 +122,10 @@ export async function getAggregatedHotSongs(): Promise<AggregatedSearchResult[]>
     entries.map(async ([sourceId, chartId]) => {
       const source = sourceRegistry.get(sourceId);
       if (!source || typeof source.getChartDetail !== 'function') return null;
-      const detail = await source.getChartDetail!(chartId);
+      const detail = await withSourceTimeout(
+        source.getChartDetail!(chartId, { maxSongs: HOT_SONGS_PER_SOURCE }),
+        `热歌榜 ${sourceId}`
+      );
       return { sourceId, sourceName: source.name, songs: detail?.songs || [] };
     })
   );
@@ -120,8 +142,7 @@ export async function getAggregatedHotSongs(): Promise<AggregatedSearchResult[]>
     const { sourceId, sourceName, songs } = r.value;
 
     for (const song of songs) {
-      // C5: makeKey 不再接收 duration，时长差异由 isSameSong ±10s 判定
-      const key = makeKey(song.title, song.artist || '');
+      const key = makeKey(song.title, song.artist || '', song.duration);
       let existing = resultMap.get(key);
       if (existing && !isSameSong(existing, song)) {
         // 主键冲突但严格判定不同版本 → 跳过（榜单场景宁可少并不误并）
