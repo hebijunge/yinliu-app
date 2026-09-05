@@ -37,7 +37,7 @@ function formatCacheAge(ts: number): string {
 /**
  * 首页：搜索入口 + 多源聚合热歌榜
  * 聚合排序：权重1=支持的源越多越靠前；权重2=展示优先级（汽水>酷我>咪咕>网易云>QQ>酷狗）
- * 取链播放按播放优先级（酷我>咪咕>网易云>QQ>酷狗>汽水），与展示序并存
+ * 取链播放按播放优先级（酷我>咪咕>网易云>汽水>酷狗>QQ，v25 B0），与展示序并存
  *
  * 缓存策略（v19.1）：聚合结果落本地缓存，24 小时内复用不请求网络；
  * 过期或首次使用才拉网络；下拉刷新强制绕过缓存并刷新时间戳；网络失败回退旧缓存。
@@ -206,6 +206,14 @@ export default function HomePage() {
     }
   };
 
+  // D9: 稳定回调引用 —— SongRow memo 化后，热歌榜父组件重渲染（如下拉刷新 state 变化）
+  // 不再连带 100 行列表全量重绘；通过 ref 始终转发到最新 handlePlay（含最新 selectedQuality）
+  const handlePlayRef = useRef(handlePlay);
+  handlePlayRef.current = handlePlay;
+  const onRowPlay = useCallback((song: AggregatedSearchResult, preferredSourceId?: string) => {
+    void handlePlayRef.current(song, preferredSourceId);
+  }, []);
+
   const pullProgress = Math.min(1, pullDistance / PULL_THRESHOLD);
 
   return (
@@ -296,8 +304,8 @@ export default function HomePage() {
             <SongRow
               key={result.id}
               song={result}
-              onPlay={() => handlePlay(result)}
-              onMore={() => setQualitySheetSong(result)}
+              onPlay={onRowPlay}
+              onMore={setQualitySheetSong}
             />
           ))}
         </>

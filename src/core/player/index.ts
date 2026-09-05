@@ -847,7 +847,7 @@ export class PlayerEngine {
     });
 
     try {
-      // 取链下一首（按优先级 酷我>咪咕>网易云>酷狗>QQ）
+      // 取链下一首（按优先级 酷我>咪咕>网易云>汽水>酷狗>QQ，v25 B0）
       const { url, result, actualSourceId } = await this.resolvePlayUrl(nextTrack, this.lastQuality);
 
       // 存入预加载缓存（key 保持 track.sourceId 用于去重查询）

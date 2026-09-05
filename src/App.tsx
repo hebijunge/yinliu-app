@@ -249,7 +249,7 @@ function App() {
     const unsub3b = playerEngine.on('trackLoaded', ({ track, result, actualSourceId }) => {
       usePlayerStore.getState().setTrack(track || null);
       usePlayerStore.getState().setActualSourceId(actualSourceId || null);
-      usePlayerStore.getState().setActualQuality(result.quality);
+      usePlayerStore.getState().setActualQuality(result.actualQuality ?? result.quality);
       usePlayerStore.getState().setPreview(result.isPreview ?? false);
     });
     const unsub3c = playerEngine.on('mediaAction', ({ action }) => {

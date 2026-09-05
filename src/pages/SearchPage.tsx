@@ -191,6 +191,14 @@ export default function SearchPage() {
     }
   };
 
+  // D9: 稳定回调引用 —— SongRow memo 化后，搜索页分源渐进更新时
+  // 已渲染的行不再因父组件重渲染而全量重绘
+  const handlePlayRef = useRef(handlePlay);
+  handlePlayRef.current = handlePlay;
+  const onRowPlay = useCallback((song: AggregatedSearchResult) => {
+    void handlePlayRef.current(song);
+  }, []);
+
   const handleDownload = async (result: AggregatedSearchResult) => {
     if (!result.sources || result.sources.length === 0) {
       toast.error('暂无可用音源', '该歌曲在所有平台均无下载链接');
@@ -598,8 +606,8 @@ export default function SearchPage() {
               <SongRow
                 key={result.id}
                 song={result}
-                onPlay={() => handlePlay(result)}
-                onMore={() => setQualitySheetSong(result)}
+                onPlay={onRowPlay}
+                onMore={setQualitySheetSong}
               />
             ))}
           </div>

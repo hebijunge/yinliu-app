@@ -287,6 +287,8 @@ export class QishuiSource extends BaseHttpSource {
     try {
       const resp = await fetch(`${this.trackPhpBase}?track_id=${trackId}`, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+        // C1: 裸 fetch 统一补超时
+        signal: AbortSignal.timeout(12000),
       });
       if (!resp.ok) return null;
       const base64 = await resp.text();
@@ -313,6 +315,8 @@ export class QishuiSource extends BaseHttpSource {
       try {
         const resp = await fetch(`${this.trackPhpBase}?track_id=${trackId}`, {
           headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+          // C1: 裸 fetch 统一补超时
+          signal: AbortSignal.timeout(12000),
         });
         if (!resp.ok) return [];
         const base64 = await resp.text();
@@ -361,6 +365,8 @@ export class QishuiSource extends BaseHttpSource {
       });
       const resp = await fetch(`${this.apiBase}/luna/search/track?${qs.toString()}`, {
         headers: this.apiHeaders,
+        // C1: 健康探活请求短超时
+        signal: AbortSignal.timeout(5000),
       });
       const latency = Date.now() - start;
       if (resp.ok) {
@@ -397,6 +403,8 @@ export class QishuiSource extends BaseHttpSource {
         if (!text) {
           const resp = await fetch(`${this.trackPhpBase}?track_id=${trackId}`, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+            // C1: 裸 fetch 统一补超时
+            signal: AbortSignal.timeout(12000),
           });
           if (!resp.ok) throw new Error(`track.php HTTP ${resp.status}`);
           text = await resp.text();

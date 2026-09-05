@@ -131,6 +131,8 @@ export async function fetchZ3dKey(
   const p3dResp = await fetch(p3dUrl, {
     method: 'GET',
     headers: { ...headers, Range: 'bytes=0-31' },
+    // C1: 32 字节探测请求补超时
+    signal: AbortSignal.timeout(15000),
   });
   if (!p3dResp.ok) {
     throw new Error(`3D60 前32字节下载失败: ${p3dResp.status}`);
@@ -144,6 +146,8 @@ export async function fetchZ3dKey(
   const z3dResp = await fetch(z3dUrl, {
     method: 'GET',
     headers: { ...headers, Range: 'bytes=0-31' },
+    // C1: 32 字节探测请求补超时
+    signal: AbortSignal.timeout(15000),
   });
   if (!z3dResp.ok) {
     throw new Error(`Z3D 前32字节下载失败: ${z3dResp.status}`);
@@ -708,6 +712,8 @@ export async function fetchDecryptedAudioStream(
   headers?: Record<string, string>,
   onProgress?: (processed: number, total: number) => void
 ): Promise<ReadableStream<Uint8Array>> {
+  // C1 说明：此处为流式解密读体（response.body 持续消费），不能加整体超时——
+  // 超时会中断正常的长时间音频流；取消语义由上层播放控制管理
   const response = await fetch(url, { headers });
   if (!response.ok || !response.body) {
     throw new Error(`获取加密音频流失败: ${response.status}`);

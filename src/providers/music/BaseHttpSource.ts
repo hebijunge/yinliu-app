@@ -139,24 +139,30 @@ export abstract class BaseHttpSource implements MusicSource {
     const racePromise = this.linkRace(candidates, quality, songId, signal);
     BaseHttpSource.pendingLocks.set(lockKey, racePromise);
 
-    racePromise
-      .then((result) => {
-        // 写入缓存（使用 result.expiresAt 或默认 TTL）
-        const ttl = result.expiresAt
-          ? result.expiresAt - Date.now()
-          : BaseHttpSource.CACHE_TTL;
-        if (ttl > 0) {
-          BaseHttpSource.playUrlCache.set(lockKey, result, ttl);
-        }
-      })
-      .catch(() => {
-        // 失败不缓存
-      })
+    const verifiedPromise = racePromise.then(async (result) => {
+      // v25 B6：取链成功后探测真实音质档位（best-effort，失败不阻断播放/下载），
+      // 探测完成后再把结果交给调用方，保证 trackLoaded/下载链路能读到 actualQuality
+      try {
+        await this.probeActualQuality(result);
+      } catch {
+        /* 探测失败留空 actualQuality，UI 不显示「实际」字段 */
+      }
+      // 写入缓存（使用 result.expiresAt 或默认 TTL）
+      const ttl = result.expiresAt
+        ? result.expiresAt - Date.now()
+        : BaseHttpSource.CACHE_TTL;
+      if (ttl > 0) {
+        BaseHttpSource.playUrlCache.set(lockKey, result, ttl);
+      }
+      return result;
+    });
+    verifiedPromise
       .finally(() => {
         BaseHttpSource.pendingLocks.delete(lockKey);
-      });
+      })
+      .catch(() => { /* 拒绝由调用方处理，此处仅消化 finally 链上的二次拒绝 */ });
 
-    return racePromise;
+    return verifiedPromise;
   }
 
   /**
@@ -211,6 +217,71 @@ export abstract class BaseHttpSource implements MusicSource {
       });
       return null;
     }
+  }
+
+  /**
+   * v25 B6 全源音质诚实性：对取到的直链做真实档位探测。
+   * 流程：HEAD 请求拿 Content-Length（失败回退 Range GET bytes=0-1 读 Content-Range 总长）
+   *   → 按「3 分钟歌曲时长假设」换算码率 → 推断真实档位 → 写入 result.actualQuality / result.contentLength。
+   * 约束：
+   * - 源已给出确定性 actualQuality（如 QQ 按 purl 前缀）时不覆盖；
+   * - 非 http(s) 直链（blob/本地文件）跳过；
+   * - 探测失败（防盗链 / 不支持 HEAD+Range / 超时）留空，UI 不显示「实际」字段；
+   * - 仅 HEAD/Range 两个请求，不带音频体（Range 只取 2 字节），对播放启动延迟影响 < 数百 ms。
+   * 局限：时长未知，码率按 3 分钟歌估算，跨时长误差可能跨一档（如 4 分钟 320k 估成 240k 仍归 320k 档内）。
+   */
+  protected async probeActualQuality(result: PlayUrlResult): Promise<void> {
+    if (result.actualQuality) return; // 源已确定性判定，不覆盖
+    if (!result.url || !/^https?:\/\//i.test(result.url)) return; // blob/本地直链跳过
+    const headers = result.headers || {};
+    let size = 0;
+    let contentType = '';
+
+    // 1) HEAD 探测
+    try {
+      const head = await platformFetch(result.url, {
+        method: 'HEAD',
+        headers,
+        signal: AbortSignal.timeout(4000),
+      });
+      if (head.ok) {
+        size = parseInt(head.headers.get('content-length') || '0', 10) || 0;
+        contentType = head.headers.get('content-type') || '';
+      }
+      head.body?.cancel().catch(() => {});
+    } catch {
+      /* HEAD 不支持/超时 → 走 Range 回退 */
+    }
+
+    // 2) Range GET 回退（bytes=0-1，只取响应头不取音频体）
+    if (size <= 0) {
+      try {
+        const range = await platformFetch(result.url, {
+          method: 'GET',
+          headers: { ...headers, Range: 'bytes=0-1' },
+          signal: AbortSignal.timeout(5000),
+        });
+        const valid = range.status === 206 || range.status === 200;
+        if (valid) {
+          const cr = range.headers.get('content-range') || '';
+          if (cr.startsWith('bytes') && cr.includes('/')) {
+            size = parseInt(cr.split('/')[1] || '0', 10) || 0;
+          } else {
+            size = parseInt(range.headers.get('content-length') || '0', 10) || 0;
+          }
+          contentType = contentType || range.headers.get('content-type') || '';
+        }
+        range.body?.cancel().catch(() => {});
+      } catch {
+        /* 探测失败：留空 */
+      }
+    }
+
+    if (size <= 0) return;
+    result.contentLength = size;
+    // 沿用基类既有的大小→码率→档位推断（3 分钟时长假设）
+    const bitrate = this.estimateBitrate(String(size), result.quality);
+    result.actualQuality = this.inferQualityFromResponse(size, bitrate, contentType, result.quality);
   }
 
   /**

@@ -213,7 +213,8 @@ export class KuwoSource extends BaseHttpSource {
     if (!rid || !/^\d+$/.test(rid)) return [];
     const url = `https://musicpay.kuwo.cn/music.pay?src=kwplayer_ar_11.3.0.0_40.apk&op=query&action=play&ids=${rid}`;
     try {
-      const resp = await fetch(url, { headers: { Accept: 'application/json' } });
+      // C1: 裸 fetch 统一补超时
+      const resp = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(12000) });
       if (!resp.ok) return [];
       const data = await resp.json().catch(() => null);
       const song = data?.songs?.[0];

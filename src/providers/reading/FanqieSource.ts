@@ -40,6 +40,8 @@ export class FanqieSource implements BookSource {
           'Accept': 'application/json',
           'Referer': 'https://fanqienovel.com',
         },
+        // C1: 裸 fetch 统一补超时
+        signal: AbortSignal.timeout(10000),
       });
 
       if (!response.ok) {
@@ -89,6 +91,8 @@ export class FanqieSource implements BookSource {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36',
         },
+        // C1: 裸 fetch 统一补超时
+        signal: AbortSignal.timeout(10000),
       });
 
       if (!response.ok) return null;
@@ -116,6 +120,8 @@ export class FanqieSource implements BookSource {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36',
         },
+        // C1: 裸 fetch 统一补超时
+        signal: AbortSignal.timeout(10000),
       });
 
       if (!response.ok) return [];
@@ -156,6 +162,8 @@ export class FanqieSource implements BookSource {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36',
         },
+        // C1: 裸 fetch 统一补超时
+        signal: AbortSignal.timeout(10000),
       });
 
       if (!response.ok) {

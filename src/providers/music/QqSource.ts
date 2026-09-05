@@ -1,8 +1,7 @@
-import { BaseHttpSource } from './BaseHttpSource';
-import type { EndpointCandidate } from './types';
+import { BaseHttpSource, type ResolvedCandidate } from './BaseHttpSource';
 import { Quality } from '@core/types';
 import type { SearchParams, SearchResult, SearchType, SongDetail, HealthStatus, PlayUrlResult, PlaylistSummary, TierSizes, QualityOption, QualityTier, MvQuality, MvUrlResult } from '@core/types';
-import { YinliuError, ErrorCode } from '@core/types';
+import { YinliuError, ErrorCode, qualityRank } from '@core/types';
 
 /**
  * QQ音乐音源Provider
@@ -73,6 +72,8 @@ export class QqSource extends BaseHttpSource {
           'Origin': 'https://y.qq.com',
         },
         body: JSON.stringify(reqBody),
+        // C1: 裸 fetch 统一补超时，弱网下真正取消请求而不是无限挂起
+        signal: AbortSignal.timeout(12000),
       });
 
       if (!response.ok) {
@@ -164,6 +165,8 @@ export class QqSource extends BaseHttpSource {
             'Referer': 'https://musicserver.haitangw.cc/',
           },
           body: JSON.stringify({ source: 'tx', rid: mid, level }),
+          // C1: 取链请求补超时
+          signal: AbortSignal.timeout(12000),
         });
         if (!resp.ok) return null;
         const body = await resp.json().catch(() => null);
@@ -300,6 +303,8 @@ export class QqSource extends BaseHttpSource {
           'Referer': 'https://y.qq.com',
         },
         body: JSON.stringify(reqBody),
+        // C1: 裸 fetch 统一补超时，弱网下真正取消请求而不是无限挂起
+        signal: AbortSignal.timeout(12000),
       });
 
       if (!response.ok) return null;
@@ -352,6 +357,8 @@ export class QqSource extends BaseHttpSource {
           'Referer': 'https://y.qq.com',
         },
         body: JSON.stringify(reqBody),
+        // C1: 裸 fetch 统一补超时，弱网下真正取消请求而不是无限挂起
+        signal: AbortSignal.timeout(12000),
       });
 
       if (!response.ok) return [];
@@ -409,6 +416,8 @@ export class QqSource extends BaseHttpSource {
           'Referer': 'https://y.qq.com',
         },
         body: JSON.stringify(reqBody),
+        // C1: 裸 fetch 统一补超时，弱网下真正取消请求而不是无限挂起
+        signal: AbortSignal.timeout(12000),
       });
 
       if (!response.ok) {
@@ -470,6 +479,8 @@ export class QqSource extends BaseHttpSource {
           'Referer': 'https://y.qq.com',
         },
         body: JSON.stringify(reqBody),
+        // C1: 裸 fetch 统一补超时，弱网下真正取消请求而不是无限挂起
+        signal: AbortSignal.timeout(12000),
       });
 
       if (!response.ok) return null;
@@ -505,6 +516,8 @@ export class QqSource extends BaseHttpSource {
         'picmid=1&g_tk=5381&loginUin=0&hostUin=0&format=json&inCharset=utf8&outCharset=utf-8&notice=0&platform=yqq&needNewCode=0';
       const response = await fetch(`https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_tag_conf.fcg?${qs}`, {
         headers: { Referer: 'https://c.y.qq.com/' },
+        // C1: 裸 fetch 统一补超时
+        signal: AbortSignal.timeout(12000),
       });
       if (response.ok) {
         const data = await response.json();
@@ -556,6 +569,8 @@ export class QqSource extends BaseHttpSource {
       });
       const response = await fetch(`https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg?${qs.toString()}`, {
         headers: { Referer: 'https://c.y.qq.com/' },
+        // C1: 裸 fetch 统一补超时
+        signal: AbortSignal.timeout(12000),
       });
       if (!response.ok) return [];
       const data = await response.json();
@@ -598,6 +613,8 @@ export class QqSource extends BaseHttpSource {
           'Referer': 'https://y.qq.com',
         },
         body: JSON.stringify(reqBody),
+        // C1: 裸 fetch 统一补超时，弱网下真正取消请求而不是无限挂起
+        signal: AbortSignal.timeout(12000),
       });
 
       if (!response.ok) {
@@ -637,20 +654,21 @@ export class QqSource extends BaseHttpSource {
 
   /**
    * 构建取链候选端点
-   * 包含：官方Vkey端点 + 5个第三方代理
+   * 包含：官方Vkey端点（v25 B1 修正：带 filename 档位参数 + purl 解析）+ 第三方代理
    */
-  protected buildEndpointCandidates(songId: string, quality: Quality): EndpointCandidate[] {
-    const candidates: EndpointCandidate[] = this.buildOfficialEndpoints(songId, quality);
+  protected buildEndpointCandidates(songId: string, quality: Quality): ResolvedCandidate[] {
+    const candidates: ResolvedCandidate[] = this.buildOfficialEndpoints(songId, quality);
     candidates.push(...this.buildProxyEndpoints(songId, quality));
     return candidates;
   }
 
-  private buildOfficialEndpoints(songId: string, quality: Quality): EndpointCandidate[] {
-    const endpoints: EndpointCandidate[] = [];
+  private buildOfficialEndpoints(songId: string, quality: Quality): ResolvedCandidate[] {
+    const endpoints: ResolvedCandidate[] = [];
     const targetFormats = this.getFormatsForQuality(quality);
 
     for (const fmt of targetFormats) {
-      // GetVkeyServer 明文档取链
+      // v25 B1：GetVkeyServer 必须在 param 里带 filename=[档位前缀+songmid.后缀] 才会按档位下发 vkey；
+      // 旧实现把 fmt.format 传进来却从不放进请求体，服务端永远回默认 128k mp3（B1 病根）
       const vkeyUrl = this.buildVkeyUrl(songId, fmt.format);
       endpoints.push({
         url: vkeyUrl,
@@ -660,36 +678,160 @@ export class QqSource extends BaseHttpSource {
         headers: {
           'Referer': 'https://y.qq.com',
         },
+        key: `vkey_${fmt.format}_${songId}`,
+        resolve: (resp) => this.resolveVkeyResponse(resp, quality),
       });
     }
 
     return endpoints;
   }
 
-  private buildProxyEndpoints(songId: string, quality: Quality) {
-    const proxyUrls = [
-      // 海棠代理
-      `https://musicapi.haitangw.net/music/qq.php?id=${songId}`,
-      // kgqq1代理
-      `https://175.27.166.236/kgqq1/qq.php?id=${songId}`,
-      // metingapi代理
-      `https://metingapi.nanorocky.top/?server=tencent&type=url&id=${songId}`,
-      // vkeys代理
-      `https://api.vkeys.cn/?server=tencent&type=url&id=${songId}`,
-      // 海棠resolve-url
-      `https://musicserver.haitangw.cc/v1/music/resolve-url?source=qq&id=${songId}`,
+  /**
+   * v25 B1：档位文件前缀 → 真实 (Quality, 码率) 映射。
+   * QQ 直链文件名前缀是音质档位的确定性标识（防「请求高档实发低档」错归组）。
+   */
+  private static readonly PREFIX_TIER: Record<string, { quality: Quality; bitrate: number }> = {
+    AIM0: { quality: Quality.HIFI, bitrate: 3000 },     // 至臻母带
+    Q0M1: { quality: Quality.JYEFFECT, bitrate: 2400 }, // 全景声
+    Q0M0: { quality: Quality.SKY, bitrate: 2400 },      // 杜比全景声
+    RS01: { quality: Quality.HIRES, bitrate: 1800 },    // Hi-Res
+    RS02: { quality: Quality.HIRES, bitrate: 1800 },    // Hi-Res 备用前缀
+    F000: { quality: Quality.LOSSLESS, bitrate: 1000 }, // FLAC
+    A000: { quality: Quality.LOSSLESS, bitrate: 1000 }, // APE
+    M800: { quality: Quality.HIGH, bitrate: 320 },      // 320K mp3
+    C600: { quality: Quality.HIGH, bitrate: 320 },      // 320K(备用)
+    M500: { quality: Quality.STANDARD, bitrate: 128 },  // 128K mp3
+    C400: { quality: Quality.STANDARD, bitrate: 128 },  // 128K(备用)
+    C200: { quality: Quality.LOW, bitrate: 48 },        // 48K
+  };
+
+  /**
+   * v25 B1：解析 GetVkeyServer 响应 → CDN 直链。
+   * 空 purl（该档无版权/无权/无此档）返回 null，竞速层自动落到下一候选（低档 format），
+   * 不再把空链当成功，也不再把 JSON 响应当音频直链。
+   */
+  private async resolveVkeyResponse(resp: Response, targetQuality: Quality): Promise<PlayUrlResult | null> {
+    try {
+      const data = await resp.json();
+      const info = data?.req_2?.data?.midurlinfo?.[0];
+      const purl: string = info?.purl || '';
+      if (!purl) return null;
+      const url = purl.startsWith('http') ? purl : `https://isure.stream.qqmusic.qq.com/${purl}`;
+      return this.buildResultFromPurl(url, targetQuality);
+    } catch {
+      return null;
+    }
+  }
+
+  /** v25 B1：按直链文件名前缀判定真实档位；前缀无法识别时保守按 128k 处理并标记非 accurate */
+  private buildResultFromPurl(url: string, targetQuality: Quality): PlayUrlResult {
+    const base = url.split('?')[0];
+    const name = base.slice(base.lastIndexOf('/') + 1);
+    const prefix = name.slice(0, 4).toUpperCase();
+    const tier = QqSource.PREFIX_TIER[prefix];
+    // v25 B6：前缀即真实档位（确定性），直接写 actualQuality，无需再靠大小推断
+    const quality = tier?.quality ?? Quality.STANDARD;
+    return {
+      url,
+      quality,
+      actualQuality: quality,
+      bitrate: tier?.bitrate ?? 128,
+      format: name.includes('.') ? name.split('.').pop()!.toLowerCase() : 'mp3',
+      headers: { 'Referer': 'https://y.qq.com' },
+      accurate: qualityRank(quality) >= qualityRank(targetQuality),
+    };
+  }
+
+  /**
+   * v25 B1：第三方代理端点。
+   * - 海棠 resolve-url 改为与 getQualityOptions 一致的 POST level 接口（实测可用，按请求音质映射 level），
+   *   旧的 GET 拼参形式（?source=qq&id=）已失效，弃用；
+   * - 其余 JSON 代理统一接 resolve：从响应 JSON / 纯文本中提取直链，再按前缀判定档位。
+   */
+  private buildProxyEndpoints(songId: string, quality: Quality): ResolvedCandidate[] {
+    const mid = songId.replace(/^qq_/, '');
+    const level = this.qualityToHaitangLevel(quality);
+    const candidates: ResolvedCandidate[] = [
+      {
+        url: 'https://musicserver.haitangw.cc/v1/music/resolve-url',
+        method: 'POST',
+        timeout: 10000,
+        priority: 2,
+        headers: {
+          'Content-Type': 'application/json',
+          'Referer': 'https://musicserver.haitangw.cc/',
+        },
+        body: JSON.stringify({ source: 'tx', rid: mid, level }),
+        key: `haitang_resolve_${level}_${mid}`,
+        resolve: (resp) => this.resolveJsonUrlResponse(resp, quality),
+      },
     ];
 
-    return proxyUrls.map((url): EndpointCandidate => ({
-      url,
-      method: 'GET',
-      timeout: 10000,
-      priority: 2,
-    }));
+    const proxyUrls = [
+      // 海棠代理
+      `https://musicapi.haitangw.net/music/qq.php?id=${mid}`,
+      // kgqq1代理
+      `https://175.27.166.236/kgqq1/qq.php?id=${mid}`,
+      // metingapi代理
+      `https://metingapi.nanorocky.top/?server=tencent&type=url&id=${mid}`,
+      // vkeys代理
+      `https://api.vkeys.cn/?server=tencent&type=url&id=${mid}`,
+    ];
+
+    for (const url of proxyUrls) {
+      candidates.push({
+        url,
+        method: 'GET',
+        timeout: 10000,
+        priority: 3,
+        key: `proxy_${new URL(url).host}_${mid}`,
+        resolve: (resp) => this.resolveJsonUrlResponse(resp, quality),
+      });
+    }
+
+    return candidates;
+  }
+
+  /** v25 B1：请求音质 → 海棠 resolve-url level 档位 */
+  private qualityToHaitangLevel(quality: Quality): string {
+    const rank = this.getQualityRank(quality);
+    if (rank >= this.getQualityRank(Quality.HIRES)) return 'hires';
+    if (rank >= this.getQualityRank(Quality.LOSSLESS)) return 'lossless';
+    if (rank >= this.getQualityRank(Quality.HIGH)) return 'exhigh';
+    return 'standard';
+  }
+
+  /**
+   * v25 B1：JSON/文本代理响应 → 直链 PlayUrlResult。
+   * 兼容 {url} / {data:{url}} / {data:{link}} / 纯文本 URL 四种返回形态；
+   * 提取不到直链返回 null（不再把 JSON 响应当音频链接）。
+   */
+  private async resolveJsonUrlResponse(resp: Response, targetQuality: Quality): Promise<PlayUrlResult | null> {
+    try {
+      const text = await resp.text();
+      let raw: string | undefined;
+      try {
+        const json = JSON.parse(text);
+        raw = json?.data?.url || json?.data?.link || json?.url || json?.link;
+      } catch {
+        const m = text.match(/https?:\/\/[^\s"'<>]+/);
+        raw = m?.[0];
+      }
+      if (!raw || !/^https?:\/\//i.test(raw)) return null;
+      // 过滤掉明显的错误占位（JSON 直链被塞回接口地址等）
+      if (raw.includes('qq.php') || raw.includes('resolve-url')) return null;
+      return this.buildResultFromPurl(raw, targetQuality);
+    } catch {
+      return null;
+    }
   }
 
   private buildVkeyUrl(songId: string, format: string): string {
     const guid = Math.floor(Math.random() * 1000000000);
+    // v25 B1：format 形如 'RSM1.mflac' → filename='RSM1{songmid}.mflac'（档位前缀 + songmid + 后缀）
+    const dot = format.indexOf('.');
+    const filePrefix = dot > 0 ? format.slice(0, dot) : format;
+    const fileExt = dot > 0 ? format.slice(dot + 1) : 'mp3';
     const reqBody = {
       req_1: {
         method: 'GetCdnDispatch',
@@ -712,6 +854,8 @@ export class QqSource extends BaseHttpSource {
           uin: '0',
           loginflag: 0,
           platform: '20',
+          // v25 B1：档位文件名——服务端按此下发对应音质的 vkey（B1 修复核心字段）
+          filename: [`${filePrefix}${songId}.${fileExt}`],
         },
       },
     };
@@ -762,6 +906,8 @@ export class QqSource extends BaseHttpSource {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Referer': 'https://y.qq.com' },
         body: JSON.stringify(reqBody),
+        // C1: 裸 fetch 统一补超时，弱网下真正取消请求而不是无限挂起
+        signal: AbortSignal.timeout(12000),
       });
 
       if (!response.ok) return [];
@@ -822,6 +968,8 @@ export class QqSource extends BaseHttpSource {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Referer': 'https://y.qq.com' },
           body: JSON.stringify(reqBody),
+          // C1: 裸 fetch 统一补超时
+          signal: AbortSignal.timeout(12000),
         });
 
         if (!response.ok) {

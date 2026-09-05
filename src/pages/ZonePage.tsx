@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, memo, useMemo, useCallback } from 'react';
 import { Loader2, Music2, ListMusic } from 'lucide-react';
 import { ZONES, getZoneChartGroups, getZonePlaylists, type Zone } from '../core/zones';
 import type { ClassifiedChart } from '../core/charts';
@@ -21,6 +21,40 @@ import SmartCover from '../components/ui/SmartCover';
  * - 歌单：按分类名 best-effort 映射各源（与曲库歌单同一取数链路），无对应分类的源如实缺省
  */
 type DetailSong = { song: SearchResult; sourceId: string; sourceName: string };
+
+/** D9: 提为模块级纯函数 —— 输入不变则输出结构一致，配合 DetailSongRow 的 useMemo 稳定 song 引用 */
+const toDetail = (song: SearchResult, sourceId: string): AggregatedSearchResult => ({
+  ...song,
+  sources: [
+    {
+      sourceId,
+      sourceName: PLATFORM_SHORT_NAMES[sourceId] || sourceId,
+      sourceSongId: song.sourceSongId,
+      maxQuality: song.quality || 0,
+      available: true,
+    },
+  ],
+} as AggregatedSearchResult);
+
+/** D9: memo 化详情行 —— song 引用仅在 ds 变化时重建，父组件重渲染不连带全列表重绘 */
+const DetailSongRow = memo(function DetailSongRow({
+  ds,
+  playRef,
+  setSheetSong,
+}: {
+  ds: DetailSong;
+  playRef: React.MutableRefObject<(ds: DetailSong) => Promise<void>>;
+  setSheetSong: (song: AggregatedSearchResult) => void;
+}) {
+  const song = useMemo(() => toDetail(ds.song, ds.sourceId), [ds]);
+  return (
+    <SongRow
+      song={song}
+      onPlay={() => void playRef.current(ds)}
+      onMore={() => setSheetSong(song)}
+    />
+  );
+});
 
 interface DetailState {
   title: string;
@@ -87,19 +121,6 @@ export default function ZonePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeZoneId]);
 
-  const toDetail = (song: SearchResult, sourceId: string): AggregatedSearchResult => ({
-    ...song,
-    sources: [
-      {
-        sourceId,
-        sourceName: PLATFORM_SHORT_NAMES[sourceId] || sourceId,
-        sourceSongId: song.sourceSongId,
-        maxQuality: song.quality || 0,
-        available: true,
-      },
-    ],
-  } as AggregatedSearchResult);
-
   const play = async (ds: DetailSong) => {
     try {
       await playerEngine.playTrack(
@@ -121,6 +142,10 @@ export default function ZonePage() {
       toast.error('播放失败', toUserMessage(err, '请稍后重试'));
     }
   };
+
+  // D9: 稳定 play 引用 —— DetailSongRow memo 化后父组件重渲染不连带详情列表重绘
+  const playRef = useRef(play);
+  playRef.current = play;
 
   const openChart = async (chart: ClassifiedChart) => {
     setDetail({ title: `${chart.sourceName} · ${chart.chartName}`, loading: true, songs: [] });
@@ -268,11 +293,11 @@ export default function ZonePage() {
             <div className="text-xs text-[var(--text-tertiary)]">暂无歌曲</div>
           ) : (
             detail.songs.map((ds, i) => (
-              <SongRow
+              <DetailSongRow
                 key={`${ds.song.id}-${i}`}
-                song={toDetail(ds.song, ds.sourceId)}
-                onPlay={() => play(ds)}
-                onMore={() => setSheetSong(toDetail(ds.song, ds.sourceId))}
+                ds={ds}
+                playRef={playRef}
+                setSheetSong={setSheetSong}
               />
             ))
           )}

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, memo } from 'react';
 import { Music, MoreVertical, Play, ChevronDown, ChevronUp } from 'lucide-react';
 import { PLATFORM_ABBREVS, PLATFORM_COLORS } from '@core/platformPriority';
 import type { AggregatedSearchResult } from '@core/search';
@@ -46,7 +46,7 @@ function formatQualityLabel(maxQuality?: string): string {
   return map[maxQuality] || maxQuality;
 }
 
-export default function SongListItem({
+function SongListItemImpl({
   result,
   index,
   showIndex = false,
@@ -264,3 +264,7 @@ export default function SongListItem({
     </div>
   );
 }
+
+
+/** D9: memo 化，避免父组件重渲染时全量重绘 */
+export default memo(SongListItemImpl);

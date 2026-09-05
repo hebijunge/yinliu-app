@@ -36,18 +36,20 @@ export function SkeletonCover({ size = '3.5rem', className = '' }: { size?: stri
   );
 }
 
-/** Skeleton for a search result item */
+/** Skeleton for a search result item —— D5: 内部尺寸与 SongRow 实际渲染对齐（p-3/gap-3/rounded-lg/48px 封面），加载完成无跳变 */
 export function SkeletonSearchResult({ count = 5 }: { count?: number }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       {Array.from({ length: count }).map((_, i) => (
-        <div key={i} className="flex items-center gap-4 p-4 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)]">
-          <SkeletonCover size="3.5rem" />
+        <div key={i} className="flex items-center gap-3 p-3 rounded-lg bg-[var(--bg-secondary)]">
+          <Skeleton className="w-12 h-12 rounded-lg flex-shrink-0" />
           <div className="flex-1 min-w-0">
-            <Skeleton className="h-4 w-3/4 mb-2.5" />
-            <Skeleton className="h-3 w-1/2" />
+            <Skeleton className="h-4 w-3/4 mb-2" />
+            <Skeleton className="h-3 w-1/2 mb-2" />
+            {/* D5: 源徽章占位行，避免骨架屏高度比实际行矮 */}
+            <Skeleton className="h-3 w-1/3" />
           </div>
-          <Skeleton className="h-9 w-9 rounded-full" />
+          <Skeleton className="h-9 w-9 rounded-full flex-shrink-0" />
         </div>
       ))}
     </div>

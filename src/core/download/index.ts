@@ -365,6 +365,8 @@ export class DownloadEngine {
           task.sourceId = trySourceId;
           task.songId = trySongId;
           task.url = playUrl.url;
+          // v25 B6：记录探测出的真实音质档位（源降级供货时 UI 显示「标称 X / 实际 Y」）
+          task.actualQuality = playUrl.actualQuality;
           // W2: 真实取链成功 → 立即清零探活计数并标 healthy（快速回归，防探活端点误判）
           sourceHealthChecker.reportSuccess(trySourceId);
           this.emit('stateChange', { taskId, status: 'downloading', task });
@@ -413,6 +415,8 @@ export class DownloadEngine {
               const p3dResp = await fetch(playUrl.z3dDecryptInfo.p3dUrl, {
                 method: 'GET',
                 headers: { ...(playUrl.headers || {}), Range: 'bytes=0-31' },
+                // C1: 32 字节探测请求补超时
+                signal: AbortSignal.timeout(15000),
               });
               if (!p3dResp.ok) {
                 throw new Error(`3D60 前32字节下载失败: ${p3dResp.status}`);

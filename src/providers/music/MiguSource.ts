@@ -5,6 +5,7 @@ import type { FileSizeResult } from './types';
 import type { SearchParams, SearchResult, SongDetail, HealthStatus, TierSizes, QualityOption, QualityTier, PlayUrlResult } from '@core/types';
 import { YinliuError, ErrorCode } from '@core/types';
 import { debugLogger } from '@shared/utils/debugLogger';
+import { createRequestSignal } from '@shared/utils/requestSignal';
 import { decryptH5v24Response } from '@shared/audio/crypto';
 
 /**
@@ -145,7 +146,8 @@ export class MiguSource extends BaseHttpSource {
 
       // HEAD 验证派生 URL 是否真实存在
       try {
-        const head = await fetch(derived, { method: 'HEAD', headers: this.h5v24Headers, signal });
+        // C1: 外部信号与超时合并，signal 为空时也有超时兜底
+        const head = await fetch(derived, { method: 'HEAD', headers: this.h5v24Headers, signal: createRequestSignal(8000, signal) });
         if (!head.ok) continue;
         const cl = head.headers.get('content-length');
         const size = cl ? parseInt(cl, 10) : 0;
@@ -204,7 +206,8 @@ export class MiguSource extends BaseHttpSource {
       const response = await fetch(url, {
         method: 'GET',
         headers: this.h5v24Headers,
-        signal: signal || AbortSignal.timeout(12000),
+        // C1: 外部信号与超时合并
+        signal: createRequestSignal(12000, signal),
       });
 
       if (!response.ok) {
@@ -245,6 +248,8 @@ export class MiguSource extends BaseHttpSource {
           Accept: 'application/json',
           Referer: 'https://y.migu.cn/',
         },
+        // C1: 裸 fetch 统一补超时
+        signal: AbortSignal.timeout(10000),
       });
       if (!resp.ok) return null;
       const data = await resp.json().catch(() => null);
@@ -271,6 +276,8 @@ export class MiguSource extends BaseHttpSource {
           'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36',
           'Accept': 'application/json',
         },
+        // C1: 搜索请求补超时
+        signal: AbortSignal.timeout(10000),
       });
 
       if (!response.ok) {
@@ -377,6 +384,8 @@ export class MiguSource extends BaseHttpSource {
           'Accept': 'application/json',
           'Referer': 'https://y.migu.cn/',
         },
+        // C1: 裸 fetch 统一补超时
+        signal: AbortSignal.timeout(10000),
       });
       if (!resp.ok) return [];
       const data = await resp.json().catch(() => null);
@@ -405,6 +414,8 @@ export class MiguSource extends BaseHttpSource {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960U) AppleWebKit/537.36',
         },
+        // C1: 裸 fetch 统一补超时
+        signal: AbortSignal.timeout(10000),
       });
 
       if (!response.ok) {
@@ -449,7 +460,7 @@ export class MiguSource extends BaseHttpSource {
 
     try {
       const url = `${this.apiBase}/MIGU/3.0.0/v2.0/content/queryLyricInfo.do?contentId=${contentId}`;
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
 
       if (!response.ok) return null;
 
@@ -536,7 +547,7 @@ export class MiguSource extends BaseHttpSource {
   async getPlaylist(playlistId: string) {
     try {
       const url = `${this.bmwBase}/queryMusiclistSongs.do?musicListId=${playlistId}&pageSize=100`;
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
 
       if (!response.ok) {
         throw new YinliuError(ErrorCode.SOURCE_ERROR, '获取歌单失败', 502);
@@ -614,7 +625,8 @@ export class MiguSource extends BaseHttpSource {
       const derived = this.deriveTargetUrl(pqUrl, flag);
       if (!derived) continue;
       try {
-        const resp = await fetch(derived, { method: 'HEAD', headers: this.h5v24Headers, signal });
+        // C1: 外部信号与超时合并，signal 为空时也有超时兜底
+        const resp = await fetch(derived, { method: 'HEAD', headers: this.h5v24Headers, signal: createRequestSignal(8000, signal) });
         if (!resp.ok) continue;
         const cl = resp.headers.get('content-length');
         const size = cl ? parseInt(cl, 10) : 0;
@@ -706,6 +718,8 @@ export class MiguSource extends BaseHttpSource {
       const head = await fetch(result.url, {
         method: 'HEAD',
         headers: result.headers,
+        // C1: 取链探测补超时
+        signal: AbortSignal.timeout(8000),
       });
       if (!head.ok) return false;
       const cl = head.headers.get('content-length');
@@ -756,7 +770,7 @@ export class MiguSource extends BaseHttpSource {
   async getSongRateInfo(contentId: string) {
     try {
       const url = `${this.apiBase}/MIGU/3.0.0/v2.0/content/querySongInfo.do?contentId=${contentId}`;
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
       if (!response.ok) return null;
 
       const data = await response.json();
@@ -774,6 +788,8 @@ export class MiguSource extends BaseHttpSource {
           Referer: 'https://music.migu.cn/',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         },
+        // C1: 裸 fetch 统一补超时
+        signal: AbortSignal.timeout(10000),
       });
       if (!response.ok) return [];
 
@@ -818,6 +834,8 @@ export class MiguSource extends BaseHttpSource {
             Referer: 'https://music.migu.cn/',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
           },
+          // C1: 裸 fetch 统一补超时
+          signal: AbortSignal.timeout(10000),
         });
         if (!response.ok) break;
         const data = await response.json();

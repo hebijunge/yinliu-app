@@ -1,22 +1,18 @@
 import { MoreVertical } from 'lucide-react';
+import { memo } from 'react';
 import { SOURCE_COLORS } from './sourceColors';
 import { PLATFORM_SHORT_NAMES } from '../../core/platformPriority';
 import { usePlayerStore } from '@shared/store/playerStore';
 import SmartCover from '../ui/SmartCover';
+import type { AggregatedSearchResult } from '@core/search';
 
-export interface SongRowData {
-  id: string;
-  /** 当前播放判定：聚合结果带 sourceSongId/sourceId，优先用二者与播放器当前曲目比对 */
-  sourceSongId?: string;
-  sourceId?: string;
-  title: string;
-  artist?: string;
-  album?: string;
-  coverUrl?: string;
-  bitrate?: number;
-  /** 源徽章（展示优先级顺序已在聚合层排好） */
-  sources: { sourceId: string; sourceName: string }[];
-}
+/**
+ * D9: 行数据契约直接复用聚合搜索结果类型 ——
+ * 所有列表页传的就是 AggregatedSearchResult，收敛为别名后
+ * 页面可把 handlePlay / setState 直传给行组件（类型自洽 + 引用稳定），
+ * 配合 memo 让父组件重渲染不再连带全列表重绘。
+ */
+export type SongRowData = AggregatedSearchResult;
 
 interface SongRowProps {
   song: SongRowData;
@@ -30,7 +26,7 @@ interface SongRowProps {
  * 供 首页热歌榜 / 曲库榜单 / 曲库歌单 / 搜索结果 复用。
  * 整行点击播放；右侧 ⋮ 打开音质弹窗。
  */
-export default function SongRow({ song, onPlay, onMore }: SongRowProps) {
+function SongRowImpl({ song, onPlay, onMore }: SongRowProps) {
   // v23：标识「正在播放」曲目 —— 与播放器当前曲目按 sourceSongId+sourceId（兜底 id）比对
   const currentTrack = usePlayerStore((s) => s.currentTrack);
   const isCurrentTrack = !!currentTrack && (
@@ -51,7 +47,7 @@ export default function SongRow({ song, onPlay, onMore }: SongRowProps) {
           onPlay(song);
         }
       }}
-      className={`relative flex items-center gap-3 p-3 rounded-lg hover:bg-[var(--bg-tertiary)] transition-all duration-150 cursor-pointer active:scale-[0.97] active:bg-[var(--bg-tertiary)] ${
+      className={`relative flex items-center gap-3 p-3 rounded-lg w-full hover:bg-[var(--bg-tertiary)] transition-all duration-150 cursor-pointer active:scale-[0.97] active:bg-[var(--bg-tertiary)] ${
         isCurrentTrack
           ? 'bg-[var(--accent-soft)] ring-1 ring-[var(--accent)]/40'
           : 'bg-[var(--bg-secondary)]'
@@ -75,7 +71,8 @@ export default function SongRow({ song, onPlay, onMore }: SongRowProps) {
         <div className="text-sm text-[var(--text-secondary)] truncate">
           {song.artist} {song.album && `· ${song.album}`}
         </div>
-        <div className="flex gap-1 mt-1">
+        {/* D5: 徽章行 flex-wrap + overflow-hidden，4 个源时小屏不撑破行宽 */}
+        <div className="flex flex-wrap gap-1 mt-1 min-w-0 max-w-full overflow-hidden">
           {(song.sources || []).map((s) => (
             <span
               key={s.sourceId}
@@ -106,3 +103,7 @@ export default function SongRow({ song, onPlay, onMore }: SongRowProps) {
     </div>
   );
 }
+
+
+/** D9: memo 化 —— song 引用与回调稳定时，父组件重渲染不触发本行重绘 */
+export default memo(SongRowImpl);

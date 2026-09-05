@@ -5,7 +5,7 @@
  * 2. getAggregatedHotSongs：拉取 6 平台首页热歌榜详情并聚合（首页「多源聚合热歌榜」数据源）
  *    - 权重1：支持的源越多越靠前
  *    - 权重2：展示优先级 汽水 > 酷我 > 咪咕 > 网易云 > QQ > 酷狗
- *    - 播放取链仍按播放优先级 酷我 > 咪咕 > 网易云 > QQ > 酷狗 > 汽水（platformPriority）
+ *    - 播放取链仍按播放优先级 酷我 > 咪咕 > 网易云 > 汽水 > 酷狗 > QQ（platformPriority，v25 B0）
  */
 
 import { sourceRegistry } from '@providers/music/registry';

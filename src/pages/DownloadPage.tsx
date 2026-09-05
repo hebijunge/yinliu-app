@@ -60,7 +60,7 @@ const QueueTaskCard = memo(function QueueTaskCard({ task }: { task: DownloadTask
               {task.artist ? <span className="text-[var(--text-tertiary)] font-normal"> · {task.artist}</span> : null}
             </span>
             <span className="text-xs text-[var(--text-tertiary)]">
-              {task.quality} · {PLATFORM_DISPLAY_NAMES[task.sourceId] || task.sourceId}
+              {task.quality}{task.actualQuality && task.actualQuality !== task.quality ? `（实际 ${task.actualQuality}）` : ''} · {PLATFORM_DISPLAY_NAMES[task.sourceId] || task.sourceId}
             </span>
           </div>
         </div>
@@ -241,7 +241,7 @@ function CompletedSourceSection({
                     {task.artist ? <span className="text-[var(--text-tertiary)] font-normal"> · {task.artist}</span> : null}
                   </span>
                   <span className="text-xs text-[var(--text-tertiary)]">
-                    {task.quality} · {formatBytes(task.totalSize || 0)}
+                    {task.quality}{task.actualQuality && task.actualQuality !== task.quality ? `（实际 ${task.actualQuality}）` : ''} · {formatBytes(task.totalSize || 0)}
                   </span>
                 </div>
               </div>

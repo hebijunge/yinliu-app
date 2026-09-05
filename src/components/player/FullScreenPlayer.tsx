@@ -264,7 +264,7 @@ export default function FullScreenPlayer({ onClose }: Props) {
         <AudioLines className="w-3.5 h-3.5" />
         {qualityLabel(currentQuality)}
         {actualQuality && actualQuality !== currentQuality && (
-          <span className="text-amber-500">实际 {qualityLabel(actualQuality)}</span>
+          <span className="text-amber-500">实际 {qualityLabel(actualQuality)}（标称 {qualityLabel(currentQuality)}）</span>
         )}
         {isPreview && <span className="text-amber-500">试听</span>}
       </button>

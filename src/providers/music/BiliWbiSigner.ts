@@ -32,6 +32,8 @@ export async function getWbiKeys(): Promise<{ imgKey: string; subKey: string }> 
       'User-Agent': UA,
       Referer: 'https://www.bilibili.com/',
     },
+    // C1: 裸 fetch 统一补超时
+    signal: AbortSignal.timeout(10000),
   });
   const data = await resp.json().catch(() => null);
   const wbi = data?.data?.wbi_img;
