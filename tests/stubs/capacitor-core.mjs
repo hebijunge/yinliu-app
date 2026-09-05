@@ -17,3 +17,10 @@ export const Capacitor = {
     return 'https://localhost/_capacitor_file_/' + String(filePath).replace(/^\//, '');
   },
 };
+
+/** platformFetch 测试所需：CapacitorHttp 替身（测试仅覆盖 web 路径，不应被调用） */
+export const CapacitorHttp = {
+  request: async () => {
+    throw new Error('CapacitorHttp.request 不应在 web 测试路径被调用');
+  },
+};
