@@ -942,14 +942,21 @@ export class KuwoSource extends BaseHttpSource {
           for (const v of Object.values(node)) walk(v);
         };
         walk(data);
-        this.tagListCache = tags;
+        // B2: 仅在成功拿到非空标签时才缓存。失败/空结果永久缓存会导致
+        // 断网冷启动后分类歌单永远为空，即使恢复网络也无法重试（需重启）。
+        if (tags.length > 0) {
+          this.tagListCache = tags;
+        }
       }
 
       const wanted = KuwoSource.KW_TAG_ALIASES[categoryName] || categoryName;
+      // B2: 缓存仍为空（上次拉取失败/为空）→ 直接返回空列表，下次调用重试
+      const tagList = this.tagListCache;
+      if (!tagList) return [];
       // 精确匹配 → 包含匹配
       const tag =
-        this.tagListCache.find((t) => t.name === wanted) ||
-        this.tagListCache.find((t) => t.name.includes(wanted) || wanted.includes(t.name));
+        tagList.find((t) => t.name === wanted) ||
+        tagList.find((t) => t.name.includes(wanted) || wanted.includes(t.name));
       if (!tag) return [];
 
       const url = `https://wapi.kuwo.cn/api/pc/classify/playlist/getTagPlayList?loginUid=0&loginSid=0&appUid=38668888&pn=${pn}&id=${tag.id}`;
@@ -1193,7 +1200,7 @@ export class KuwoSource extends BaseHttpSource {
     // B3: 结构校验——必须是 IIFE 格式：(function(...){...})(...)
     // 防止第三方注入恶意代码
     if (!/^\(function\s*\([a-z,\s]*\)\s*\{/i.test(nuxtCode)) {
-      debugLogger.warn('kuwo', 'extractNuxtData: 代码结构不符合 Nuxt IIFE 格式，跳过执行', {
+      debugLogger.warn('network', 'extractNuxtData: 代码结构不符合 Nuxt IIFE 格式，跳过执行', {
         codePreview: nuxtCode.slice(0, 100),
       });
       return null;
@@ -1216,7 +1223,7 @@ export class KuwoSource extends BaseHttpSource {
     ];
     for (const pattern of dangerousPatterns) {
       if (pattern.test(nuxtCode)) {
-        debugLogger.warn('kuwo', 'extractNuxtData: 检测到危险关键字，跳过执行', {
+        debugLogger.warn('network', 'extractNuxtData: 检测到危险关键字，跳过执行', {
           pattern: pattern.toString(),
         });
         return null;

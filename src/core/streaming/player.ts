@@ -80,6 +80,8 @@ export class StreamingAudioPlayer {
   // 数据缓冲
   private chunks: Array<{ data: Uint8Array; start: number; end: number }> = [];
   private totalDownloaded = 0;
+  // v29-A2: 用户设定音量基准 —— 新建 audio 元素时统一应用，避免重建后音量跳变
+  private volume = 1;
   private totalSize = 0;
   private mimeType = 'audio/mpeg';
 
@@ -375,7 +377,16 @@ export class StreamingAudioPlayer {
           cacheKey: options.cacheKey,
           resumeOffset,
         });
+        // v29-A1: MSE 前缀读失败降级 Blob —— 前缀未入 SourceBuffer 也未记账
+        // （loadResumePrefixIntoMSE 仅成功路径补记），此处统一补记
+        this.totalDownloaded += resumeOffset;
       }
+    } else if (resumeOffset > 0) {
+      // v29-A1: Blob 路径前缀补记 —— fetcher 从 resumeOffset 续传，后续回调只累加
+      // 新下载字节；缓存文件里已有的前缀不记入 totalDownloaded 时，
+      // ended 守卫（totalDownloaded < totalSize）永远成立 → 播完触底被判为
+      // buffering、卡死不切歌。MSE 成功路径由 loadResumePrefixIntoMSE 自行补记
+      this.totalDownloaded += resumeOffset;
     }
     this.setState('loading');
     if (!options.url) {
@@ -499,23 +510,49 @@ export class StreamingAudioPlayer {
 
     this.setState('loading');
 
+    // v29-A2: load() 语义 = 「首块就绪即返回」。旧实现把整曲下载+解密循环放在
+    // load() 内同步执行，PlayGate 管线被整曲下载阻塞——快速切歌时新请求必须
+    // 排队等旧歌唱完下载完才轮到，表现为主界面长时间 loading。现在：
+    //   - 下载循环移交后台执行（数据落缓存 / blob 刷新照旧）；
+    //   - load() 仅等待首块就绪（或首块前失败/取消），即可让出管线。
+    let resolveFirstChunk!: () => void;
+    let rejectFirstChunk!: (err: Error) => void;
+    let firstChunkSettled = false;
+    const firstChunkReady = new Promise<void>((resolve, reject) => {
+      resolveFirstChunk = () => {
+        if (!firstChunkSettled) {
+          firstChunkSettled = true;
+          resolve();
+        }
+      };
+      rejectFirstChunk = (err: Error) => {
+        if (!firstChunkSettled) {
+          firstChunkSettled = true;
+          reject(err);
+        }
+      };
+    });
+
     const MIN_START_SIZE = 256 * 1024;
-    let totalReceived = 0;
-    let chunkIndex = 0;
 
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+    // 后台下载循环（detached —— 错误经 onError 上报，不再阻塞 load 调用方）
+    void (async () => {
+      let totalReceived = 0;
+      let chunkIndex = 0;
 
-        const start = totalReceived;
-        const end = start + value.length - 1;
-        this.chunks.push({ data: value, start, end });
-        totalReceived += value.length;
-        this.totalDownloaded = totalReceived;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        // 写入缓存
-        await streamCacheEngine.appendData(this.cacheKey, value, start);
+          const start = totalReceived;
+          const end = start + value.length - 1;
+          this.chunks.push({ data: value, start, end });
+          totalReceived += value.length;
+          this.totalDownloaded = totalReceived;
+
+          // 写入缓存
+          await streamCacheEngine.appendData(this.cacheKey, value, start);
 
           // 首次达到起播阈值时开始播放
           // P0-fix: 旧条件 `state === 'loading'` 下，用户在首块就绪前暂停（state 变 paused）
@@ -531,18 +568,29 @@ export class StreamingAudioPlayer {
             resolveFirstChunk();
           }
 
-        // 后续 chunks：定期刷新 blob URL
-        if (chunkIndex > 0 && !this.useMSE) {
-          const shouldRefreshBySize =
-            this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
-          if (shouldRefreshBySize) {
-            await this.setupBlobPlayback();
-            this.lastRefreshDownloaded = this.totalDownloaded;
+          // 后续 chunks：定期刷新 blob URL
+          if (chunkIndex > 0 && !this.useMSE) {
+            const shouldRefreshBySize =
+              this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
+            if (shouldRefreshBySize) {
+              await this.setupBlobPlayback();
+              this.lastRefreshDownloaded = this.totalDownloaded;
+            }
           }
+
+          chunkIndex++;
         }
 
-        chunkIndex++;
-      }
+        // 流结束后的处理
+        if (this.state === 'loading') {
+          // 数据量不足 MIN_START_SIZE，但流已结束，直接播放
+          await this.onFirstChunkReady();
+          resolveFirstChunk();
+        } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
+          // 最终刷新 blob（P3：chunks 已清空时也要刷新，尾部数据在缓存中）
+          debugLogger.info('streaming', 'Encrypted stream completed, final blob refresh');
+          await this.setupBlobPlayback();
+        }
 
         this.totalSize = totalReceived;
         if (this.cacheKey && this.totalSize > 0) {
@@ -565,23 +613,9 @@ export class StreamingAudioPlayer {
         // 都必须返回，否则 PlayGate 被永久占死、后续播放全部无限排队。已落定时为 no-op。
         resolveFirstChunk();
       }
+    })();
 
-      this.totalSize = totalReceived;
-      if (this.cacheKey && this.totalSize > 0) {
-        await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
-      }
-    } catch (err) {
-      if (this.encryptedStreamAbortController?.signal.aborted) {
-        // 正常取消，不报错
-        return;
-      }
-      this.setState('error');
-      this.callbacks.onError?.(err instanceof Error ? err.message : 'Encrypted stream failed');
-      throw err;
-    } finally {
-      reader.releaseLock();
-      this.encryptedStreamAbortController = null;
-    }
+    await firstChunkReady;
   }
 
   /**
@@ -633,37 +667,45 @@ export class StreamingAudioPlayer {
 
     this.setState('loading');
 
-    const MIN_START_SIZE = 256 * 1024;
-    let totalReceived = 0;
-    let chunkIndex = 0;
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const start = totalReceived;
-        const end = start + value.length - 1;
-        this.chunks.push({ data: value, start, end });
-        totalReceived += value.length;
-        this.totalDownloaded = totalReceived;
-
-        // 写入缓存
-        await streamCacheEngine.appendData(this.cacheKey, value, start);
-
-        // 首次达到起播阈值时开始播放
-        if (this.state === 'loading' && totalReceived >= MIN_START_SIZE) {
-          debugLogger.info('streaming', 'Z3D stream first chunk ready', {
-            cacheKey: this.cacheKey,
-            received: totalReceived,
-          });
-          await this.onFirstChunkReady();
-          // P2: Z3D 大文件内存控制——起播后清空内存 chunks，数据已落地缓存
-          this.chunks = [];
-          debugLogger.info('streaming', 'Z3D: cleared in-memory chunks after first playback', {
-            cacheKey: this.cacheKey,
-          });
+    // v29-A2: load() 语义 = 「首块就绪即返回」，下载循环移交后台（与 CENC 同）
+    let resolveFirstChunk!: () => void;
+    let rejectFirstChunk!: (err: Error) => void;
+    let firstChunkSettled = false;
+    const firstChunkReady = new Promise<void>((resolve, reject) => {
+      resolveFirstChunk = () => {
+        if (!firstChunkSettled) {
+          firstChunkSettled = true;
+          resolve();
         }
+      };
+      rejectFirstChunk = (err: Error) => {
+        if (!firstChunkSettled) {
+          firstChunkSettled = true;
+          reject(err);
+        }
+      };
+    });
+
+    const MIN_START_SIZE = 256 * 1024;
+
+    // 后台下载循环（detached —— 错误经 onError 上报，不再阻塞 load 调用方）
+    void (async () => {
+      let totalReceived = 0;
+      let chunkIndex = 0;
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const start = totalReceived;
+          const end = start + value.length - 1;
+          this.chunks.push({ data: value, start, end });
+          totalReceived += value.length;
+          this.totalDownloaded = totalReceived;
+
+          // 写入缓存
+          await streamCacheEngine.appendData(this.cacheKey, value, start);
 
           // 首次达到起播阈值时开始播放
           // P0-fix: 同 CENC 路径——旧条件在「首块就绪前暂停」时永远不落定 firstChunkReady，
@@ -677,15 +719,42 @@ export class StreamingAudioPlayer {
             resolveFirstChunk();
             // P2: Z3D 大文件内存控制——起播后清空内存 chunks，数据已落地缓存
             this.chunks = [];
-            debugLogger.info('streaming', 'Z3D: cleared in-memory chunks after blob refresh', {
+            debugLogger.info('streaming', 'Z3D: cleared in-memory chunks after first playback', {
               cacheKey: this.cacheKey,
-              totalDownloaded: this.totalDownloaded,
             });
           }
+
+          // 后续 chunks：定期刷新 blob URL
+          if (chunkIndex > 0 && !this.useMSE) {
+            const shouldRefreshBySize =
+              this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
+            if (shouldRefreshBySize) {
+              await this.setupBlobPlayback();
+              this.lastRefreshDownloaded = this.totalDownloaded;
+              // P2: Z3D 大文件内存控制——刷新后清空内存 chunks，数据已落地缓存
+              this.chunks = [];
+              debugLogger.info('streaming', 'Z3D: cleared in-memory chunks after blob refresh', {
+                cacheKey: this.cacheKey,
+                totalDownloaded: this.totalDownloaded,
+              });
+            }
+          }
+
+          chunkIndex++;
         }
 
-        chunkIndex++;
-      }
+        // 流结束后的处理
+        if (this.state === 'loading') {
+          // 数据量不足 MIN_START_SIZE，但流已结束，直接播放
+          await this.onFirstChunkReady();
+          resolveFirstChunk();
+          this.chunks = []; // P2
+        } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
+          // 最终刷新 blob（P3：chunks 已清空时也要刷新，尾部数据在缓存中）
+          debugLogger.info('streaming', 'Z3D stream completed, final blob refresh');
+          await this.setupBlobPlayback();
+          this.chunks = []; // P2
+        }
 
         this.totalSize = totalReceived;
         if (this.cacheKey && this.totalSize > 0) {
@@ -709,23 +778,9 @@ export class StreamingAudioPlayer {
         // 首块已由正常路径落定时，这里落定为 no-op（firstChunkReady 已 settled）。
         resolveFirstChunk();
       }
+    })();
 
-      this.totalSize = totalReceived;
-      if (this.cacheKey && this.totalSize > 0) {
-        await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
-      }
-    } catch (err) {
-      if (this.encryptedStreamAbortController?.signal.aborted) {
-        // 正常取消，不报错
-        return;
-      }
-      this.setState('error');
-      this.callbacks.onError?.(err instanceof Error ? err.message : 'Z3D stream failed');
-      throw err;
-    } finally {
-      reader.releaseLock();
-      this.encryptedStreamAbortController = null;
-    }
+    await firstChunkReady;
   }
 
   /**
@@ -816,10 +871,14 @@ export class StreamingAudioPlayer {
 
   /**
    * 设置音量
+   * v29-A2: 持久化音量基准 —— 新建的 audio 元素（首块起播 / blob 刷新重建）
+   * 统一应用最近一次用户设定音量；旧实现只写当前 audio，元素重建后音量
+   * 回落到默认 1.0，表现为切歌/刷新瞬间音量跳变
    */
   setVolume(volume: number): void {
+    this.volume = Math.max(0, Math.min(1, volume));
     if (this.audio) {
-      this.audio.volume = Math.max(0, Math.min(1, volume));
+      this.audio.volume = this.volume;
     }
   }
 
@@ -896,6 +955,10 @@ export class StreamingAudioPlayer {
 
     // 停止 fetcher / 加密流
     await this.fetcher.stop();
+    // v29-A1: stop() 只停下载循环、保留 url/totalSize 供 seek 复用；切歌必须
+    // 再调 reset() 清空会话状态（totalSize/URL/在途 HEAD），否则上一首歌的
+    // totalSize 残留会钳制下一首歌的块范围
+    this.fetcher.reset();
     if (this.encryptedStreamAbortController) {
       this.encryptedStreamAbortController.abort();
       this.encryptedStreamAbortController = null;
@@ -1509,6 +1572,8 @@ export class StreamingAudioPlayer {
 
       this.audio = new Audio(url);
       this.audio.crossOrigin = 'anonymous';
+      // v29-A2: 新元素统一应用用户音量基准
+      this.audio.volume = this.volume;
       this.audioElementListener?.(this.audio);
 
       let resolved = false;
@@ -1623,6 +1688,8 @@ export class StreamingAudioPlayer {
 
     this.audio = new Audio(url);
     this.audio.crossOrigin = 'anonymous';
+    // v29-A2: 新元素统一应用用户音量基准
+    this.audio.volume = this.volume;
     this.audioElementListener?.(this.audio);
 
     this.audio.addEventListener('canplay', () => {
@@ -1902,18 +1969,25 @@ export class StreamingAudioPlayer {
   }
 
   /**
-   * 获取恢复下载的偏移量（从已下载的最远位置继续）
+   * 获取恢复下载的偏移量
+   * v29-A1: 连续前缀末尾 —— 旧实现取已下载区间的最大端（maxEnd+1），
+   * Range 请求失败/超时产生的中间空洞永远不会再被回填（fetcher 永远从
+   * 最远端续传），seek/续播时表现为「进度条可拖、拖到空洞区间无声」。
+   * 现改为从 0 开始扫描排序后的区间，取首个空洞前的连续前缀长度；
+   * 空洞之后的数据不浪费（仍在缓存元数据里），由后续按需请求覆盖。
    */
   private getResumeOffset(): number {
     const entry = streamCacheEngine.getEntry(this.cacheKey);
     if (!entry || entry.downloadedRanges.length === 0) return 0;
 
-    // 找到最远已下载位置
-    let maxEnd = 0;
-    for (const range of entry.downloadedRanges) {
-      if (range.end > maxEnd) maxEnd = range.end;
+    const sorted = [...entry.downloadedRanges].sort((a, b) => a.start - b.start);
+    // 已确认连续覆盖 [0..end]；初始无数据时 end = -1（前缀长度 0）
+    let end = -1;
+    for (const range of sorted) {
+      if (range.start > end + 1) break; // 出现空洞，连续前缀到此为止
+      if (range.end > end) end = range.end;
     }
-    return maxEnd + 1;
+    return end + 1;
   }
 
   /**
