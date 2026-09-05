@@ -142,6 +142,15 @@ export interface PlayUrlResult {
   isPreview?: boolean;
   /** 实际音质是否与请求音质一致 */
   accurate?: boolean;
+  /**
+   * v29 B6 音质诚实性：取链后探测到的真实信息。
+   * sizeBytes 来自内容校验 Range 响应的 Content-Range 总长（或 HEAD Content-Length 回退探测）；
+   * actualQuality / actualBitrate 仅在能拿到歌曲时长（durationSec）时按码率推算，
+   * 推算不出时不填——UI 只展示标称档位，不用猜测值冒充真实档位。
+   */
+  sizeBytes?: number;
+  actualQuality?: Quality;
+  actualBitrate?: number;
   /** 加密文件的 ekey（酷我 mflac/mgg 需要） */
   ekey?: string;
   /** CENC 解密密钥（汽水音乐 track.php 返回的 decrypt_key） */
@@ -282,11 +291,17 @@ export interface DownloadTask {
   isFallback?: boolean;
   /** 音源不支持 Range 时整包回退：进度无法实时统计，UI 显示不确定态进度条 */
   indeterminate?: boolean;
+  /**
+   * v29 B6 音质诚实性：下载链路探测/实测到的真实音质档位与文件大小。
+   * actualQuality 与 quality（标称档位）不同时，下载页显示「标称 X · 实际 Y」。
+   */
+  sizeBytes?: number;
+  actualQuality?: Quality;
   createdAt: number;
 }
 
 // === 取链平台优先级 ===
-// v18 起双优先级表统一定义在 platformPriority.ts，此处保留兼容导出（播放优先级：酷我→咪咕→网易云→QQ→酷狗→汽水）
+// v18 起双优先级表统一定义在 platformPriority.ts，此处保留兼容导出（v29 播放优先级：酷我→咪咕→网易云→汽水→酷狗→QQ）
 export { PLATFORM_PRIORITY as SourcePlayPriorityTable, getPriorityRank as getSourcePriority } from './platformPriority';
 
 // === 错误码 ===

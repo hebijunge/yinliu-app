@@ -27,7 +27,11 @@ export interface MusicSource {
   readonly supportedSearchTypes?: SearchType[];
 
   search(params: SearchParams): Promise<SearchResult[]>;
-  getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal): Promise<PlayUrlResult>;
+  /**
+   * v29 B6：opts.durationSec 传入歌曲时长（秒）时，取链成功后会探测真实文件大小
+   * 并按码率推算 actualQuality（推算不出则不填，诚实性口径见 qualityProbe.ts）。
+   */
+  getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal, opts?: { durationSec?: number }): Promise<PlayUrlResult>;
   getSongDetail(songId: string): Promise<SongDetail>;
   getLyrics?(songId: string): Promise<string | null>;
   getPlaylist?(playlistId: string): Promise<PlaylistDetail>;

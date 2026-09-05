@@ -719,7 +719,10 @@ export class QqSource extends BaseHttpSource {
   }
 
   private buildProxyEndpoints(songId: string, quality: Quality): ResolvedCandidate[] {
-    // v27(P1-3)：剔除硬编码 IP 代理 175.27.166.236（日志实证连接失败，纯噪音候选）
+    // v29 B1：海棠 resolve-url 改为 POST 携带 level——此前 GET 候选不带任何音质参数，
+    // 代理固定回 128k/320k，也是「选高音质实际拿低码率」的来源之一。
+    // 其余代理仍为 GET（无档位参数，回盘音质不可控，accurate=false 交竞速层兜底）。
+    const mid = songId.replace(/^qq_/, '');
     const proxyUrls = [
       // 海棠代理
       `https://musicapi.haitangw.net/music/qq.php?id=${songId}`,
@@ -727,11 +730,9 @@ export class QqSource extends BaseHttpSource {
       `https://metingapi.nanorocky.top/?server=tencent&type=url&id=${songId}`,
       // vkeys代理
       `https://api.vkeys.cn/?server=tencent&type=url&id=${songId}`,
-      // 海棠resolve-url
-      `https://musicserver.haitangw.cc/v1/music/resolve-url?source=qq&id=${songId}`,
     ];
 
-    return proxyUrls.map((url): ResolvedCandidate => ({
+    const candidates: ResolvedCandidate[] = proxyUrls.map((url): ResolvedCandidate => ({
       url,
       method: 'GET',
       timeout: 10000,
@@ -740,6 +741,24 @@ export class QqSource extends BaseHttpSource {
       // 代理回盘音质不可控，标记 accurate=false 交由竞速层兜底降级
       resolve: (response) => this.resolveProxyResponse(response, quality),
     }));
+
+    // 海棠 resolve-url（POST + level，与 getQualityOptions 同一端点同一参数口径）
+    if (mid) {
+      candidates.push({
+        url: 'https://musicserver.haitangw.cc/v1/music/resolve-url',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Referer': 'https://musicserver.haitangw.cc/',
+        },
+        body: JSON.stringify({ source: 'tx', rid: mid, level: qqLevelForQuality(quality) }),
+        timeout: 10000,
+        priority: 2,
+        resolve: (response) => this.resolveProxyResponse(response, quality),
+      });
+    }
+
+    return candidates;
   }
 
   /**
@@ -791,6 +810,10 @@ export class QqSource extends BaseHttpSource {
           uin: '0',
           loginflag: 0,
           platform: '20',
+          // v29 B1（关键修复）：必须用 filename 指定音质档位（形如 RS01{mid}.flac / M800{mid}.mp3）。
+          // 此前缺省该参数，网关一律回落默认档（128k M500.mp3）——这就是
+          // 「选 Hi-Res/无损实际返回 128k 低码率」的根因。
+          filename: [buildQqFilename(format, songId)],
         },
       },
     };
@@ -976,6 +999,50 @@ function extractFirstAudioUrl(text: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * v29 B1：由档位格式串构造 GetVkeyServer 的 filename 参数。
+ * format 形如 'RSM1.mflac' / 'M800.mp3' / 'F0M0.mflac' → filename 'RSM1{mid}.mflac' 等。
+ * 官方网关靠该文件名前缀识别请求档位；缺省即回落 128k 默认档（B1 根因）。
+ * 纯函数导出，供单测直接覆盖（tests/v29-quality-priority.test.mjs）。
+ */
+export function buildQqFilename(format: string, songId: string): string {
+  const dotIdx = format.indexOf('.');
+  const prefix = dotIdx === -1 ? format : format.slice(0, dotIdx);
+  const ext = dotIdx === -1 ? 'mp3' : format.slice(dotIdx + 1);
+  return `${prefix}${songId}.${ext}`;
+}
+
+/**
+ * v29 B1：目标音质档 → 海棠 resolve-url 的 level 参数。
+ * 代理候选此前完全不带音质参数（固定回 128k/320k），B1 起按目标档位传 level。
+ * 纯函数导出，供单测直接覆盖。
+ */
+export function qqLevelForQuality(quality: Quality): string {
+  const rank = qualityRankOf(quality);
+  if (rank >= 6) return 'hires';      // Hi-Res 及以上
+  if (rank >= 5) return 'lossless';   // 无损
+  if (rank >= 3) return 'exhigh';     // 320k/192k
+  return 'standard';                  // 128k 及以下
+}
+
+function qualityRankOf(q: Quality): number {
+  const map: Partial<Record<Quality, number>> = {
+    [Quality.LOW]: 1,
+    [Quality.STANDARD]: 2,
+    [Quality.HIGHER]: 3,
+    [Quality.HIGH]: 4,
+    [Quality.LOSSLESS]: 5,
+    [Quality.HIRES]: 6,
+    [Quality.SKY]: 7,
+    [Quality.JYEFFECT]: 8,
+    [Quality.HIFI]: 9,
+    [Quality.ZHIZHEN]: 10,
+    [Quality.DOLBY]: 11,
+    [Quality.MASTER]: 12,
+  };
+  return map[q] || 2;
 }
 
 function mvQualityRank(q: MvQuality): number {

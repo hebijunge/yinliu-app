@@ -12,6 +12,15 @@ import { useNetworkStatus } from '../shared/hooks/useNetworkStatus';
 import { useGuardedAction } from '../shared/hooks/useGuardedAction';
 import OfflineEmptyState from '../shared/components/OfflineEmptyState';
 import { toast } from '../shared/components/Toast';
+import { qualityLabel } from '../components/player/QualitySelector';
+
+/** v29 B6 音质诚实性：真实档位与标称不一致时展示「标称 · 实际 X」 */
+function qualityDisplayText(task: DownloadTask): string {
+  if (task.actualQuality && task.actualQuality !== task.quality) {
+    return `${qualityLabel(task.quality)} · 实际 ${qualityLabel(task.actualQuality)}`;
+  }
+  return qualityLabel(task.quality);
+}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -77,7 +86,7 @@ const QueueTaskCard = memo(function QueueTaskCard({ task }: { task: DownloadTask
               {task.artist ? <span className="text-[var(--text-tertiary)] font-normal"> · {task.artist}</span> : null}
             </span>
             <span className="text-xs text-[var(--text-tertiary)]">
-              {task.quality} · {PLATFORM_DISPLAY_NAMES[task.sourceId] || task.sourceId}
+              {qualityDisplayText(task)} · {PLATFORM_DISPLAY_NAMES[task.sourceId] || task.sourceId}
             </span>
           </div>
         </div>
@@ -260,7 +269,7 @@ function CompletedSourceSection({
                     {task.artist ? <span className="text-[var(--text-tertiary)] font-normal"> · {task.artist}</span> : null}
                   </span>
                   <span className="text-xs text-[var(--text-tertiary)]">
-                    {task.quality} · {formatBytes(task.totalSize || 0)}
+                    {qualityDisplayText(task)} · {formatBytes(task.totalSize || 0)}
                   </span>
                 </div>
               </div>

@@ -3,6 +3,7 @@ import { Quality } from '@core/types';
 import type { SearchParams, SearchResult, PlayUrlResult, SongDetail, HealthStatus } from '@core/types';
 import { YinliuError, ErrorCode, qualityRank } from '@core/types';
 import { platformFetch } from '@shared/utils/platformFetch';
+import { probeFileSize, classifyActualQuality } from '@shared/utils/qualityProbe';
 import { debugLogger } from '@shared/utils/debugLogger';
 
 export interface ResolvedCandidate extends EndpointCandidate {
@@ -110,14 +111,15 @@ export abstract class BaseHttpSource implements MusicSource {
   /** 校验缓存最大条数（防无界增长，超出时裁剪过期项） */
   private static readonly VALIDATION_CACHE_MAX = 256;
 
-  async getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal): Promise<PlayUrlResult> {
+  async getPlayUrl(songId: string, quality: Quality, signal?: AbortSignal, opts?: { durationSec?: number }): Promise<PlayUrlResult> {
     const lockKey = `${this.id}_${songId}_${quality}`;
 
     // 1. 缓存命中检查
     const cached = BaseHttpSource.playUrlCache.get(lockKey);
     if (cached) {
       debugLogger.info('player', `取链缓存命中: ${this.id} · ${songId}`, { lockKey, quality });
-      return cached;
+      // v29 B6：缓存结果若缺真实档位信息（如上一轮探测失败），补一次 best-effort 探测
+      return this.attachActualQuality(cached, opts);
     }
 
     // 2. 去重保护：同曲同音质正在取链中，直接等待已有请求
@@ -138,18 +140,22 @@ export abstract class BaseHttpSource implements MusicSource {
     }
 
     const racePromise = this.linkRace(candidates, quality, songId, signal);
-    BaseHttpSource.pendingLocks.set(lockKey, racePromise);
-
-    racePromise
+    // v29 B6：竞速胜出后补真实音质探测（best-effort，失败不影响取链结果），
+    // 探测完成的结果再进缓存/去重通道——等待方与缓存命中的结果都带 actualQuality
+    const resultPromise = racePromise
+      .then((result) => this.attachActualQuality(result, opts))
       .then((result) => {
-        // 写入缓存（使用 result.expiresAt 或默认 TTL）
         const ttl = result.expiresAt
           ? result.expiresAt - Date.now()
           : BaseHttpSource.CACHE_TTL;
         if (ttl > 0) {
           BaseHttpSource.playUrlCache.set(lockKey, result, ttl);
         }
-      })
+        return result;
+      });
+    BaseHttpSource.pendingLocks.set(lockKey, resultPromise);
+
+    resultPromise
       .catch(() => {
         // 失败不缓存
       })
@@ -157,7 +163,36 @@ export abstract class BaseHttpSource implements MusicSource {
         BaseHttpSource.pendingLocks.delete(lockKey);
       });
 
-    return racePromise;
+    return resultPromise;
+  }
+
+  /**
+   * v29 B6 音质诚实性：竞速胜出后探测真实文件大小并推算真实档位。
+   * - sizeBytes：内容校验层（doValidateContent）已从 Range 响应捕获时直接复用，否则 HEAD 回退探测；
+   * - actualQuality / actualBitrate：仅 durationSec 已知时按码率推算，推算不出不填；
+   * - 探测失败（超时/CDN 不支持）静默放弃，不阻塞、不改变取链结果本身。
+   */
+  private async attachActualQuality(result: PlayUrlResult, opts?: { durationSec?: number }): Promise<PlayUrlResult> {
+    try {
+      if (!result.sizeBytes && result.url && /^https?:\/\//i.test(result.url)) {
+        const probed = await probeFileSize(result.url, result.headers);
+        if (probed && probed > 0) result.sizeBytes = probed;
+      }
+      const classified = classifyActualQuality(result.sizeBytes, opts?.durationSec);
+      if (classified.actualBitrate !== undefined) result.actualBitrate = classified.actualBitrate;
+      if (classified.actualQuality !== undefined) result.actualQuality = classified.actualQuality;
+      if (result.actualQuality && result.actualQuality !== result.quality) {
+        debugLogger.info('player', `真实音质与标称不一致 [${this.id}]`, {
+          nominal: result.quality,
+          actual: result.actualQuality,
+          bitrate: result.actualBitrate,
+          sizeBytes: result.sizeBytes,
+        });
+      }
+    } catch {
+      /* 探测失败不影响取链结果 */
+    }
+    return result;
   }
 
   /**
@@ -589,6 +624,13 @@ export abstract class BaseHttpSource implements MusicSource {
         return false;
       }
       const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+      // v29 B6：Range 响应顺手捕获文件总长，供真实音质推算复用（省一次 HEAD 探测）
+      const contentRange = resp.headers.get('content-range');
+      if (contentRange) {
+        const m = contentRange.match(/\/(\d+)\s*$/);
+        const total = m ? parseInt(m[1], 10) : 0;
+        if (total > 0) result.sizeBytes = total;
+      }
       if (/(application\/json|text\/html|text\/plain|text\/xml)/.test(contentType)) {
         debugLogger.warn('network', `默认内容校验未通过：contentType 非音频`, {
           url: url.slice(0, 120),

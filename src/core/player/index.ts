@@ -430,7 +430,7 @@ export class PlayerEngine {
           const trySongId = sourceSongIdMap.get(trySourceId) || track.sourceSongId;
           pending++;
 
-          source.getPlayUrl(trySongId, quality, raceController.signal)
+          source.getPlayUrl(trySongId, quality, raceController.signal, { durationSec: track.duration || undefined })
             .then((playUrl) => {
               pending--;
               if (settled) return;

@@ -3,8 +3,10 @@
  *
  * v18 起区分两套顺序（用户明确要求两套并存）：
  *
- * 1. 播放/取链优先级 PLATFORM_PRIORITY（用户原话：酷我，咪咕，网易云，QQ，酷狗，汽水）
+ * 1. 播放/取链优先级 PLATFORM_PRIORITY（v29 用户指定修正：酷我，咪咕，网易云，汽水，酷狗，QQ）
  *    —— 同一首歌多源可播时，实际取链/下载按此平台顺序选源。
+ *    v29 修正说明：QQ、酷狗、汽水三者的相对顺序按用户最新要求调整为 汽水 > 酷狗 > QQ
+ *    （旧版 酷我→咪咕→网易云→QQ→酷狗→汽水 与用户口径不符，已废弃）。
  * 2. 展示聚合排序 DISPLAY_PRIORITY（用户原话：汽水，酷我，咪咕，网易云，QQ，酷狗）
  *    —— 聚合列表（搜索/热歌榜等）在「支持源数」相同时按此顺序排序，源徽章也按此顺序展示。
  *
@@ -15,8 +17,8 @@
  * 4. 当前为只读常量，后续版本如需用户自定义排序，在 settings store 中加一个 override 数组即可
  */
 
-/** 播放/取链优先级：酷我 > 咪咕 > 网易云 > QQ > 酷狗 > 汽水 > 哔哩哔哩(补充源) */
-export const PLATFORM_PRIORITY = ['kuwo', 'migu', 'netease', 'qq', 'kugou', 'qishui', 'bilibili'] as const;
+/** 播放/取链优先级：酷我 > 咪咕 > 网易云 > 汽水 > 酷狗 > QQ > 哔哩哔哩(补充源)（v29 用户指定） */
+export const PLATFORM_PRIORITY = ['kuwo', 'migu', 'netease', 'qishui', 'kugou', 'qq', 'bilibili'] as const;
 
 /** 展示聚合排序优先级：汽水 > 酷我 > 咪咕 > 网易云 > QQ > 酷狗 > 哔哩哔哩(补充源) */
 export const DISPLAY_PRIORITY = ['qishui', 'kuwo', 'migu', 'netease', 'qq', 'kugou', 'bilibili'] as const;

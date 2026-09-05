@@ -29,7 +29,7 @@ class SourceRegistry {
 
   /**
    * 按 v13 取链优先级排序的 source 列表。
-   * 优先级表内的源按 kuwo > migu > netease > kugou > qq 升序；
+   * 优先级表内的源按 v29 口径 kuwo > migu > netease > qishui > kugou > qq 升序；
    * 优先级表外的源（P1 扩展等）排在末尾，按注册顺序稳定。
    */
   getSorted(): MusicSource[] {

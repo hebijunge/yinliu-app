@@ -5,6 +5,7 @@ import { platformFetch } from '@shared/utils/platformFetch';
 import { getSqliteDb, flushDatabase } from '@shared/database';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { buildFallbackChain, PLATFORM_DISPLAY_NAMES } from '@core/platformPriority';
+import { classifyActualQuality } from '@shared/utils/qualityProbe';
 import { toast } from '@shared/components/Toast';
 import { deriveRawKey } from '../../utils/crypto/kuwoEkey';
 import { qmc2DecryptBytes } from '../../utils/crypto/qmc2';
@@ -74,7 +75,7 @@ export class DownloadEngine {
   private abortControllers = new Map<string, AbortController>();
   private listeners: Record<string, Array<(data: unknown) => void>> = {};
   /** 任务元数据：除 DownloadTask 之外，记住每条任务的可用源/降级链（仅内存，DB 不持久化） */
-  private taskMeta = new Map<string, { availableSources?: Array<{ sourceId: string; sourceSongId: string }>; title?: string; artist?: string }>();
+  private taskMeta = new Map<string, { availableSources?: Array<{ sourceId: string; sourceSongId: string }>; title?: string; artist?: string; durationSec?: number }>();
 
   /** 最大并发下载数 */
   private maxConcurrent = 3;
@@ -203,6 +204,8 @@ export class DownloadEngine {
     artist?: string;
     /** v13: 聚合搜索结果中的可用源列表（用于下载取链降级） */
     availableSources?: Array<{ sourceId: string; sourceSongId: string }>;
+    /** v29 B6: 歌曲时长（秒），用于下载链路真实音质推算 */
+    durationSec?: number;
   }): Promise<DownloadTask> {
     const id = `dl_${params.sourceId}_${params.songId}_${params.quality}_${Date.now()}`;
     const task: DownloadTask = {
@@ -228,6 +231,7 @@ export class DownloadEngine {
       if (params.availableSources && params.availableSources.length > 0) {
         const meta = this.taskMeta.get(existing.id) || {};
         meta.availableSources = params.availableSources;
+        if (params.durationSec && !meta.durationSec) meta.durationSec = params.durationSec;
         this.taskMeta.set(existing.id, meta);
       }
       if (!existing.title && params.title) existing.title = params.title;
@@ -237,7 +241,9 @@ export class DownloadEngine {
 
     this.tasks.set(id, task);
     if (params.availableSources && params.availableSources.length > 0) {
-      this.taskMeta.set(id, { availableSources: params.availableSources });
+      this.taskMeta.set(id, { availableSources: params.availableSources, durationSec: params.durationSec });
+    } else if (params.durationSec) {
+      this.taskMeta.set(id, { durationSec: params.durationSec });
     }
     await this.persistTask(task);
     return task;
@@ -350,7 +356,7 @@ export class DownloadEngine {
         this.abortControllers.set(taskId, abortCtrl);
 
         try {
-          const playUrl = await source.getPlayUrl(trySongId, task.quality, abortCtrl.signal);
+          const playUrl = await source.getPlayUrl(trySongId, task.quality, abortCtrl.signal, { durationSec: meta?.durationSec });
           if (i > 0) {
             // 有降级：提示用户
             const fromName = PLATFORM_DISPLAY_NAMES[chain[i - 1]] || chain[i - 1];
@@ -469,6 +475,11 @@ export class DownloadEngine {
           task.downloadedSize = bytes.length;
           task.progress = 1;
           task.indeterminate = false;
+          // v29 B6 音质诚实性：以落盘真实字节数 + 歌曲时长推算实际档位，
+          // 取链层已推算（playUrl.actualQuality）时以实测字节复核为准
+          const actualFromBytes = classifyActualQuality(bytes.length, meta?.durationSec);
+          task.sizeBytes = bytes.length;
+          task.actualQuality = actualFromBytes.actualQuality ?? playUrl.actualQuality;
           break;
         } catch (err) {
           lastError = err;

@@ -249,7 +249,8 @@ function App() {
     const unsub3b = playerEngine.on('trackLoaded', ({ track, result, actualSourceId }) => {
       usePlayerStore.getState().setTrack(track || null);
       usePlayerStore.getState().setActualSourceId(actualSourceId || null);
-      usePlayerStore.getState().setActualQuality(result.quality);
+      // v29 B6：优先展示探测到的真实音质档位；探测不出时回退取链声称档位
+      usePlayerStore.getState().setActualQuality(result.actualQuality ?? result.quality);
       usePlayerStore.getState().setPreview(result.isPreview ?? false);
     });
     const unsub3c = playerEngine.on('mediaAction', ({ action }) => {

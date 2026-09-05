@@ -353,6 +353,7 @@ export default function SearchPage() {
         quality: selectedQuality,
         title: result.title,
         artist: result.artist,
+        durationSec: result.duration || undefined,
         availableSources: result.sources.map((s) => ({
           sourceId: s.sourceId,
           sourceSongId: s.sourceSongId,

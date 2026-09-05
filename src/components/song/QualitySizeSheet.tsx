@@ -266,6 +266,7 @@ export default function QualitySizeSheet({ song, open, onClose, onPlay }: Qualit
             quality: tierToQuality(block.tier),
             title: song.title,
             artist: song.artist,
+            durationSec: song.duration || undefined,
             availableSources: [
               { sourceId: source.sourceId, sourceSongId: source.sourceSongId },
             ],
