@@ -14,6 +14,8 @@ import {
   PLATFORM_COLORS,
 } from '../core/platformPriority';
 import { debugLogger } from '@shared/utils/debugLogger';
+import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
 import { useEqStore } from '@core/player/equalizer';
 import SleepTimerPanel from '../components/player/SleepTimerPanel';
 import ConfirmDialog, { type ConfirmRequest } from '../components/common/ConfirmDialog';
@@ -118,6 +120,33 @@ export default function SettingsPage() {
 
   // v23 修复走查 #11：下载目录编辑草稿（跟随持久化值同步）
   const [downloadDirDraft, setDownloadDirDraft] = useState(downloadDir);
+
+  // C9：下载完成通知授权入口——Android WebView 无 W3C Notification，授权请求收敛到此用户手势
+  const isNativeApp = Capacitor.isNativePlatform();
+  const [notifyPerm, setNotifyPerm] = useState<string>('unknown');
+  useEffect(() => {
+    if (!isNativeApp) return;
+    let cancelled = false;
+    LocalNotifications.checkPermissions()
+      .then((s) => { if (!cancelled) setNotifyPerm(s.display); })
+      .catch(() => { if (!cancelled) setNotifyPerm('unknown'); });
+    return () => { cancelled = true; };
+  }, [isNativeApp]);
+  const handleRequestNotifyPerm = async () => {
+    try {
+      const s = await LocalNotifications.requestPermissions();
+      setNotifyPerm(s.display);
+    } catch (err) {
+      console.warn('[settings] request notification permission failed:', err);
+    }
+  };
+  const NOTIFY_PERM_LABEL: Record<string, string> = {
+    granted: '已授权',
+    denied: '已拒绝',
+    prompt: '未授权',
+    promptWithRationale: '未授权',
+    unknown: '检测中…',
+  };
 
   const sources = sourceRegistry.getAll();
 
@@ -435,6 +464,27 @@ export default function SettingsPage() {
                     onChange={(v) => setMaxConcurrentDownloads(v)}
                   />
                 </div>
+                {/* C9：下载完成通知授权入口（仅 Capacitor 原生端显示；授权由本按钮用户手势触发） */}
+                {isNativeApp && (
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex flex-col">
+                      <span className="text-sm text-[var(--text-primary)]">下载完成通知</span>
+                      <span className="text-[11px] text-[var(--text-tertiary)]">
+                        下载完成/失败时发送系统通知 · {NOTIFY_PERM_LABEL[notifyPerm] ?? notifyPerm}
+                      </span>
+                    </div>
+                    {notifyPerm === 'granted' ? (
+                      <span className="text-xs text-[var(--text-tertiary)] flex-shrink-0">已开启</span>
+                    ) : (
+                      <button
+                        onClick={handleRequestNotifyPerm}
+                        className="px-3 py-1.5 rounded-xl text-xs bg-[var(--accent)] text-white hover:opacity-90 transition-opacity flex-shrink-0"
+                      >
+                        {notifyPerm === 'denied' ? '去授权' : '开启'}
+                      </button>
+                    )}
+                  </div>
+                )}
                 {/* v23 修复走查 #11：下载目录改为可编辑（应用私有数据目录下的相对路径，保存后立即生效） */}
                 <div className="flex flex-col gap-2">
                   <div className="flex items-center justify-between gap-3">
