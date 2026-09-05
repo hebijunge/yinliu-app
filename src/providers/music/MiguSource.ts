@@ -504,7 +504,8 @@ export class MiguSource extends BaseHttpSource {
   private miguTagCache: Map<string, string> | null = null;
   private async resolveMiguTagId(categoryName: string): Promise<string> {
     if (!this.miguTagCache) {
-      this.miguTagCache = new Map();
+      // B2: 先构建局部 Map，成功拿到非空标签才写入缓存；失败不留空缓存占位，下次调用重试
+      const map = new Map<string, string>();
       try {
         const data = await this.httpGetJson(
           `${this.apiBase}/MIGUM3.0/v1.0/template/musiclistplaza-taglist/release?templateVersion=1`,
@@ -514,13 +515,17 @@ export class MiguSource extends BaseHttpSource {
           for (const tag of group?.content || []) {
             const texts = tag?.texts || [];
             if (texts.length >= 2) {
-              this.miguTagCache.set(String(texts[0]), String(texts[1]));
+              map.set(String(texts[0]), String(texts[1]));
             }
           }
         }
+        if (map.size > 0) {
+          this.miguTagCache = map;
+        }
       } catch {
-        /* 缓存留空 */
+        /* B2: 失败不缓存，下次重试 */
       }
+      if (!this.miguTagCache) return '';
     }
     const alias = MiguSource.MIGU_TAG_ALIASES[categoryName];
     return (

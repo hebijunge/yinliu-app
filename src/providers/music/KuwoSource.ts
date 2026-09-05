@@ -938,14 +938,21 @@ export class KuwoSource extends BaseHttpSource {
           for (const v of Object.values(node)) walk(v);
         };
         walk(data);
-        this.tagListCache = tags;
+        // B2: 仅在成功拿到非空标签时才缓存。失败/空结果永久缓存会导致
+        // 断网冷启动后分类歌单永远为空，即使恢复网络也无法重试（需重启）。
+        if (tags.length > 0) {
+          this.tagListCache = tags;
+        }
       }
 
       const wanted = KuwoSource.KW_TAG_ALIASES[categoryName] || categoryName;
+      // B2: 缓存仍为空（上次拉取失败/为空）→ 直接返回空列表，下次调用重试
+      const tagList = this.tagListCache;
+      if (!tagList) return [];
       // 精确匹配 → 包含匹配
       const tag =
-        this.tagListCache.find((t) => t.name === wanted) ||
-        this.tagListCache.find((t) => t.name.includes(wanted) || wanted.includes(t.name));
+        tagList.find((t) => t.name === wanted) ||
+        tagList.find((t) => t.name.includes(wanted) || wanted.includes(t.name));
       if (!tag) return [];
 
       const url = `https://wapi.kuwo.cn/api/pc/classify/playlist/getTagPlayList?loginUid=0&loginSid=0&appUid=38668888&pn=${pn}&id=${tag.id}`;
