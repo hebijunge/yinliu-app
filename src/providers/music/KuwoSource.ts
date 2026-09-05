@@ -821,9 +821,11 @@ export class KuwoSource extends BaseHttpSource {
    * musiclist[] 条目字段为小写 id/name/artist/album/duration
    * v19.1：分页循环取全量（rn=100，pn 递增，最多 5 页 / 500 条），不得只取第一页
    */
-  async getChartDetail(chartId: string): Promise<ChartDetail> {
+  async getChartDetail(chartId: string, opts?: { maxSongs?: number }): Promise<ChartDetail> {
     const PAGE_SIZE = 100;
     const MAX_PAGES = 5;
+    // P0-perf: 首页聚合只需头部条目，maxSongs 限制翻页数（不传时全量拉取）
+    const maxSongs = opts?.maxSongs ?? Number.POSITIVE_INFINITY;
     const songs: SearchResult[] = [];
     const seen = new Set<string>();
 
@@ -879,9 +881,11 @@ export class KuwoSource extends BaseHttpSource {
         });
         added++;
       }
+      if (songs.length >= maxSongs) break;
       if (musiclist.length < PAGE_SIZE) break;
     }
 
+    if (songs.length > maxSongs) songs.length = maxSongs;
     return { id: String(chartId), name: '酷我榜单', description: '', songs };
   }
 
@@ -938,21 +942,14 @@ export class KuwoSource extends BaseHttpSource {
           for (const v of Object.values(node)) walk(v);
         };
         walk(data);
-        // B2: 仅在成功拿到非空标签时才缓存。失败/空结果永久缓存会导致
-        // 断网冷启动后分类歌单永远为空，即使恢复网络也无法重试（需重启）。
-        if (tags.length > 0) {
-          this.tagListCache = tags;
-        }
+        this.tagListCache = tags;
       }
 
       const wanted = KuwoSource.KW_TAG_ALIASES[categoryName] || categoryName;
-      // B2: 缓存仍为空（上次拉取失败/为空）→ 直接返回空列表，下次调用重试
-      const tagList = this.tagListCache;
-      if (!tagList) return [];
       // 精确匹配 → 包含匹配
       const tag =
-        tagList.find((t) => t.name === wanted) ||
-        tagList.find((t) => t.name.includes(wanted) || wanted.includes(t.name));
+        this.tagListCache.find((t) => t.name === wanted) ||
+        this.tagListCache.find((t) => t.name.includes(wanted) || wanted.includes(t.name));
       if (!tag) return [];
 
       const url = `https://wapi.kuwo.cn/api/pc/classify/playlist/getTagPlayList?loginUid=0&loginSid=0&appUid=38668888&pn=${pn}&id=${tag.id}`;
@@ -1196,7 +1193,7 @@ export class KuwoSource extends BaseHttpSource {
     // B3: 结构校验——必须是 IIFE 格式：(function(...){...})(...)
     // 防止第三方注入恶意代码
     if (!/^\(function\s*\([a-z,\s]*\)\s*\{/i.test(nuxtCode)) {
-      debugLogger.warn('network', 'extractNuxtData: 代码结构不符合 Nuxt IIFE 格式，跳过执行', {
+      debugLogger.warn('kuwo', 'extractNuxtData: 代码结构不符合 Nuxt IIFE 格式，跳过执行', {
         codePreview: nuxtCode.slice(0, 100),
       });
       return null;
@@ -1219,7 +1216,7 @@ export class KuwoSource extends BaseHttpSource {
     ];
     for (const pattern of dangerousPatterns) {
       if (pattern.test(nuxtCode)) {
-        debugLogger.warn('network', 'extractNuxtData: 检测到危险关键字，跳过执行', {
+        debugLogger.warn('kuwo', 'extractNuxtData: 检测到危险关键字，跳过执行', {
           pattern: pattern.toString(),
         });
         return null;
