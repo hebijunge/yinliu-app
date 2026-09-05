@@ -56,11 +56,12 @@ async function platformFetch(url, options = {}) {
 }
 
 // stub:stub:@shared/utils/debugLogger
-var debugLogger = { info() {
-}, warn() {
-}, error() {
-}, debug() {
-} };
+var verbose = !!process.env.V25_DEBUG;
+var mk = (tag) => (...args) => {
+  if (verbose)
+    console.log("[" + tag + "]", ...args.map((a) => typeof a === "object" ? JSON.stringify(a) : String(a)));
+};
+var debugLogger = { info: mk("info"), warn: mk("warn"), error: mk("error"), debug: mk("debug") };
 
 // src/core/streaming/fetcher.ts
 var FIRST_CHUNK_SIZE = 256 * 1024;
@@ -75,6 +76,10 @@ var StreamFetcher = class {
   currentByteOffset = 0;
   overallReceived = 0;
   callbacks = {};
+  // v29-A1: 会话代际 —— 每次 start()/reset() 递增。在途的 HEAD 预检完成后
+  // 只有代际仍等于当前值才允许写 totalSize，防止上一首歌的陈旧 HEAD
+  // 覆盖新会话刚学到的 totalSize（跨歌残留的另一个来源）
+  session = 0;
   // v25: 并行 HEAD 预检 —— start() 不再串行等待，downloadLoop 在需要 totalSize
   // （首块之后的边界钳制）时才 await 该 Promise
   headPromise = null;
@@ -102,17 +107,20 @@ var StreamFetcher = class {
     if (this.state === "fetching") {
       await this.stop();
     }
+    const session = ++this.session;
+    const keepTotalSize = options.skipHead && this.totalSize > 0 ? this.totalSize : 0;
     this.url = url;
     this.headers = headers;
+    this.totalSize = keepTotalSize;
     this.currentByteOffset = startByte;
     this.currentChunkIndex = 0;
     this.overallReceived = 0;
     this.seekTargetByte = -1;
     this.headPromise = null;
     this.headPending = false;
-    if (!(options.skipHead && this.totalSize > 0)) {
+    if (!keepTotalSize) {
       this.headPending = true;
-      this.headPromise = this.probeHead();
+      this.headPromise = this.probeHead(session);
     }
     this.state = "fetching";
     debugLogger.info("streaming", "StreamFetcher started", {
@@ -124,13 +132,15 @@ var StreamFetcher = class {
     void this.downloadLoop();
   }
   /** v25: HEAD 预检（并行执行，失败静默——由响应学习 totalSize 兜底） */
-  async probeHead() {
+  async probeHead(session) {
     try {
       const headResp = await platformFetch(this.url, {
         method: "HEAD",
         headers: this.headers,
         signal: AbortSignal.timeout(6e3)
       });
+      if (session !== this.session)
+        return;
       const contentLength = headResp.headers.get("content-length");
       if (contentLength) {
         this.totalSize = parseInt(contentLength, 10);
@@ -147,7 +157,8 @@ var StreamFetcher = class {
         error: err instanceof Error ? err.message : String(err)
       });
     } finally {
-      this.headPending = false;
+      if (session === this.session)
+        this.headPending = false;
     }
   }
   /** 当前下载的 URL（seek 重启下载时复用） */
@@ -197,6 +208,27 @@ var StreamFetcher = class {
     this.state = "idle";
     this.abortController?.abort();
     await new Promise((r) => setTimeout(r, 50));
+  }
+  /**
+   * v29-A1: 彻底重置 —— 切歌/停止播放时调用。区别于 stop()（仅停下载循环、
+   * 保留 url/headers/totalSize 供 seek 复用）：本方法清空全部会话状态并递增
+   * 会话代际（作废在途 HEAD 的写入资格），确保上一首歌的元数据
+   * （尤其 totalSize 与陈旧 HEAD）不会泄漏到下一首歌。
+   */
+  reset() {
+    this.session++;
+    this.state = "idle";
+    this.abortController?.abort();
+    this.abortController = null;
+    this.url = "";
+    this.headers = {};
+    this.totalSize = 0;
+    this.currentByteOffset = 0;
+    this.currentChunkIndex = 0;
+    this.overallReceived = 0;
+    this.seekTargetByte = -1;
+    this.headPromise = null;
+    this.headPending = false;
   }
   // === 内部分块下载循环 ===
   async downloadLoop() {
@@ -397,7 +429,7 @@ var PRELOAD_THRESHOLD = 0.5;
 var BUFFER_THRESHOLD = 0.85;
 var MIN_CHUNKS_BEFORE_REFRESH = 2;
 var BLOB_REFRESH_SIZE_THRESHOLD = 256 * 1024;
-var StreamingAudioPlayer = class {
+var StreamingAudioPlayer = class _StreamingAudioPlayer {
   audio = null;
   fetcher = new StreamFetcher();
   state = "idle";
@@ -405,6 +437,8 @@ var StreamingAudioPlayer = class {
   // 数据缓冲
   chunks = [];
   totalDownloaded = 0;
+  // v29-A2: 用户设定音量基准 —— 新建 audio 元素时统一应用，避免重建后音量跳变
+  volume = 1;
   totalSize = 0;
   mimeType = "audio/mpeg";
   // 播放控制
@@ -420,11 +454,22 @@ var StreamingAudioPlayer = class {
   useMSE = false;
   mseQueue = [];
   mseUpdating = false;
+  // v28-fix: MSE 实际传给 addSourceBuffer 的 MIME（MP4 流需带 codecs 串）；
+  // 空串表示本流不支持 MSE
+  mseMimeType = "";
+  // v28-fix: MSE 模式下 audio.duration 是已缓冲段时长（随 append 增长），
+  // 用 totalSize/已下载数据估算全时长供进度条与 seek 换算；完成时由
+  // endOfStream 校正后回落真实值
+  mseEstimatedDuration = 0;
   // 缓存
   cacheKey = "";
   cacheEntry = null;
   /** v22-lru-fix: 本次播放会话标记为活跃的缓存 key（reset 时释放） */
   lastActiveCacheKey = "";
+  // F7(v27 P2-2 + 外部报告 F3)：播放错误去重锁——同一播放错误从 play() 拦截路径
+  // 与 audio error 事件路径重复上报时，同 key 短窗口内只报一次
+  lastErrorReport = null;
+  static ERROR_DEDUP_WINDOW_MS = 3e3;
   // 预取下一首
   prefetchFetcher = null;
   prefetchCallbacks;
@@ -519,6 +564,9 @@ var StreamingAudioPlayer = class {
     return this.audio?.currentTime ?? 0;
   }
   getDuration() {
+    if (this.useMSE && this.mseEstimatedDuration > 0) {
+      return this.mseEstimatedDuration;
+    }
     return this.audio?.duration ?? 0;
   }
   /**
@@ -573,11 +621,25 @@ var StreamingAudioPlayer = class {
       return;
     }
     const mseCap = detectMSECapability();
-    this.useMSE = mseCap.isUsable && mseCap.preferredMimeType === this.mimeType;
+    this.mseMimeType = "";
+    if (mseCap.isUsable) {
+      if (this.mimeType === "audio/mpeg" && mseCap.mp3Supported) {
+        this.mseMimeType = "audio/mpeg";
+      } else if (this.mimeType === "audio/mp4" && mseCap.mp4Supported && mseCap.preferredMimeType) {
+        this.mseMimeType = mseCap.preferredMimeType;
+      }
+    }
+    this.useMSE = this.mseMimeType !== "";
     debugLogger.info("streaming", "StreamingAudioPlayer.load", {
       cacheKey: options.cacheKey,
       useMSE: this.useMSE,
-      mimeType: this.mimeType
+      mimeType: this.mimeType,
+      mseMimeType: this.mseMimeType || null,
+      mseCap: {
+        mp3Supported: mseCap.mp3Supported,
+        mp4Supported: mseCap.mp4Supported,
+        preferred: mseCap.preferredMimeType
+      }
     });
     await streamCacheEngine.init();
     this.cacheEntry = await streamCacheEngine.getOrCreateEntry(
@@ -591,6 +653,21 @@ var StreamingAudioPlayer = class {
     }
     this.fetcher.setCallbacks(this.buildFetcherCallbacks());
     const resumeOffset = this.getResumeOffset();
+    if (this.useMSE && resumeOffset > 0) {
+      const prefixOk = await this.loadResumePrefixIntoMSE(resumeOffset);
+      if (!prefixOk) {
+        this.useMSE = false;
+        this.mseMimeType = "";
+        this.chunks = [];
+        debugLogger.info("streaming", "MSE unavailable after prefix load failure, blob fallback", {
+          cacheKey: options.cacheKey,
+          resumeOffset
+        });
+        this.totalDownloaded += resumeOffset;
+      }
+    } else if (resumeOffset > 0) {
+      this.totalDownloaded += resumeOffset;
+    }
     this.setState("loading");
     if (!options.url) {
       throw new Error("StreamingAudioPlayer.load: url is required for fetch-based playback");
@@ -625,6 +702,7 @@ var StreamingAudioPlayer = class {
    */
   async play() {
     this.startSuppressed = false;
+    this.networkPaused = false;
     if (!this.audio)
       return;
     try {
@@ -633,8 +711,23 @@ var StreamingAudioPlayer = class {
       this.startProgressTracking();
     } catch (err) {
       this.setState("paused");
-      this.callbacks.onError?.("\u64AD\u653E\u88AB\u963B\u6B62\uFF0C\u8BF7\u70B9\u51FB\u64AD\u653E\u6309\u94AE");
+      this.reportError("\u64AD\u653E\u5931\u8D25\uFF0C\u8BF7\u70B9\u51FB\u64AD\u653E\u6309\u94AE\u91CD\u8BD5");
     }
+  }
+  /**
+   * F7(v27 P2-2 + 外部报告 F3)：播放错误去重上报。
+   * 同一播放错误（同 cacheKey + 同文案）在短窗口内只向 callbacks.onError 报一次，
+   * 拦截 play() catch 与 audio error 事件双路径的重复上报。
+   */
+  reportError(message) {
+    const key = `${this.cacheKey}|${message}`;
+    const now = Date.now();
+    if (this.lastErrorReport && this.lastErrorReport.key === key && now - this.lastErrorReport.at < _StreamingAudioPlayer.ERROR_DEDUP_WINDOW_MS) {
+      debugLogger.info("streaming", "\u91CD\u590D\u64AD\u653E\u9519\u8BEF\u5DF2\u53BB\u91CD\u62E6\u622A\uFF08\u77ED\u7A97\u53E3\u5185\u53EA\u62A5\u4E00\u6B21\uFF09", { key });
+      return;
+    }
+    this.lastErrorReport = { key, at: now };
+    this.callbacks.onError?.(message);
   }
   /**
    * 暂停
@@ -667,57 +760,80 @@ var StreamingAudioPlayer = class {
     const decryptedStream = await decryptor.decryptStream(response.body);
     const reader = decryptedStream.getReader();
     this.setState("loading");
+    let resolveFirstChunk;
+    let rejectFirstChunk;
+    let firstChunkSettled = false;
+    const firstChunkReady = new Promise((resolve, reject) => {
+      resolveFirstChunk = () => {
+        if (!firstChunkSettled) {
+          firstChunkSettled = true;
+          resolve();
+        }
+      };
+      rejectFirstChunk = (err) => {
+        if (!firstChunkSettled) {
+          firstChunkSettled = true;
+          reject(err);
+        }
+      };
+    });
     const MIN_START_SIZE = 256 * 1024;
-    let totalReceived = 0;
-    let chunkIndex = 0;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done)
-          break;
-        const start = totalReceived;
-        const end = start + value.length - 1;
-        this.chunks.push({ data: value, start, end });
-        totalReceived += value.length;
-        this.totalDownloaded = totalReceived;
-        await streamCacheEngine.appendData(this.cacheKey, value, start);
-        if (this.state === "loading" && totalReceived >= MIN_START_SIZE) {
-          debugLogger.info("streaming", "Encrypted stream first chunk ready", {
-            cacheKey: this.cacheKey,
-            received: totalReceived
-          });
-          await this.onFirstChunkReady();
-        }
-        if (chunkIndex > 0 && !this.useMSE) {
-          const shouldRefreshBySize = this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
-          if (shouldRefreshBySize) {
-            await this.setupBlobPlayback();
-            this.lastRefreshDownloaded = this.totalDownloaded;
+    void (async () => {
+      let totalReceived = 0;
+      let chunkIndex = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done)
+            break;
+          const start = totalReceived;
+          const end = start + value.length - 1;
+          this.chunks.push({ data: value, start, end });
+          totalReceived += value.length;
+          this.totalDownloaded = totalReceived;
+          await streamCacheEngine.appendData(this.cacheKey, value, start);
+          if (this.state === "loading" && totalReceived >= MIN_START_SIZE) {
+            debugLogger.info("streaming", "Encrypted stream first chunk ready", {
+              cacheKey: this.cacheKey,
+              received: totalReceived
+            });
+            await this.onFirstChunkReady();
+            resolveFirstChunk();
           }
+          if (chunkIndex > 0 && !this.useMSE) {
+            const shouldRefreshBySize = this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
+            if (shouldRefreshBySize) {
+              await this.setupBlobPlayback();
+              this.lastRefreshDownloaded = this.totalDownloaded;
+            }
+          }
+          chunkIndex++;
         }
-        chunkIndex++;
+        if (this.state === "loading") {
+          await this.onFirstChunkReady();
+          resolveFirstChunk();
+        } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
+          debugLogger.info("streaming", "Encrypted stream completed, final blob refresh");
+          await this.setupBlobPlayback();
+        }
+        this.totalSize = totalReceived;
+        if (this.cacheKey && this.totalSize > 0) {
+          await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
+        }
+      } catch (err) {
+        if (this.encryptedStreamAbortController?.signal.aborted) {
+          resolveFirstChunk();
+          return;
+        }
+        this.setState("error");
+        this.callbacks.onError?.(err instanceof Error ? err.message : "Encrypted stream failed");
+        rejectFirstChunk(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        reader.releaseLock();
+        this.encryptedStreamAbortController = null;
       }
-      if (this.state === "loading") {
-        await this.onFirstChunkReady();
-      } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
-        debugLogger.info("streaming", "Encrypted stream completed, final blob refresh");
-        await this.setupBlobPlayback();
-      }
-      this.totalSize = totalReceived;
-      if (this.cacheKey && this.totalSize > 0) {
-        await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
-      }
-    } catch (err) {
-      if (this.encryptedStreamAbortController?.signal.aborted) {
-        return;
-      }
-      this.setState("error");
-      this.callbacks.onError?.(err instanceof Error ? err.message : "Encrypted stream failed");
-      throw err;
-    } finally {
-      reader.releaseLock();
-      this.encryptedStreamAbortController = null;
-    }
+    })();
+    await firstChunkReady;
   }
   /**
    * v21.4: 加载咪咕 Z3D 加密流（fetch + Z3D decryptStream + Blob 刷新）
@@ -759,68 +875,91 @@ var StreamingAudioPlayer = class {
     const decryptedStream = response.body.pipeThrough(decryptStream);
     const reader = decryptedStream.getReader();
     this.setState("loading");
-    const MIN_START_SIZE = 256 * 1024;
-    let totalReceived = 0;
-    let chunkIndex = 0;
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done)
-          break;
-        const start = totalReceived;
-        const end = start + value.length - 1;
-        this.chunks.push({ data: value, start, end });
-        totalReceived += value.length;
-        this.totalDownloaded = totalReceived;
-        await streamCacheEngine.appendData(this.cacheKey, value, start);
-        if (this.state === "loading" && totalReceived >= MIN_START_SIZE) {
-          debugLogger.info("streaming", "Z3D stream first chunk ready", {
-            cacheKey: this.cacheKey,
-            received: totalReceived
-          });
-          await this.onFirstChunkReady();
-          this.chunks = [];
-          debugLogger.info("streaming", "Z3D: cleared in-memory chunks after first playback", {
-            cacheKey: this.cacheKey
-          });
+    let resolveFirstChunk;
+    let rejectFirstChunk;
+    let firstChunkSettled = false;
+    const firstChunkReady = new Promise((resolve, reject) => {
+      resolveFirstChunk = () => {
+        if (!firstChunkSettled) {
+          firstChunkSettled = true;
+          resolve();
         }
-        if (chunkIndex > 0 && !this.useMSE) {
-          const shouldRefreshBySize = this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
-          if (shouldRefreshBySize) {
-            await this.setupBlobPlayback();
-            this.lastRefreshDownloaded = this.totalDownloaded;
-            this.chunks = [];
-            debugLogger.info("streaming", "Z3D: cleared in-memory chunks after blob refresh", {
+      };
+      rejectFirstChunk = (err) => {
+        if (!firstChunkSettled) {
+          firstChunkSettled = true;
+          reject(err);
+        }
+      };
+    });
+    const MIN_START_SIZE = 256 * 1024;
+    void (async () => {
+      let totalReceived = 0;
+      let chunkIndex = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done)
+            break;
+          const start = totalReceived;
+          const end = start + value.length - 1;
+          this.chunks.push({ data: value, start, end });
+          totalReceived += value.length;
+          this.totalDownloaded = totalReceived;
+          await streamCacheEngine.appendData(this.cacheKey, value, start);
+          if (this.state === "loading" && totalReceived >= MIN_START_SIZE) {
+            debugLogger.info("streaming", "Z3D stream first chunk ready", {
               cacheKey: this.cacheKey,
-              totalDownloaded: this.totalDownloaded
+              received: totalReceived
+            });
+            await this.onFirstChunkReady();
+            resolveFirstChunk();
+            this.chunks = [];
+            debugLogger.info("streaming", "Z3D: cleared in-memory chunks after first playback", {
+              cacheKey: this.cacheKey
             });
           }
+          if (chunkIndex > 0 && !this.useMSE) {
+            const shouldRefreshBySize = this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
+            if (shouldRefreshBySize) {
+              await this.setupBlobPlayback();
+              this.lastRefreshDownloaded = this.totalDownloaded;
+              this.chunks = [];
+              debugLogger.info("streaming", "Z3D: cleared in-memory chunks after blob refresh", {
+                cacheKey: this.cacheKey,
+                totalDownloaded: this.totalDownloaded
+              });
+            }
+          }
+          chunkIndex++;
         }
-        chunkIndex++;
+        if (this.state === "loading") {
+          await this.onFirstChunkReady();
+          resolveFirstChunk();
+          this.chunks = [];
+        } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
+          debugLogger.info("streaming", "Z3D stream completed, final blob refresh");
+          await this.setupBlobPlayback();
+          this.chunks = [];
+        }
+        this.totalSize = totalReceived;
+        if (this.cacheKey && this.totalSize > 0) {
+          await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
+        }
+      } catch (err) {
+        if (this.encryptedStreamAbortController?.signal.aborted) {
+          resolveFirstChunk();
+          return;
+        }
+        this.setState("error");
+        this.callbacks.onError?.(err instanceof Error ? err.message : "Z3D stream failed");
+        rejectFirstChunk(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        reader.releaseLock();
+        this.encryptedStreamAbortController = null;
       }
-      if (this.state === "loading") {
-        await this.onFirstChunkReady();
-        this.chunks = [];
-      } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
-        debugLogger.info("streaming", "Z3D stream completed, final blob refresh");
-        await this.setupBlobPlayback();
-        this.chunks = [];
-      }
-      this.totalSize = totalReceived;
-      if (this.cacheKey && this.totalSize > 0) {
-        await streamCacheEngine.setExpectedTotalSize(this.cacheKey, this.totalSize);
-      }
-    } catch (err) {
-      if (this.encryptedStreamAbortController?.signal.aborted) {
-        return;
-      }
-      this.setState("error");
-      this.callbacks.onError?.(err instanceof Error ? err.message : "Z3D stream failed");
-      throw err;
-    } finally {
-      reader.releaseLock();
-      this.encryptedStreamAbortController = null;
-    }
+    })();
+    await firstChunkReady;
   }
   /**
    * Seek 到指定时间（秒）
@@ -831,7 +970,7 @@ var StreamingAudioPlayer = class {
   async seek(time) {
     if (!this.audio)
       return;
-    const duration = this.audio.duration || 0;
+    const duration = this.useMSE && this.mseEstimatedDuration > 0 ? this.mseEstimatedDuration : this.audio.duration || 0;
     const clampedTime = duration > 0 ? Math.max(0, Math.min(time, duration)) : Math.max(0, time);
     if (this.isEncryptedStream) {
       this.audio.currentTime = clampedTime;
@@ -854,6 +993,18 @@ var StreamingAudioPlayer = class {
       this.audio.currentTime = clampedTime;
       return;
     }
+    if (this.useMSE && !this.sourceBuffer) {
+      debugLogger.info("streaming", "Seek while MSE session not ready, defer to browser", {
+        cacheKey: this.cacheKey,
+        time: clampedTime,
+        bytePosition
+      });
+      try {
+        this.audio.currentTime = clampedTime;
+      } catch {
+      }
+      return;
+    }
     const wasPlaying = this.state === "playing";
     this.setState("seeking");
     this.pendingSeekTime = clampedTime;
@@ -867,10 +1018,14 @@ var StreamingAudioPlayer = class {
   }
   /**
    * 设置音量
+   * v29-A2: 持久化音量基准 —— 新建的 audio 元素（首块起播 / blob 刷新重建）
+   * 统一应用最近一次用户设定音量；旧实现只写当前 audio，元素重建后音量
+   * 回落到默认 1.0，表现为切歌/刷新瞬间音量跳变
    */
   setVolume(volume) {
+    this.volume = Math.max(0, Math.min(1, volume));
     if (this.audio) {
-      this.audio.volume = Math.max(0, Math.min(1, volume));
+      this.audio.volume = this.volume;
     }
   }
   /**
@@ -925,7 +1080,9 @@ var StreamingAudioPlayer = class {
    */
   async reset() {
     this.stopProgressTracking();
+    this.networkPaused = false;
     await this.fetcher.stop();
+    this.fetcher.reset();
     if (this.encryptedStreamAbortController) {
       this.encryptedStreamAbortController.abort();
       this.encryptedStreamAbortController = null;
@@ -976,6 +1133,8 @@ var StreamingAudioPlayer = class {
     this.seekResumePlay = false;
     this.mseQueue = [];
     this.mseUpdating = false;
+    this.mseMimeType = "";
+    this.mseEstimatedDuration = 0;
     if (this.lastActiveCacheKey) {
       streamCacheEngine.markInactive(this.lastActiveCacheKey);
       this.lastActiveCacheKey = "";
@@ -1113,7 +1272,7 @@ var StreamingAudioPlayer = class {
         return;
       }
     }
-    const hasSizeMismatch = this.totalSize > 0 && allData.length !== this.totalSize;
+    const hasSizeMismatch = this.totalSize > 0 && allData.length > this.totalSize;
     if (hasSizeMismatch) {
       debugLogger.warn("streaming", "setupBlobPlayback: size mismatch", {
         mergedSize: allData.length,
@@ -1191,6 +1350,80 @@ var StreamingAudioPlayer = class {
     this.chunksCleared = true;
   }
   /**
+   * v28-fix: MSE 断点续播——把缓存前缀（0..resumeOffset-1）读入 SourceBuffer 预挂载队列。
+   * 原生平台 readAsBlobUrl 返回 zero-copy file URL，用 fetch 读回字节后整体作为一个
+   * chunk 暂存，由 setupMSE 的 sourceopen 回调统一 append。任何失败返回 false，
+   * 由调用方降级 Blob 模式。
+   */
+  async loadResumePrefixIntoMSE(resumeOffset) {
+    try {
+      const MAX_MSE_PREFIX_BYTES = 32 * 1024 * 1024;
+      if (resumeOffset > MAX_MSE_PREFIX_BYTES) {
+        debugLogger.info("streaming", "MSE resume: prefix too large, blob fallback", {
+          cacheKey: this.cacheKey,
+          resumeOffset
+        });
+        return false;
+      }
+      const url = await streamCacheEngine.readAsBlobUrl(this.cacheKey);
+      const resp2 = await fetch(url);
+      if (!resp2.ok) {
+        throw new Error(`prefix fetch failed: ${resp2.status}`);
+      }
+      const buf = new Uint8Array(await resp2.arrayBuffer());
+      if (buf.length < resumeOffset) {
+        throw new Error(`prefix short: file=${buf.length}, expected=${resumeOffset}`);
+      }
+      const prefix = buf.length === resumeOffset ? buf : buf.subarray(0, resumeOffset);
+      this.chunks.push({ data: prefix, start: 0, end: resumeOffset - 1 });
+      this.totalDownloaded += resumeOffset;
+      debugLogger.info("streaming", "MSE resume: cached prefix staged for SourceBuffer", {
+        cacheKey: this.cacheKey,
+        bytes: resumeOffset
+      });
+      return true;
+    } catch (err) {
+      debugLogger.warn("streaming", "MSE resume: cached prefix load failed", {
+        cacheKey: this.cacheKey,
+        resumeOffset,
+        error: err instanceof Error ? err.message : String(err)
+      });
+      return false;
+    }
+  }
+  /**
+   * v28-fix: 估算 MSE 全时长。
+   * SourceBuffer 模式下 audio.duration 是已缓冲段时长（随 append 增长），
+   * 用 totalSize / 已下载体量 比例外推全时长，仅供进度条与 seek 字节换算；
+   * 下载完成 endOfStream 后由 getDuration 回落真实 duration。
+   * 必须在 SourceBuffer 空闲时设置（updateend 回调内调用）。
+   */
+  applyMSEDurationEstimate() {
+    if (!this.useMSE || !this.mediaSource || this.mediaSource.readyState !== "open")
+      return;
+    if (this.mseEstimatedDuration > 0 || this.totalSize <= 0)
+      return;
+    if (this.mseUpdating || this.sourceBuffer && this.sourceBuffer.updating)
+      return;
+    const bufferedDur = this.audio?.duration ?? 0;
+    if (!(bufferedDur > 0) || this.totalDownloaded <= 0)
+      return;
+    const estimated = bufferedDur * (this.totalSize / this.totalDownloaded);
+    if (estimated > bufferedDur) {
+      try {
+        this.mediaSource.duration = estimated;
+        this.mseEstimatedDuration = estimated;
+        debugLogger.info("streaming", "MSE duration estimated", {
+          bufferedDur,
+          downloaded: this.totalDownloaded,
+          totalSize: this.totalSize,
+          estimated
+        });
+      } catch {
+      }
+    }
+  }
+  /**
    * MSE 模式：设置 MediaSource
    */
   async setupMSE() {
@@ -1203,11 +1436,12 @@ var StreamingAudioPlayer = class {
           if (!this.mediaSource)
             return;
           try {
-            this.sourceBuffer = this.mediaSource.addSourceBuffer(this.mimeType);
+            this.sourceBuffer = this.mediaSource.addSourceBuffer(this.mseMimeType || this.mimeType);
             this.sourceBuffer.mode = "segments";
             this.sourceBuffer.addEventListener("updateend", () => {
               this.mseUpdating = false;
               this.flushMSEQueue();
+              this.applyMSEDurationEstimate();
             });
             this.sourceBuffer.addEventListener("error", (e) => {
               debugLogger.error("streaming", "SourceBuffer error", { error: String(e) });
@@ -1272,6 +1506,7 @@ var StreamingAudioPlayer = class {
       }
       this.audio = new Audio(url);
       this.audio.crossOrigin = "anonymous";
+      this.audio.volume = this.volume;
       this.audioElementListener?.(this.audio);
       let resolved = false;
       const timeoutId = setTimeout(() => {
@@ -1304,6 +1539,16 @@ var StreamingAudioPlayer = class {
         }
       });
       this.audio.addEventListener("ended", () => {
+        if (this.totalSize > 0 && this.totalDownloaded < this.totalSize && this.state !== "idle") {
+          debugLogger.warn("streaming", "Reached buffered end while still downloading", {
+            cacheKey: this.cacheKey,
+            currentTime: this.audio?.currentTime ?? 0,
+            downloaded: this.totalDownloaded,
+            totalSize: this.totalSize
+          });
+          this.setState("buffering");
+          return;
+        }
         this.stopProgressTracking();
         this.setState("completed");
         this.callbacks.onEnded?.();
@@ -1324,7 +1569,7 @@ var StreamingAudioPlayer = class {
           return;
         }
         this.setState("error");
-        this.callbacks.onError?.("\u97F3\u9891\u64AD\u653E\u5931\u8D25");
+        this.reportError("\u97F3\u9891\u64AD\u653E\u5931\u8D25");
         doResolve();
       });
       this.audio.addEventListener("waiting", () => {
@@ -1354,6 +1599,7 @@ var StreamingAudioPlayer = class {
     }
     this.audio = new Audio(url);
     this.audio.crossOrigin = "anonymous";
+    this.audio.volume = this.volume;
     this.audioElementListener?.(this.audio);
     this.audio.addEventListener("canplay", () => {
       if (this.state === "loading" || this.state === "buffering") {
@@ -1361,6 +1607,16 @@ var StreamingAudioPlayer = class {
       }
     });
     this.audio.addEventListener("ended", () => {
+      if (this.totalSize > 0 && this.totalDownloaded < this.totalSize && this.state !== "idle") {
+        debugLogger.warn("streaming", "Reached buffered end while still downloading (refresh)", {
+          cacheKey: this.cacheKey,
+          currentTime: this.audio?.currentTime ?? 0,
+          downloaded: this.totalDownloaded,
+          totalSize: this.totalSize
+        });
+        this.setState("buffering");
+        return;
+      }
       this.stopProgressTracking();
       this.setState("completed");
       this.callbacks.onEnded?.();
@@ -1379,7 +1635,7 @@ var StreamingAudioPlayer = class {
         return;
       }
       this.setState("error");
-      this.callbacks.onError?.("\u97F3\u9891\u64AD\u653E\u5931\u8D25");
+      this.reportError("\u97F3\u9891\u64AD\u653E\u5931\u8D25");
     });
     this.audio.addEventListener("waiting", () => {
       if (this.state === "playing") {
@@ -1401,13 +1657,33 @@ var StreamingAudioPlayer = class {
   buildFetcherCallbacks() {
     return {
       onChunkComplete: async (chunk, data) => {
-        this.chunks.push({ data, start: chunk.start, end: chunk.end });
+        const mseActive = this.useMSE && !!this.sourceBuffer;
+        if (!mseActive) {
+          this.chunks.push({ data, start: chunk.start, end: chunk.end });
+        }
         this.totalDownloaded += data.length;
         if (chunk.end + 1 > this.totalSize) {
           this.totalSize = chunk.end + 1;
         }
         await streamCacheEngine.appendData(this.cacheKey, data, chunk.start);
         if (this.state === "seeking" && this.pendingSeekTime >= 0) {
+          if (mseActive) {
+            const seekTarget = this.pendingSeekTime;
+            this.pendingSeekTime = -1;
+            this.appendToMSE(data);
+            try {
+              this.audio.currentTime = seekTarget;
+            } catch {
+            }
+            if (this.seekResumePlay) {
+              this.setState("playing");
+              void this.audio?.play().catch(() => {
+              });
+            } else {
+              this.setState("paused");
+            }
+            return;
+          }
           debugLogger.info("streaming", "Seek target data ready, applying pending seek", {
             pendingSeekTime: this.pendingSeekTime,
             chunkStart: chunk.start
@@ -1438,12 +1714,17 @@ var StreamingAudioPlayer = class {
         }
         if (this.useMSE && this.sourceBuffer) {
           this.appendToMSE(data);
+          if (this.state === "buffering" && this.audio?.paused) {
+            this.audio.play().catch(() => {
+            });
+          }
           return;
         }
         if (!this.useMSE && chunk.index > 0) {
-          const shouldRefreshByProgress = chunk.index % MIN_CHUNKS_BEFORE_REFRESH === 0 && this.shouldRefreshBlob();
+          const nearBufferedEnd = this.shouldRefreshBlob();
+          const shouldRefreshByInterval = chunk.index % MIN_CHUNKS_BEFORE_REFRESH === 0;
           const shouldRefreshBySize = this.totalDownloaded - this.lastRefreshDownloaded >= BLOB_REFRESH_SIZE_THRESHOLD;
-          if (shouldRefreshByProgress || shouldRefreshBySize) {
+          if (nearBufferedEnd && (shouldRefreshByInterval || shouldRefreshBySize)) {
             await this.setupBlobPlayback();
             this.lastRefreshDownloaded = this.totalDownloaded;
           }
@@ -1473,6 +1754,7 @@ var StreamingAudioPlayer = class {
             this.mediaSource.endOfStream();
           } catch {
           }
+          this.mseEstimatedDuration = 0;
         } else if (!this.useMSE && (this.chunks.length > 0 || this.chunksCleared)) {
           debugLogger.info("streaming", "Blob mode: rebuilding blob from all chunks");
           await this.setupBlobPlayback();
@@ -1486,13 +1768,15 @@ var StreamingAudioPlayer = class {
    * 判断是否需要刷新 blob URL（播放接近已缓存末尾）
    */
   shouldRefreshBlob() {
-    if (!this.audio || this.totalSize === 0)
+    if (!this.audio)
       return false;
-    const duration = this.audio.duration || 1;
-    const currentTime = this.audio.currentTime;
-    const progress = currentTime / duration;
-    const cachedRatio = this.totalDownloaded / this.totalSize;
-    return progress > cachedRatio * BUFFER_THRESHOLD;
+    const buffered = this.audio.buffered;
+    if (buffered.length === 0)
+      return false;
+    const bufferedEnd = buffered.end(buffered.length - 1);
+    if (!(bufferedEnd > 0))
+      return false;
+    return this.audio.currentTime / bufferedEnd > BUFFER_THRESHOLD;
   }
   /**
    * 检查缓存是否完整
@@ -1510,18 +1794,26 @@ var StreamingAudioPlayer = class {
     );
   }
   /**
-   * 获取恢复下载的偏移量（从已下载的最远位置继续）
+   * 获取恢复下载的偏移量
+   * v29-A1: 连续前缀末尾 —— 旧实现取已下载区间的最大端（maxEnd+1），
+   * Range 请求失败/超时产生的中间空洞永远不会再被回填（fetcher 永远从
+   * 最远端续传），seek/续播时表现为「进度条可拖、拖到空洞区间无声」。
+   * 现改为从 0 开始扫描排序后的区间，取首个空洞前的连续前缀长度；
+   * 空洞之后的数据不浪费（仍在缓存元数据里），由后续按需请求覆盖。
    */
   getResumeOffset() {
     const entry2 = streamCacheEngine.getEntry(this.cacheKey);
     if (!entry2 || entry2.downloadedRanges.length === 0)
       return 0;
-    let maxEnd = 0;
-    for (const range of entry2.downloadedRanges) {
-      if (range.end > maxEnd)
-        maxEnd = range.end;
+    const sorted = [...entry2.downloadedRanges].sort((a, b) => a.start - b.start);
+    let end = -1;
+    for (const range of sorted) {
+      if (range.start > end + 1)
+        break;
+      if (range.end > end)
+        end = range.end;
     }
-    return maxEnd + 1;
+    return end + 1;
   }
   /**
    * 合并所有 chunks 为单个 Uint8Array

@@ -111,6 +111,11 @@ export class PlayerEngine {
 
   // v23: 快速切歌竞态防护 —— 每次 playTrack 递增，过期请求的错误不再上报 UI
   private playGeneration = 0;
+  // v29-A2-fix: stop() 自响修复的作废水位 —— 仅 stop() 递增。取链后的代际复核
+  // 只拦「被停止作废」的管线；被新切歌取代的管线沿用 v24 串行闸门语义
+  // （后发管线接管，前管线自然落定），保持「并发点两首不同歌各自成功」的
+  // 外部契约（verify-player-race S3）
+  private stopSeq = 0;
   // v23: 上一首/下一首切歌进行中标记（防抖锁：切歌过程中再次点击无效）
   private switchInProgress = false;
   // v23: 缓冲状态缓存（去重，避免重复 emit）
@@ -509,9 +514,12 @@ export class PlayerEngine {
     // 启动时读取（PlayGate 经 chain.then 异步启动，此刻 genBox 已填充）——
     // 旧实现在 doPlayTrack 内才递增，stop()/后发请求的作废语义对「已请求、
     // 尚排队」的管线不生效
-    const genBox: { value: number } = { value: this.playGeneration };
+    const genBox: { value: number; stopSeq: number } = {
+      value: this.playGeneration,
+      stopSeq: this.stopSeq,
+    };
     const { reused, promise } = this.playGate.enter(key, () =>
-      this.doPlayTrack(track, quality, genBox.value)
+      this.doPlayTrack(track, quality, genBox.value, genBox.stopSeq)
     );
     if (reused) {
       debugLogger.info('player', `播放去重命中: ${track.title}`, { key });
@@ -553,7 +561,8 @@ export class PlayerEngine {
   private async doPlayTrack(
     track: PlayerTrack,
     quality: Quality,
-    generation: number
+    generation: number,
+    stopSeqAtEntry: number
   ): Promise<PlayUrlResult> {
     // v29-A2: 代际号改由 playTrack 入口分配并传入（见 playTrack 注释）
 
@@ -588,11 +597,13 @@ export class PlayerEngine {
     try {
       const { url, isLocal, result, actualSourceId } = await this.resolvePlayUrl(track, quality);
 
-      // v29-A2: 代际复核 —— 取链期间被 stop() 或新请求取代（代际已前进）的
-      // 过期管线不再进入播放态，直接按过期请求落定
-      if (generation !== this.playGeneration) {
-        debugLogger.info('player', `丢弃过期播放管线: ${track.title}`, { generation });
-        throw new DOMException('stale play request', 'AbortError');
+      // v29-A2-fix: 取链后复核收窄为「仅 stop() 作废」——stopSeqAtEntry 之后
+      // 发生过 stop() 的管线不再进入播放态（修复 stop 后旧管线自响）；
+      // 被新切歌取代（仅 playGeneration 前进）的管线不在此拦，沿用 v24 串行
+      // 闸门语义，保证并发点两首不同歌各自成功（verify-player-race S3）
+      if (stopSeqAtEntry !== this.stopSeq) {
+        debugLogger.info('player', `丢弃被停止作废的播放管线: ${track.title}`, { generation });
+        throw new DOMException('stale play request (stopped)', 'AbortError');
       }
 
       if (isLocal) {
@@ -1209,6 +1220,8 @@ export class PlayerEngine {
     // v29-A2: stop 即作废 —— 递增代际，使在途取链/排队管线的错误不再上报、
     // 过期管线不再进入播放态（修复：stop 后旧管线完成并进入播放态的"自响"）
     this.playGeneration++;
+    // v29-A2-fix: 作废水位 —— 取链后复核以 stopSeq 判定，仅 stop() 递增
+    this.stopSeq++;
     this.pauseBeforeStartPending = false;
     // v29-A2: 取消在途取链
     if (this.playAbortController) {

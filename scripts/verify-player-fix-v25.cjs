@@ -145,7 +145,11 @@ function makeStreamAudioClass() {
       this._ls = {};
       this.paused = true;
       this.volume = 1;
-      this.currentTime = 0;
+      // v28 后 shouldRefreshBlob 用 audio.buffered 判定刷新时机；桩模拟
+      // 「播放位置已在缓冲区间内」（0.9/1 > 0.85），使刷新沿用尺寸阈值触发，
+      // T7 的播放中刷新续播场景得以覆盖
+      this.currentTime = 0.9;
+      this.buffered = { length: 1, end: () => 1 };
       this.duration = NaN;
       this.crossOrigin = '';
       this.error = null;
@@ -449,6 +453,9 @@ function makeEngineAudioClass() {
     constructor(src) {
       this._ls = {}; this.paused = true; this.src = src || ''; this.currentTime = 0;
       this.duration = NaN; this.crossOrigin = ''; this.error = null; this.volume = 1;
+      // v28 后流式引擎的 shouldRefreshBlob 会读 audio.buffered（本桩用于引擎层
+      // 非流式路径，给空 buffered 使其安全返回 false）
+      this.buffered = { length: 0, end: () => 0 };
       this._pendingPlay = null;
       g().audios.push(this);
     }
